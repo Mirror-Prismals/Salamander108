@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <string>
 
 namespace OcclusionCullingSystemLogic {
     namespace {
@@ -59,6 +60,30 @@ namespace OcclusionCullingSystemLogic {
                 }
             }
             return false;
+        }
+
+        int getRegistryInt(const BaseSystem& baseSystem, const std::string& key, int fallback) {
+            if (!baseSystem.registry) return fallback;
+            auto it = baseSystem.registry->find(key);
+            if (it == baseSystem.registry->end()) return fallback;
+            if (!std::holds_alternative<std::string>(it->second)) return fallback;
+            try {
+                return std::stoi(std::get<std::string>(it->second));
+            } catch (...) {
+                return fallback;
+            }
+        }
+
+        float getRegistryFloat(const BaseSystem& baseSystem, const std::string& key, float fallback) {
+            if (!baseSystem.registry) return fallback;
+            auto it = baseSystem.registry->find(key);
+            if (it == baseSystem.registry->end()) return fallback;
+            if (!std::holds_alternative<std::string>(it->second)) return fallback;
+            try {
+                return std::stof(std::get<std::string>(it->second));
+            } catch (...) {
+                return fallback;
+            }
         }
 
         bool ensureOcclusionRenderTarget(BaseSystem& baseSystem,
@@ -245,7 +270,8 @@ namespace OcclusionCullingSystemLogic {
                                         int maxX,
                                         int minY,
                                         int maxY,
-                                        float nearestDepth) {
+                                        float nearestDepth,
+                                        float depthBias) {
             if (!occlusion.hzbValid || occlusion.hzbMipLevels.empty() || occlusion.hzbMipSizes.empty()) {
                 return false;
             }
@@ -276,7 +302,56 @@ namespace OcclusionCullingSystemLogic {
                 }
             }
 
-            return maxDepth < (nearestDepth - 0.0015f);
+            return maxDepth < (nearestDepth - depthBias);
+        }
+
+        bool readPendingOcclusionDepth(BaseSystem& baseSystem, OcclusionCullingContext& occlusion) {
+            if (!occlusion.hzbReadbackPending) return occlusion.hzbValid;
+            occlusion.hzbReadbackPending = false;
+
+            if (!baseSystem.renderer || !baseSystem.renderBackend) {
+                occlusion.hzbValid = false;
+                return false;
+            }
+            RendererContext& renderer = *baseSystem.renderer;
+            if (renderer.occlusionHzbTex == 0
+                || occlusion.hzbPendingWidth <= 0
+                || occlusion.hzbPendingHeight <= 0
+                || renderer.occlusionHzbWidth != occlusion.hzbPendingWidth
+                || renderer.occlusionHzbHeight != occlusion.hzbPendingHeight) {
+                occlusion.hzbValid = false;
+                return false;
+            }
+
+            std::vector<unsigned char> rgbaPixels;
+            const auto readbackStart = std::chrono::steady_clock::now();
+            if (!baseSystem.renderBackend->readTexture2DRgba(
+                    renderer.occlusionHzbTex,
+                    occlusion.hzbPendingWidth,
+                    occlusion.hzbPendingHeight,
+                    rgbaPixels
+                )) {
+                occlusion.hzbValid = false;
+                return false;
+            }
+            occlusion.hzbReadbackMs = std::chrono::duration<float, std::milli>(
+                std::chrono::steady_clock::now() - readbackStart
+            ).count();
+
+            const auto buildStart = std::chrono::steady_clock::now();
+            buildDepthPyramidFromPixels(
+                occlusion,
+                occlusion.hzbPendingWidth,
+                occlusion.hzbPendingHeight,
+                rgbaPixels
+            );
+            occlusion.hzbBuildMs = std::chrono::duration<float, std::milli>(
+                std::chrono::steady_clock::now() - buildStart
+            ).count();
+            occlusion.hzbViewProj = occlusion.hzbPendingViewProj;
+            occlusion.hzbCameraPosition = occlusion.hzbPendingCameraPosition;
+            occlusion.lastReadbackFrame = baseSystem.frameIndex;
+            return occlusion.hzbValid;
         }
 
         bool captureOcclusionDepth(BaseSystem& baseSystem,
@@ -456,6 +531,8 @@ namespace OcclusionCullingSystemLogic {
             appendFarClusters(baseSystem.farTerrain->handoffRenderClusters);
         }
 
+        readPendingOcclusionDepth(baseSystem, occlusion);
+
         occlusion.hzbOccluderClusterCount = occluders.size();
         if (candidates.empty() || occluders.empty()) {
             occlusion.visibleSectionCount = candidates.size();
@@ -464,19 +541,122 @@ namespace OcclusionCullingSystemLogic {
             return;
         }
 
+        const float maxReuseCameraMove = std::max(
+            0.0f,
+            getRegistryFloat(
+                baseSystem,
+                "OcclusionCullingMaxReuseCameraMove",
+                std::max(2.0f, static_cast<float>(sectionSize) * 0.5f)
+            )
+        );
+        const glm::vec3 reuseDelta = occlusion.lastCameraPosition - occlusion.hzbCameraPosition;
+        const bool reuseCameraCloseEnough = occlusion.debugFrozen
+            || maxReuseCameraMove <= 0.0f
+            || glm::dot(reuseDelta, reuseDelta) <= maxReuseCameraMove * maxReuseCameraMove;
+        const bool hzbUsable = occlusion.hzbValid
+            && !occlusion.hzbMipLevels.empty()
+            && !occlusion.hzbMipSizes.empty()
+            && reuseCameraCloseEnough;
+        const float depthBias = glm::clamp(
+            getRegistryFloat(baseSystem, "OcclusionCullingDepthBias", 0.01f),
+            0.0f,
+            0.10f
+        );
+        const int screenPaddingPixels = std::max(
+            0,
+            std::min(8, getRegistryInt(baseSystem, "OcclusionCullingScreenPaddingPixels", 1))
+        );
+
+        if (hzbUsable) {
+            const glm::ivec2 querySize = occlusion.hzbMipSizes.front();
+            const auto queryStart = std::chrono::steady_clock::now();
+            for (const ClusterCandidate& candidate : candidates) {
+                const VoxelRenderCluster* cluster = candidate.cluster;
+                if (!cluster) continue;
+                occlusion.testedSectionCount += 1;
+                if (candidate.isFar) {
+                    occlusion.farTestedCount += 1;
+                }
+
+                const glm::vec3 center = 0.5f * (cluster->minBounds + cluster->maxBounds);
+                const glm::vec3 delta = center - occlusion.lastCameraPosition;
+                const float distanceSq = glm::dot(delta, delta);
+                if (distanceSq <= keepNearRadiusSq) {
+                    occlusion.visibleSectionCount += 1;
+                    occlusion.nearKeptSectionCount += 1;
+                    continue;
+                }
+
+                int minX = 0;
+                int maxX = 0;
+                int minY = 0;
+                int maxY = 0;
+                float nearestDepth = 1.0f;
+                if (!projectAabbToCapture(
+                        occlusion.hzbViewProj,
+                        cluster->minBounds,
+                        cluster->maxBounds,
+                        querySize.x,
+                        querySize.y,
+                        minX,
+                        maxX,
+                        minY,
+                        maxY,
+                        nearestDepth
+                    )) {
+                    occlusion.visibleSectionCount += 1;
+                    continue;
+                }
+
+                minX = std::max(0, minX - screenPaddingPixels);
+                maxX = std::min(querySize.x - 1, maxX + screenPaddingPixels);
+                minY = std::max(0, minY - screenPaddingPixels);
+                maxY = std::min(querySize.y - 1, maxY + screenPaddingPixels);
+
+                if (queryDepthPyramidOcclusion(occlusion, minX, maxX, minY, maxY, nearestDepth, depthBias)) {
+                    occlusion.occludedSectionCount += 1;
+                    if (candidate.isFar) {
+                        occlusion.farOccludedCount += 1;
+                    }
+                    occlusion.occludedClusterBounds.insert(makeOcclusionAabbKey(cluster->minBounds, cluster->maxBounds));
+                } else {
+                    occlusion.visibleSectionCount += 1;
+                }
+            }
+            occlusion.hzbQueryMs = std::chrono::duration<float, std::milli>(
+                std::chrono::steady_clock::now() - queryStart
+            ).count();
+        } else {
+            occlusion.visibleSectionCount = candidates.size();
+        }
+
+        const int captureFrameInterval = std::max(
+            1,
+            getRegistryInt(baseSystem, "OcclusionCullingFrameInterval", 1)
+        );
+        const uint64_t framesSinceCapture = (baseSystem.frameIndex >= occlusion.lastCaptureFrame)
+            ? (baseSystem.frameIndex - occlusion.lastCaptureFrame)
+            : static_cast<uint64_t>(captureFrameInterval);
+        const bool neverCaptured = !occlusion.hzbValid
+            && !occlusion.hzbReadbackPending
+            && occlusion.lastCaptureFrame == 0;
+        const bool shouldCapture = !occlusion.hzbReadbackPending
+            && (neverCaptured || !hzbUsable || framesSinceCapture >= static_cast<uint64_t>(captureFrameInterval));
+
+        if (!shouldCapture) {
+            if (occlusion.debugFrozen) occlusion.frozenValid = true;
+            return;
+        }
+
         int captureWidth = 0;
         int captureHeight = 0;
         if (!ensureOcclusionRenderTarget(baseSystem, win, captureWidth, captureHeight)) {
-            occlusion.visibleSectionCount = candidates.size();
-            occlusion.hzbValid = false;
             if (occlusion.debugFrozen) occlusion.frozenValid = true;
             return;
         }
 
         const auto captureStart = std::chrono::steady_clock::now();
         if (!captureOcclusionDepth(baseSystem, viewProj, occluders, captureWidth, captureHeight)) {
-            occlusion.visibleSectionCount = candidates.size();
-            occlusion.hzbValid = false;
             if (occlusion.debugFrozen) occlusion.frozenValid = true;
             return;
         }
@@ -484,81 +664,12 @@ namespace OcclusionCullingSystemLogic {
             std::chrono::steady_clock::now() - captureStart
         ).count();
 
-        std::vector<unsigned char> rgbaPixels;
-        const auto readbackStart = std::chrono::steady_clock::now();
-        if (!baseSystem.renderBackend->readTexture2DRgba(
-                baseSystem.renderer->occlusionHzbTex,
-                captureWidth,
-                captureHeight,
-                rgbaPixels
-            )) {
-            occlusion.visibleSectionCount = candidates.size();
-            occlusion.hzbValid = false;
-            if (occlusion.debugFrozen) occlusion.frozenValid = true;
-            return;
-        }
-        occlusion.hzbReadbackMs = std::chrono::duration<float, std::milli>(
-            std::chrono::steady_clock::now() - readbackStart
-        ).count();
-
-        const auto buildStart = std::chrono::steady_clock::now();
-        buildDepthPyramidFromPixels(occlusion, captureWidth, captureHeight, rgbaPixels);
-        occlusion.hzbBuildMs = std::chrono::duration<float, std::milli>(
-            std::chrono::steady_clock::now() - buildStart
-        ).count();
-
-        const auto queryStart = std::chrono::steady_clock::now();
-        for (const ClusterCandidate& candidate : candidates) {
-            const VoxelRenderCluster* cluster = candidate.cluster;
-            if (!cluster) continue;
-            occlusion.testedSectionCount += 1;
-            if (candidate.isFar) {
-                occlusion.farTestedCount += 1;
-            }
-
-            const glm::vec3 center = 0.5f * (cluster->minBounds + cluster->maxBounds);
-            const glm::vec3 delta = center - occlusion.lastCameraPosition;
-            const float distanceSq = glm::dot(delta, delta);
-            if (distanceSq <= keepNearRadiusSq) {
-                occlusion.visibleSectionCount += 1;
-                occlusion.nearKeptSectionCount += 1;
-                continue;
-            }
-
-            int minX = 0;
-            int maxX = 0;
-            int minY = 0;
-            int maxY = 0;
-            float nearestDepth = 1.0f;
-            if (!projectAabbToCapture(
-                    viewProj,
-                    cluster->minBounds,
-                    cluster->maxBounds,
-                    captureWidth,
-                    captureHeight,
-                    minX,
-                    maxX,
-                    minY,
-                    maxY,
-                    nearestDepth
-                )) {
-                occlusion.visibleSectionCount += 1;
-                continue;
-            }
-
-            if (queryDepthPyramidOcclusion(occlusion, minX, maxX, minY, maxY, nearestDepth)) {
-                occlusion.occludedSectionCount += 1;
-                if (candidate.isFar) {
-                    occlusion.farOccludedCount += 1;
-                }
-                occlusion.occludedClusterBounds.insert(makeOcclusionAabbKey(cluster->minBounds, cluster->maxBounds));
-            } else {
-                occlusion.visibleSectionCount += 1;
-            }
-        }
-        occlusion.hzbQueryMs = std::chrono::duration<float, std::milli>(
-            std::chrono::steady_clock::now() - queryStart
-        ).count();
+        occlusion.hzbReadbackPending = true;
+        occlusion.hzbPendingWidth = captureWidth;
+        occlusion.hzbPendingHeight = captureHeight;
+        occlusion.hzbPendingViewProj = viewProj;
+        occlusion.hzbPendingCameraPosition = occlusion.lastCameraPosition;
+        occlusion.lastCaptureFrame = baseSystem.frameIndex;
 
         if (occlusion.debugFrozen) {
             occlusion.frozenValid = true;

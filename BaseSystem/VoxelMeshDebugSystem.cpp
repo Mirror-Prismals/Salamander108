@@ -1,9 +1,11 @@
 #pragma once
 
 #include "Host/PlatformInput.h"
+#include <cmath>
 #include <chrono>
 #include <algorithm>
 #include <iostream>
+#include <limits>
 #include <vector>
 
 namespace RenderInitSystemLogic {
@@ -11,6 +13,63 @@ namespace RenderInitSystemLogic {
     bool getRegistryBool(const BaseSystem& baseSystem, const std::string& key, bool fallback);
 }
 namespace VoxelMeshingSystemLogic {
+    void GetVoxelMeshingRuntimePerfStats(size_t& pendingJobs,
+                                         size_t& activeJobs,
+                                         size_t& requestedJobs,
+                                         size_t& completedBuffered,
+                                         size_t& dirtySections,
+                                         size_t& candidates,
+                                         size_t& missingSections,
+                                         size_t& queued,
+                                         size_t& snapshots,
+                                         size_t& completedPopped,
+                                         size_t& completedAccepted,
+                                         size_t& completedDropped,
+                                         size_t& outstandingBlocked,
+                                         float& frameSnapshotMs,
+                                         float& lastSnapshotMs,
+                                         int& lastSnapshotY,
+                                         int& lastSnapshotNonAir,
+                                         uint64_t& totalQueued,
+                                         uint64_t& totalCompleted,
+                                         uint64_t& totalDropped,
+                                         uint64_t& totalSnapshots,
+                                         uint64_t& totalOutstandingBlocked);
+}
+namespace VoxelMeshUploadSystemLogic {
+    void GetVoxelMeshBuildPerfStats(uint64_t& buildCount,
+                                    uint64_t& greedyBuiltCount,
+                                    float& lastPrepareMs,
+                                    float& lastGreedyMs,
+                                    float& lastFallbackMs,
+                                    float& avgPrepareMs,
+                                    float& avgGreedyMs,
+                                    float& avgFallbackMs,
+                                    float& maxPrepareMs,
+                                    float& maxGreedyMs,
+                                    float& maxFallbackMs,
+                                    int& lastSectionSize,
+                                    int& lastSectionY,
+                                    int& lastNonAir,
+                                    size_t& lastGreedyFaces,
+                                    size_t& lastFallbackFaces,
+                                    size_t& lastFallbackCellsVisited,
+                                    size_t& lastFallbackRenderableBlocks,
+                                    size_t& lastOpaqueFaces,
+                                    size_t& lastAlphaFaces,
+                                    size_t& lastWaterSurfaceFaces,
+                                    size_t& lastWaterBodyFaces);
+    void GetVoxelMeshUploadPerfStats(float& lastUploadMs,
+                                     size_t& lastUploadedSections,
+                                     size_t& lastPendingBefore,
+                                     size_t& lastPendingAfter,
+                                     size_t& lastCandidates,
+                                     size_t& lastUploadedClusters,
+                                     int& lastCapSections,
+                                     float& lastBudgetMs,
+                                     bool& lastBootstrapActive,
+                                     uint64_t& totalUploadedSections,
+                                     uint64_t& totalUploadedClusters);
 }
 namespace TerrainSystemLogic {
     void GetVoxelStreamingPerfStats(size_t& pending,
@@ -55,9 +114,12 @@ namespace VoxelMeshDebugSystemLogic {
 
         static auto lastPerfLog = std::chrono::steady_clock::now();
         auto now = std::chrono::steady_clock::now();
-        const bool voxelPerfLogEnabled = ::RenderInitSystemLogic::getRegistryBool(
-            baseSystem, "voxelPerfLogEnabled", true
-        );
+            const bool voxelPerfLogEnabled = ::RenderInitSystemLogic::getRegistryBool(
+                baseSystem, "voxelPerfLogEnabled", true
+            );
+            const bool nearBinaryGreedyEnabled = ::RenderInitSystemLogic::getRegistryBool(
+                baseSystem, "voxelNearBinaryGreedyEnabled", true
+            );
         const int voxelPerfLogIntervalMs = std::max(
             250,
             ::RenderInitSystemLogic::getRegistryInt(baseSystem, "voxelPerfLogIntervalMs", 1000)
@@ -116,6 +178,145 @@ namespace VoxelMeshDebugSystemLogic {
                 treeBackfillRan,
                 treeMs
             );
+            struct VerticalStats {
+                size_t count = 0;
+                size_t belowFloor = 0;
+                size_t belowFloorMinus32 = 0;
+                int minSectionY = std::numeric_limits<int>::max();
+                int maxSectionY = std::numeric_limits<int>::min();
+            };
+            const int sectionSize = std::max(1, voxelWorld.sectionSize);
+            const int waterFloorY = (baseSystem.world && baseSystem.world->expanse.loaded)
+                ? static_cast<int>(std::floor(baseSystem.world->expanse.waterFloor))
+                : -96;
+            const int deepCutoffY = waterFloorY - 32;
+            auto addVertical = [&](VerticalStats& stats, const VoxelSectionKey& key, size_t weight = 1) {
+                if (weight == 0) return;
+                const int sectionBaseY = key.coord.y * sectionSize;
+                stats.count += weight;
+                if (sectionBaseY <= waterFloorY) {
+                    stats.belowFloor += weight;
+                }
+                if (sectionBaseY <= deepCutoffY) {
+                    stats.belowFloorMinus32 += weight;
+                }
+                stats.minSectionY = std::min(stats.minSectionY, key.coord.y);
+                stats.maxSectionY = std::max(stats.maxSectionY, key.coord.y);
+            };
+            auto printVertical = [](const char* label, const VerticalStats& stats) {
+                const int minY = stats.count > 0 ? stats.minSectionY : 0;
+                const int maxY = stats.count > 0 ? stats.maxSectionY : 0;
+                std::cout << " " << label << "Count=" << stats.count
+                          << " " << label << "Range=" << minY << ".." << maxY
+                          << " " << label << "BelowFloor=" << stats.belowFloor
+                          << " " << label << "BelowFloorMinus32=" << stats.belowFloorMinus32;
+            };
+            VerticalStats desiredYStats;
+            VerticalStats generatedYStats;
+            VerticalStats sectionYStats;
+            VerticalStats renderableYStats;
+            VerticalStats meshYStats;
+            VerticalStats clusterYStats;
+            for (const auto& [key, section] : voxelWorld.sections) {
+                (void)section;
+                addVertical(sectionYStats, key);
+            }
+            if (baseSystem.voxelRender) {
+                for (const auto& [key, buffers] : baseSystem.voxelRender->renderBuffers) {
+                    (void)buffers;
+                    addVertical(meshYStats, key);
+                }
+                for (const auto& [key, clusters] : baseSystem.voxelRender->renderClusters) {
+                    addVertical(clusterYStats, key, clusters.size());
+                }
+            }
+
+            size_t meshPendingJobs = 0, meshActiveJobs = 0, meshRequestedJobs = 0, meshCompletedBuffered = 0;
+            size_t meshDirtySections = 0, meshCandidates = 0, meshMissingSections = 0, meshQueued = 0;
+            size_t meshSnapshots = 0, meshCompletedPopped = 0, meshCompletedAccepted = 0;
+            size_t meshCompletedDropped = 0, meshOutstandingBlocked = 0;
+            float meshFrameSnapshotMs = 0.0f, meshLastSnapshotMs = 0.0f;
+            int meshLastSnapshotY = 0, meshLastSnapshotNonAir = 0;
+            uint64_t meshTotalQueued = 0, meshTotalCompleted = 0, meshTotalDropped = 0;
+            uint64_t meshTotalSnapshots = 0, meshTotalOutstandingBlocked = 0;
+            VoxelMeshingSystemLogic::GetVoxelMeshingRuntimePerfStats(
+                meshPendingJobs,
+                meshActiveJobs,
+                meshRequestedJobs,
+                meshCompletedBuffered,
+                meshDirtySections,
+                meshCandidates,
+                meshMissingSections,
+                meshQueued,
+                meshSnapshots,
+                meshCompletedPopped,
+                meshCompletedAccepted,
+                meshCompletedDropped,
+                meshOutstandingBlocked,
+                meshFrameSnapshotMs,
+                meshLastSnapshotMs,
+                meshLastSnapshotY,
+                meshLastSnapshotNonAir,
+                meshTotalQueued,
+                meshTotalCompleted,
+                meshTotalDropped,
+                meshTotalSnapshots,
+                meshTotalOutstandingBlocked
+            );
+
+            uint64_t meshBuildCount = 0, meshGreedyBuiltCount = 0;
+            float meshLastPrepareMs = 0.0f, meshLastGreedyMs = 0.0f, meshLastFallbackMs = 0.0f;
+            float meshAvgPrepareMs = 0.0f, meshAvgGreedyMs = 0.0f, meshAvgFallbackMs = 0.0f;
+            float meshMaxPrepareMs = 0.0f, meshMaxGreedyMs = 0.0f, meshMaxFallbackMs = 0.0f;
+            int meshLastBuildSectionSize = 0, meshLastBuildY = 0, meshLastBuildNonAir = 0;
+            size_t meshLastGreedyFaces = 0, meshLastFallbackFaces = 0;
+            size_t meshLastFallbackCellsVisited = 0, meshLastFallbackRenderableBlocks = 0;
+            size_t meshLastOpaqueFaces = 0, meshLastAlphaFaces = 0;
+            size_t meshLastWaterSurfaceFaces = 0, meshLastWaterBodyFaces = 0;
+            VoxelMeshUploadSystemLogic::GetVoxelMeshBuildPerfStats(
+                meshBuildCount,
+                meshGreedyBuiltCount,
+                meshLastPrepareMs,
+                meshLastGreedyMs,
+                meshLastFallbackMs,
+                meshAvgPrepareMs,
+                meshAvgGreedyMs,
+                meshAvgFallbackMs,
+                meshMaxPrepareMs,
+                meshMaxGreedyMs,
+                meshMaxFallbackMs,
+                meshLastBuildSectionSize,
+                meshLastBuildY,
+                meshLastBuildNonAir,
+                meshLastGreedyFaces,
+                meshLastFallbackFaces,
+                meshLastFallbackCellsVisited,
+                meshLastFallbackRenderableBlocks,
+                meshLastOpaqueFaces,
+                meshLastAlphaFaces,
+                meshLastWaterSurfaceFaces,
+                meshLastWaterBodyFaces
+            );
+
+            float meshUploadLastMs = 0.0f, meshUploadBudgetMs = 0.0f;
+            size_t meshUploadLastSections = 0, meshUploadPendingBefore = 0, meshUploadPendingAfter = 0;
+            size_t meshUploadCandidates = 0, meshUploadClusters = 0;
+            int meshUploadCapSections = 0;
+            bool meshUploadBootstrapActive = false;
+            uint64_t meshUploadTotalSections = 0, meshUploadTotalClusters = 0;
+            VoxelMeshUploadSystemLogic::GetVoxelMeshUploadPerfStats(
+                meshUploadLastMs,
+                meshUploadLastSections,
+                meshUploadPendingBefore,
+                meshUploadPendingAfter,
+                meshUploadCandidates,
+                meshUploadClusters,
+                meshUploadCapSections,
+                meshUploadBudgetMs,
+                meshUploadBootstrapActive,
+                meshUploadTotalSections,
+                meshUploadTotalClusters
+            );
             size_t lifeDesired = 0;
             size_t lifeBaseQueued = 0;
             size_t lifeBaseInProgress = 0;
@@ -127,6 +328,15 @@ namespace VoxelMeshDebugSystemLogic {
             size_t lifeRenderable = 0;
             size_t lifeReadyNoMesh = 0;
             for (const auto& [key, state] : voxelWorld.chunkStates) {
+                if (state.desired) {
+                    addVertical(desiredYStats, key);
+                }
+                if (state.generated) {
+                    addVertical(generatedYStats, key);
+                }
+                if (state.isRenderable()) {
+                    addVertical(renderableYStats, key);
+                }
                 if (!state.desired) continue;
                 lifeDesired += 1;
                 switch (state.stage) {
@@ -198,17 +408,73 @@ namespace VoxelMeshDebugSystemLogic {
                       << " wireframeNearFaces=" << (baseSystem.voxelRender ? baseSystem.voxelRender->wireframeOverlayNearFaces : 0)
                       << " wireframeFarFaces=" << (baseSystem.voxelRender ? baseSystem.voxelRender->wireframeOverlayFarFaces : 0)
                       << " wireframeSegments=" << (baseSystem.voxelRender ? baseSystem.voxelRender->wireframeOverlayLineSegments : 0)
-                      << " lifeDesired=" << lifeDesired
-                      << " lifeBaseQ=" << lifeBaseQueued
-                      << " lifeBaseIP=" << lifeBaseInProgress
+	                      << " lifeDesired=" << lifeDesired
+	                      << " lifeBaseQ=" << lifeBaseQueued
+	                      << " lifeBaseIP=" << lifeBaseInProgress
                       << " lifeBaseGen=" << lifeBaseGenerated
                       << " lifeFeatQ=" << lifeFeatureQueued
                       << " lifeFeatIP=" << lifeFeatureInProgress
-                      << " lifeSurfPend=" << lifeSurfacePending
+	                      << " lifeSurfPend=" << lifeSurfacePending
                       << " lifeReady=" << lifeReady
                       << " lifeRenderable=" << lifeRenderable
                       << " lifeReadyNoMesh=" << lifeReadyNoMesh;
-            if (baseSystem.farTerrain) {
+            std::cout << " yFloor=" << waterFloorY
+                      << " yDeepCutoff=" << deepCutoffY;
+            printVertical("desiredY", desiredYStats);
+            printVertical("generatedY", generatedYStats);
+            printVertical("sectionY", sectionYStats);
+            printVertical("renderableY", renderableYStats);
+            printVertical("meshY", meshYStats);
+            printVertical("clusterY", clusterYStats);
+            std::cout << " meshJobs=" << meshPendingJobs << "/" << meshActiveJobs
+                      << "/" << meshRequestedJobs << "/" << meshCompletedBuffered
+                      << " meshFrame=dirty:" << meshDirtySections
+                      << ",cand:" << meshCandidates
+                      << ",missing:" << meshMissingSections
+                      << ",queued:" << meshQueued
+                      << ",snap:" << meshSnapshots
+                      << ",popped:" << meshCompletedPopped
+                      << ",accepted:" << meshCompletedAccepted
+                      << ",dropped:" << meshCompletedDropped
+                      << ",blocked:" << meshOutstandingBlocked
+                      << " meshSnapMs=" << meshFrameSnapshotMs << "/" << meshLastSnapshotMs
+                      << " meshLastSnapY=" << meshLastSnapshotY
+                      << " meshLastSnapNonAir=" << meshLastSnapshotNonAir
+                      << " meshTotals=q:" << meshTotalQueued
+                      << ",done:" << meshTotalCompleted
+                      << ",drop:" << meshTotalDropped
+                      << ",snap:" << meshTotalSnapshots
+                      << ",blocked:" << meshTotalOutstandingBlocked
+	                      << " meshBuilds=" << meshBuildCount << "/" << meshGreedyBuiltCount
+                      << " meshGreedyEnabled=" << (nearBinaryGreedyEnabled ? 1 : 0)
+	                      << " meshBuildMs=" << meshLastPrepareMs << "/" << meshAvgPrepareMs
+                      << "/" << meshMaxPrepareMs
+                      << " meshGreedyMs=" << meshLastGreedyMs << "/" << meshAvgGreedyMs
+                      << "/" << meshMaxGreedyMs
+                      << " meshFallbackMs=" << meshLastFallbackMs << "/" << meshAvgFallbackMs
+                      << "/" << meshMaxFallbackMs
+                      << " meshLastBuild=size:" << meshLastBuildSectionSize
+                      << ",y:" << meshLastBuildY
+                      << ",nonAir:" << meshLastBuildNonAir
+                      << " meshFaces=greedy:" << meshLastGreedyFaces
+                      << ",fallback:" << meshLastFallbackFaces
+                      << ",opaque:" << meshLastOpaqueFaces
+                      << ",alpha:" << meshLastAlphaFaces
+                      << ",waterSurface:" << meshLastWaterSurfaceFaces
+                      << ",waterBody:" << meshLastWaterBodyFaces
+                      << " meshFallbackScan=" << meshLastFallbackCellsVisited
+                      << "/" << meshLastFallbackRenderableBlocks
+                      << " meshUpload=uploaded:" << meshUploadLastSections
+                      << ",pending:" << meshUploadPendingBefore << "->" << meshUploadPendingAfter
+                      << ",cand:" << meshUploadCandidates
+                      << ",clusters:" << meshUploadClusters
+                      << ",ms:" << meshUploadLastMs
+                      << ",cap:" << meshUploadCapSections
+                      << ",budget:" << meshUploadBudgetMs
+                      << ",bootstrap:" << (meshUploadBootstrapActive ? 1 : 0)
+                      << ",total:" << meshUploadTotalSections
+                      << "/" << meshUploadTotalClusters;
+	            if (baseSystem.farTerrain) {
                 const FarTerrainClipmapContext& far = *baseSystem.farTerrain;
                 std::cout << " farEnabled=" << far.enabled
                           << " farInitialized=" << far.initialized

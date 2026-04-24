@@ -1206,6 +1206,16 @@ namespace TerrainSystemLogic {
                 const int minSectionY = g_voxelDesiredRebuild.minSectionY;
                 const int maxSectionY = g_voxelDesiredRebuild.maxSectionY;
                 const int tierSurfaceCenterY = g_voxelDesiredRebuild.tierSurfaceCenterY;
+                const int treeVerticalHeadroomBlocks = std::max(
+                    0,
+                    getRegistryInt(
+                        baseSystem,
+                        "TreeGenerationVerticalHeadroom",
+                        getRegistryInt(baseSystem, "ExpanseVerticalHeadroom", 48)
+                    )
+                );
+                const int treeVerticalHeadroomSections =
+                    (treeVerticalHeadroomBlocks + size * scale - 1) / (size * scale);
 
                 {
                     auto enqueueDesiredSection = [&](const glm::ivec3& sectionCoord, int sy) {
@@ -1230,7 +1240,7 @@ namespace TerrainSystemLogic {
                            && g_voxelDesiredRebuild.orderCursor < g_voxelDesiredRebuild.sectionOrderXZ.size()) {
                         const glm::ivec3 sectionCoord = g_voxelDesiredRebuild.sectionOrderXZ[g_voxelDesiredRebuild.orderCursor++];
                         std::vector<int> yOrder;
-                        yOrder.reserve(5);
+                        yOrder.reserve(static_cast<size_t>(5 * (treeVerticalHeadroomSections + 1)));
                         auto pushUniqueInRange = [&](int sy) {
                             if (sy < minSectionY || sy > maxSectionY) return;
                             for (int existing : yOrder) {
@@ -1257,6 +1267,9 @@ namespace TerrainSystemLogic {
                                 : static_cast<int>(std::floor(cfg.waterSurface));
                             const int surfaceSectionY = floorDivInt(targetY, scale * size);
                             pushUniqueInRange(surfaceSectionY);
+                            for (int headroom = 1; headroom <= treeVerticalHeadroomSections; ++headroom) {
+                                pushUniqueInRange(surfaceSectionY + headroom);
+                            }
                         }
                         if (unifiedDepthsEnabled && g_verticalDomainMode == 2) {
                             const int unifiedTopSectionY = floorDivInt(streamPortalY - 1, scale * size);

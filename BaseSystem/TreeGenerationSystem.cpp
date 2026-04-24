@@ -2192,7 +2192,7 @@ namespace TreeGenerationSystemLogic {
             }
 
             bool modified = false;
-            bool unresolvedDependencies = progress.unresolvedDependencies;
+            bool unresolvedDependencies = false;
             std::unordered_set<glm::ivec3, IVec3Hash> touchedSections;
             const int sectionSize = sectionIt->second.size;
             const glm::ivec3 sectionCoord = key.coord;
@@ -2447,6 +2447,17 @@ namespace TreeGenerationSystemLogic {
                                     continue;
                                 }
 
+                                if (!arePineTreeSectionsReady(
+                                        sectionSize,
+                                        tierX,
+                                        groundY,
+                                        tierZ,
+                                        treeSpec)) {
+                                    unresolvedDependencies = true;
+                                    tierX += 1;
+                                    continue;
+                                }
+
                                 if (!trunkColumnCanExist(voxelWorld,
                                                          sectionTier,
                                                          sectionCoord,
@@ -2501,6 +2512,18 @@ namespace TreeGenerationSystemLogic {
                                 const int bareTreeMinY = groundY + 1;
                                 const int bareTreeMaxY = groundY + bareTrunkHeight + 2;
                                 if (!sectionRangeIntersectsY(minY, maxY, bareTreeMinY, bareTreeMaxY)) {
+                                    tierX += 1;
+                                    continue;
+                                }
+
+                                if (!areBareTreeSectionsReady(
+                                        sectionSize,
+                                        tierX,
+                                        groundY,
+                                        tierZ,
+                                        bareTrunkHeight,
+                                        bareSeed)) {
+                                    unresolvedDependencies = true;
                                     tierX += 1;
                                     continue;
                                 }
@@ -2569,6 +2592,18 @@ namespace TreeGenerationSystemLogic {
                                 const int jungleTreeMinY = groundY + 1;
                                 const int jungleTreeMaxY = groundY + jungleTrunkHeight + 2 + jungleCanopyRadius;
                                 if (!sectionRangeIntersectsY(minY, maxY, jungleTreeMinY, jungleTreeMaxY)) {
+                                    tierX += 1;
+                                    continue;
+                                }
+
+                                if (!areJungleTreeSectionsReady(
+                                        sectionSize,
+                                        tierX,
+                                        groundY,
+                                        tierZ,
+                                        jungleTrunkHeight,
+                                        jungleTreeCanopyRadius)) {
+                                    unresolvedDependencies = true;
                                     tierX += 1;
                                     continue;
                                 }

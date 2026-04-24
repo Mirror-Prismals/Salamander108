@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -404,6 +405,135 @@ namespace VoxelMeshUploadSystemLogic {
                 }
             }
         };
+
+        struct MeshBuildPerfStats {
+            uint64_t buildCount = 0;
+            uint64_t greedyBuiltCount = 0;
+            double totalPrepareMs = 0.0;
+            double totalGreedyMs = 0.0;
+            double totalFallbackMs = 0.0;
+            float lastPrepareMs = 0.0f;
+            float lastGreedyMs = 0.0f;
+            float lastFallbackMs = 0.0f;
+            float maxPrepareMs = 0.0f;
+            float maxGreedyMs = 0.0f;
+            float maxFallbackMs = 0.0f;
+            int lastSectionSize = 0;
+            int lastSectionY = 0;
+            int lastNonAir = 0;
+            size_t lastGreedyFaces = 0;
+            size_t lastFallbackFaces = 0;
+            size_t lastFallbackCellsVisited = 0;
+            size_t lastFallbackRenderableBlocks = 0;
+            size_t lastOpaqueFaces = 0;
+            size_t lastAlphaFaces = 0;
+            size_t lastWaterSurfaceFaces = 0;
+            size_t lastWaterBodyFaces = 0;
+        };
+
+        struct MeshUploadPerfStats {
+            float lastUploadMs = 0.0f;
+            size_t lastUploadedSections = 0;
+            size_t lastPendingBefore = 0;
+            size_t lastPendingAfter = 0;
+            size_t lastCandidates = 0;
+            size_t lastUploadedClusters = 0;
+            int lastCapSections = 0;
+            float lastBudgetMs = 0.0f;
+            bool lastBootstrapActive = false;
+            uint64_t totalUploadedSections = 0;
+            uint64_t totalUploadedClusters = 0;
+        };
+
+        std::mutex g_meshBuildPerfMutex;
+        MeshBuildPerfStats g_meshBuildPerfStats;
+        std::mutex g_meshUploadPerfMutex;
+        MeshUploadPerfStats g_meshUploadPerfStats;
+
+        size_t countFaceInstances(const std::array<std::vector<FaceInstanceRenderData>, 6>& faces) {
+            size_t total = 0;
+            for (const auto& faceBucket : faces) {
+                total += faceBucket.size();
+            }
+            return total;
+        }
+
+        size_t countWaterFaceInstances(const std::array<std::vector<WaterFaceInstanceRenderData>, 6>& faces) {
+            size_t total = 0;
+            for (const auto& faceBucket : faces) {
+                total += faceBucket.size();
+            }
+            return total;
+        }
+
+        size_t countPreparedFaces(const PreparedVoxelSectionMesh& mesh) {
+            return countFaceInstances(mesh.opaqueFaces)
+                + countFaceInstances(mesh.alphaFaces)
+                + countWaterFaceInstances(mesh.waterSurfaceFaces)
+                + countWaterFaceInstances(mesh.waterBodyFaces);
+        }
+
+        void recordMeshBuildPerf(const VoxelMeshingSnapshot& snapshot,
+                                 bool binaryGreedyBuilt,
+                                 float prepareMs,
+                                 float greedyMs,
+                                 float fallbackMs,
+                                 size_t greedyFaces,
+                                 size_t fallbackFaces,
+                                 size_t fallbackCellsVisited,
+                                 size_t fallbackRenderableBlocks,
+                                 const PreparedVoxelSectionMesh& mesh) {
+            std::lock_guard<std::mutex> lock(g_meshBuildPerfMutex);
+            MeshBuildPerfStats& stats = g_meshBuildPerfStats;
+            stats.buildCount += 1;
+            if (binaryGreedyBuilt) {
+                stats.greedyBuiltCount += 1;
+            }
+            stats.totalPrepareMs += static_cast<double>(prepareMs);
+            stats.totalGreedyMs += static_cast<double>(greedyMs);
+            stats.totalFallbackMs += static_cast<double>(fallbackMs);
+            stats.lastPrepareMs = prepareMs;
+            stats.lastGreedyMs = greedyMs;
+            stats.lastFallbackMs = fallbackMs;
+            stats.maxPrepareMs = std::max(stats.maxPrepareMs, prepareMs);
+            stats.maxGreedyMs = std::max(stats.maxGreedyMs, greedyMs);
+            stats.maxFallbackMs = std::max(stats.maxFallbackMs, fallbackMs);
+            stats.lastSectionSize = snapshot.sectionSize;
+            stats.lastSectionY = snapshot.sectionKey.coord.y;
+            stats.lastNonAir = snapshot.nonAirCount;
+            stats.lastGreedyFaces = greedyFaces;
+            stats.lastFallbackFaces = fallbackFaces;
+            stats.lastFallbackCellsVisited = fallbackCellsVisited;
+            stats.lastFallbackRenderableBlocks = fallbackRenderableBlocks;
+            stats.lastOpaqueFaces = countFaceInstances(mesh.opaqueFaces);
+            stats.lastAlphaFaces = countFaceInstances(mesh.alphaFaces);
+            stats.lastWaterSurfaceFaces = countWaterFaceInstances(mesh.waterSurfaceFaces);
+            stats.lastWaterBodyFaces = countWaterFaceInstances(mesh.waterBodyFaces);
+        }
+
+        void recordMeshUploadPerf(float uploadMs,
+                                  size_t uploadedSections,
+                                  size_t pendingBefore,
+                                  size_t pendingAfter,
+                                  size_t candidates,
+                                  size_t uploadedClusters,
+                                  int capSections,
+                                  float budgetMs,
+                                  bool bootstrapActive) {
+            std::lock_guard<std::mutex> lock(g_meshUploadPerfMutex);
+            MeshUploadPerfStats& stats = g_meshUploadPerfStats;
+            stats.lastUploadMs = uploadMs;
+            stats.lastUploadedSections = uploadedSections;
+            stats.lastPendingBefore = pendingBefore;
+            stats.lastPendingAfter = pendingAfter;
+            stats.lastCandidates = candidates;
+            stats.lastUploadedClusters = uploadedClusters;
+            stats.lastCapSections = capSections;
+            stats.lastBudgetMs = budgetMs;
+            stats.lastBootstrapActive = bootstrapActive;
+            stats.totalUploadedSections += static_cast<uint64_t>(uploadedSections);
+            stats.totalUploadedClusters += static_cast<uint64_t>(uploadedClusters);
+        }
 
         int binaryGreedyVoxelIndex(int x, int y, int z) {
             return z
@@ -1236,13 +1366,109 @@ namespace VoxelMeshUploadSystemLogic {
         return buildPrototypeRenderTraits(baseSystem, prototypes);
     }
 
+    void GetVoxelMeshBuildPerfStats(uint64_t& buildCount,
+                                    uint64_t& greedyBuiltCount,
+                                    float& lastPrepareMs,
+                                    float& lastGreedyMs,
+                                    float& lastFallbackMs,
+                                    float& avgPrepareMs,
+                                    float& avgGreedyMs,
+                                    float& avgFallbackMs,
+                                    float& maxPrepareMs,
+                                    float& maxGreedyMs,
+                                    float& maxFallbackMs,
+                                    int& lastSectionSize,
+                                    int& lastSectionY,
+                                    int& lastNonAir,
+                                    size_t& lastGreedyFaces,
+                                    size_t& lastFallbackFaces,
+                                    size_t& lastFallbackCellsVisited,
+                                    size_t& lastFallbackRenderableBlocks,
+                                    size_t& lastOpaqueFaces,
+                                    size_t& lastAlphaFaces,
+                                    size_t& lastWaterSurfaceFaces,
+                                    size_t& lastWaterBodyFaces) {
+        std::lock_guard<std::mutex> lock(g_meshBuildPerfMutex);
+        const MeshBuildPerfStats& stats = g_meshBuildPerfStats;
+        buildCount = stats.buildCount;
+        greedyBuiltCount = stats.greedyBuiltCount;
+        lastPrepareMs = stats.lastPrepareMs;
+        lastGreedyMs = stats.lastGreedyMs;
+        lastFallbackMs = stats.lastFallbackMs;
+        avgPrepareMs = stats.buildCount > 0
+            ? static_cast<float>(stats.totalPrepareMs / static_cast<double>(stats.buildCount))
+            : 0.0f;
+        avgGreedyMs = stats.buildCount > 0
+            ? static_cast<float>(stats.totalGreedyMs / static_cast<double>(stats.buildCount))
+            : 0.0f;
+        avgFallbackMs = stats.buildCount > 0
+            ? static_cast<float>(stats.totalFallbackMs / static_cast<double>(stats.buildCount))
+            : 0.0f;
+        maxPrepareMs = stats.maxPrepareMs;
+        maxGreedyMs = stats.maxGreedyMs;
+        maxFallbackMs = stats.maxFallbackMs;
+        lastSectionSize = stats.lastSectionSize;
+        lastSectionY = stats.lastSectionY;
+        lastNonAir = stats.lastNonAir;
+        lastGreedyFaces = stats.lastGreedyFaces;
+        lastFallbackFaces = stats.lastFallbackFaces;
+        lastFallbackCellsVisited = stats.lastFallbackCellsVisited;
+        lastFallbackRenderableBlocks = stats.lastFallbackRenderableBlocks;
+        lastOpaqueFaces = stats.lastOpaqueFaces;
+        lastAlphaFaces = stats.lastAlphaFaces;
+        lastWaterSurfaceFaces = stats.lastWaterSurfaceFaces;
+        lastWaterBodyFaces = stats.lastWaterBodyFaces;
+    }
+
+    void GetVoxelMeshUploadPerfStats(float& lastUploadMs,
+                                     size_t& lastUploadedSections,
+                                     size_t& lastPendingBefore,
+                                     size_t& lastPendingAfter,
+                                     size_t& lastCandidates,
+                                     size_t& lastUploadedClusters,
+                                     int& lastCapSections,
+                                     float& lastBudgetMs,
+                                     bool& lastBootstrapActive,
+                                     uint64_t& totalUploadedSections,
+                                     uint64_t& totalUploadedClusters) {
+        std::lock_guard<std::mutex> lock(g_meshUploadPerfMutex);
+        const MeshUploadPerfStats& stats = g_meshUploadPerfStats;
+        lastUploadMs = stats.lastUploadMs;
+        lastUploadedSections = stats.lastUploadedSections;
+        lastPendingBefore = stats.lastPendingBefore;
+        lastPendingAfter = stats.lastPendingAfter;
+        lastCandidates = stats.lastCandidates;
+        lastUploadedClusters = stats.lastUploadedClusters;
+        lastCapSections = stats.lastCapSections;
+        lastBudgetMs = stats.lastBudgetMs;
+        lastBootstrapActive = stats.lastBootstrapActive;
+        totalUploadedSections = stats.totalUploadedSections;
+        totalUploadedClusters = stats.totalUploadedClusters;
+    }
+
     bool PrepareVoxelSectionMesh(const VoxelMeshingSnapshot& snapshot,
                                  const std::vector<VoxelMeshingPrototypeTraits>& prototypeTraits,
                                  PreparedVoxelSectionMesh& outMesh) {
+        const auto prepareStart = std::chrono::steady_clock::now();
         outMesh = {};
         outMesh.dirtyTicket = snapshot.dirtyTicket;
         outMesh.usesTexturedFaceBuffers = true;
         if (snapshot.sectionSize <= 0 || snapshot.nonAirCount <= 0) {
+            const float prepareMs = std::chrono::duration<float, std::milli>(
+                std::chrono::steady_clock::now() - prepareStart
+            ).count();
+            recordMeshBuildPerf(
+                snapshot,
+                false,
+                prepareMs,
+                0.0f,
+                0.0f,
+                0,
+                0,
+                0,
+                0,
+                outMesh
+            );
             return true;
         }
 
@@ -1274,15 +1500,30 @@ namespace VoxelMeshUploadSystemLogic {
             }
         };
 
+        const size_t beforeGreedyFaces = countPreparedFaces(outMesh);
+        const auto greedyStart = std::chrono::steady_clock::now();
         const bool binaryGreedyBuilt = snapshot.binaryGreedyEnabled
             && appendBinaryGreedySectionFaces(snapshot, prototypeTraits, outMesh.opaqueFaces);
+        const float greedyMs = std::chrono::duration<float, std::milli>(
+            std::chrono::steady_clock::now() - greedyStart
+        ).count();
+        const size_t afterGreedyFaces = countPreparedFaces(outMesh);
+        const size_t greedyFaces = afterGreedyFaces >= beforeGreedyFaces
+            ? (afterGreedyFaces - beforeGreedyFaces)
+            : 0u;
 
+        size_t fallbackCellsVisited = 0;
+        size_t fallbackRenderableBlocks = 0;
+        const size_t beforeFallbackFaces = countPreparedFaces(outMesh);
+        const auto fallbackStart = std::chrono::steady_clock::now();
         for (int z = 0; z < snapshot.sectionSize; ++z) {
             for (int y = 0; y < snapshot.sectionSize; ++y) {
                 for (int x = 0; x < snapshot.sectionSize; ++x) {
+                    ++fallbackCellsVisited;
                     const uint32_t id = snapshotBlockAt(snapshot, x, y, z);
                     const VoxelMeshingPrototypeTraits& traits = traitsFor(id);
                     if (!traits.renderableBlock) continue;
+                    ++fallbackRenderableBlocks;
                     if (binaryGreedyBuilt && traits.binaryGreedyRenderable) continue;
 
                     const bool isLeaf = traits.leaf;
@@ -1517,8 +1758,30 @@ namespace VoxelMeshUploadSystemLogic {
                 }
             }
         }
+        const float fallbackMs = std::chrono::duration<float, std::milli>(
+            std::chrono::steady_clock::now() - fallbackStart
+        ).count();
+        const size_t afterFallbackFaces = countPreparedFaces(outMesh);
+        const size_t fallbackFaces = afterFallbackFaces >= beforeFallbackFaces
+            ? (afterFallbackFaces - beforeFallbackFaces)
+            : 0u;
 
         outMesh.builtWithFaceCulling = false;
+        const float prepareMs = std::chrono::duration<float, std::milli>(
+            std::chrono::steady_clock::now() - prepareStart
+        ).count();
+        recordMeshBuildPerf(
+            snapshot,
+            binaryGreedyBuilt,
+            prepareMs,
+            greedyMs,
+            fallbackMs,
+            greedyFaces,
+            fallbackFaces,
+            fallbackCellsVisited,
+            fallbackRenderableBlocks,
+            outMesh
+        );
         return true;
     }
 
@@ -1605,9 +1868,16 @@ namespace VoxelMeshUploadSystemLogic {
                 voxelWorld.clearSectionDirty(key);
             }
 
+            const size_t uploadPendingBeforeStats = voxelRender.renderBuffersDirty.size();
+            size_t uploadedSectionsStats = 0;
+            size_t uploadCandidatesStats = 0;
+            size_t uploadedClustersStats = 0;
+            int uploadCapSectionsStats = 0;
+            float uploadBudgetMsStats = 0.0f;
+            bool uploadBootstrapActiveStats = false;
+            float uploadElapsedMsStats = 0.0f;
             if (!voxelRender.renderBuffersDirty.empty()) {
                 auto start = std::chrono::steady_clock::now();
-                size_t uploadCount = 0;
                 int uploadMaxSections = std::max(
                     1,
                     ::RenderInitSystemLogic::getRegistryInt(baseSystem, "voxelUploadMaxSectionsPerFrame", 4)
@@ -1674,6 +1944,9 @@ namespace VoxelMeshUploadSystemLogic {
                         bootstrapMsCap
                     );
                 }
+                uploadCapSectionsStats = uploadMaxSections;
+                uploadBudgetMsStats = uploadMaxMs;
+                uploadBootstrapActiveStats = bootstrapActive;
 
                 struct Candidate {
                     VoxelSectionKey key;
@@ -1690,6 +1963,7 @@ namespace VoxelMeshUploadSystemLogic {
                         sectionDist2ToCamera(it->second, playerPos)
                     });
                 }
+                uploadCandidatesStats = candidates.size();
                 std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) {
                     if (a.dist2 != b.dist2) return a.dist2 < b.dist2;
                     if (a.key.coord.x != b.key.coord.x) return a.key.coord.x < b.key.coord.x;
@@ -1698,7 +1972,7 @@ namespace VoxelMeshUploadSystemLogic {
                 });
 
                 for (const Candidate& c : candidates) {
-                    if (static_cast<int>(uploadCount) >= uploadMaxSections) break;
+                    if (static_cast<int>(uploadedSectionsStats) >= uploadMaxSections) break;
                     const auto now = std::chrono::steady_clock::now();
                     const double elapsedMs = std::chrono::duration<double, std::milli>(now - start).count();
                     if (elapsedMs >= static_cast<double>(uploadMaxMs)) break;
@@ -1752,27 +2026,40 @@ namespace VoxelMeshUploadSystemLogic {
                             renderer,
                             renderBackend
                         );
+                        uploadedClustersStats += voxelRender.renderClusters[c.key].size();
                         voxelRender.wireframeMeshes[c.key] = std::move(preparedIt->second);
                         voxelRender.preparedMeshes.erase(preparedIt);
                         voxelRender.renderBuffersDirty.erase(c.key);
                         voxelWorld.clearSectionDirty(c.key);
-                        ++uploadCount;
+                        ++uploadedSectionsStats;
                     }
                 }
-                auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                const float elapsedMs = std::chrono::duration<float, std::milli>(
                     std::chrono::steady_clock::now() - start
                 ).count();
+                uploadElapsedMsStats = elapsedMs;
                 if (debugVoxelMeshingPerf) {
-                    std::cout << "RenderSystem: uploaded " << uploadCount
+                    std::cout << "RenderSystem: uploaded " << uploadedSectionsStats
                               << " prepared voxel section buffer(s) in "
                               << elapsedMs << " ms"
                               << " (pending " << voxelRender.renderBuffersDirty.size()
                               << ", cap " << uploadMaxSections
                               << ", budget " << uploadMaxMs << "ms"
-                              << ", bootstrap " << (bootstrapActive ? "on" : "off")
-                              << ")." << std::endl;
-                }
-            }
-        }
-    }
-}
+	                              << ", bootstrap " << (bootstrapActive ? "on" : "off")
+	                              << ")." << std::endl;
+	                }
+	            }
+            recordMeshUploadPerf(
+                uploadElapsedMsStats,
+                uploadedSectionsStats,
+                uploadPendingBeforeStats,
+                voxelRender.renderBuffersDirty.size(),
+                uploadCandidatesStats,
+                uploadedClustersStats,
+                uploadCapSectionsStats,
+                uploadBudgetMsStats,
+                uploadBootstrapActiveStats
+            );
+	        }
+	    }
+	}

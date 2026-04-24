@@ -445,8 +445,17 @@ struct OcclusionCullingContext {
     bool debugFrozen = false;
     bool frozenValid = false;
     bool hzbValid = false;
+    bool hzbReadbackPending = false;
     uint64_t lastBuildFrame = 0;
+    uint64_t lastCaptureFrame = 0;
+    uint64_t lastReadbackFrame = 0;
     glm::vec3 lastCameraPosition = glm::vec3(0.0f);
+    glm::vec3 hzbCameraPosition = glm::vec3(0.0f);
+    glm::vec3 hzbPendingCameraPosition = glm::vec3(0.0f);
+    glm::mat4 hzbViewProj = glm::mat4(1.0f);
+    glm::mat4 hzbPendingViewProj = glm::mat4(1.0f);
+    int hzbPendingWidth = 0;
+    int hzbPendingHeight = 0;
     float keepNearRadius = 0.0f;
     size_t testedSectionCount = 0;
     size_t visibleSectionCount = 0;

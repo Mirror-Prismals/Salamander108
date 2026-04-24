@@ -113,10 +113,16 @@
             return inserted.first->second;
         }
 
+        glm::ivec3 sectionCoordForWorldCell(const glm::ivec3& worldCell, int sectionSize) {
+            return glm::ivec3(
+                floorDivInt(worldCell.x, sectionSize),
+                floorDivInt(worldCell.y, sectionSize),
+                floorDivInt(worldCell.z, sectionSize)
+            );
+        }
+
         bool cellBelongsToSection(const glm::ivec3& worldCell, const glm::ivec3& sectionCoord, int sectionSize) {
-            return floorDivInt(worldCell.x, sectionSize) == sectionCoord.x
-                && floorDivInt(worldCell.y, sectionSize) == sectionCoord.y
-                && floorDivInt(worldCell.z, sectionSize) == sectionCoord.z;
+            return sectionCoordForWorldCell(worldCell, sectionSize) == sectionCoord;
         }
 
         bool isTrunkPrototype(uint32_t id, int trunkPrototypeIDA, int trunkPrototypeIDB) {
@@ -156,14 +162,14 @@
                                  int worldZ,
                                  int trunkHeight) {
             (void)sectionTier;
+            (void)rootSectionCoord;
+            (void)sectionSize;
             const glm::ivec3 groundCell(worldX, groundY, worldZ);
-            if (cellBelongsToSection(groundCell, rootSectionCoord, sectionSize)
-                && getBlockAt(voxelWorld, groundCell) == 0u) {
+            if (getBlockAt(voxelWorld, groundCell) == 0u) {
                 return false;
             }
             for (int i = 1; i <= trunkHeight; ++i) {
                 glm::ivec3 pos(worldX, groundY + i, worldZ);
-                if (!cellBelongsToSection(pos, rootSectionCoord, sectionSize)) continue;
                 uint32_t id = getBlockAt(voxelWorld, pos);
                 if (id == 0) continue;
                 if (isTrunkPrototype(id, trunkPrototypeIDA, trunkPrototypeIDB)) continue;
@@ -208,9 +214,9 @@
                                const std::vector<glm::ivec3>& placedLeafCells,
                                std::unordered_set<glm::ivec3, IVec3Hash>& outTouchedSections,
                                bool& modified) {
+            (void)rootSectionCoord;
             if (leafFanPrototypeID < 0 || placedLeafCells.empty()) return;
             for (const glm::ivec3& cell : placedLeafCells) {
-                if (!cellBelongsToSection(cell, rootSectionCoord, sectionSize)) continue;
                 if (!leafCellTouchesAir(voxelWorld, sectionTier, cell)) continue;
                 if (getBlockAt(voxelWorld, cell) == 0u) continue;
                 voxelWorld.setBlock(cell,
@@ -218,7 +224,7 @@
                     leafColor,
                     false
                 );
-                outTouchedSections.insert(rootSectionCoord);
+                outTouchedSections.insert(sectionCoordForWorldCell(cell, sectionSize));
                 modified = true;
             }
         }
@@ -294,11 +300,11 @@
                               const PineSpec& spec,
                               std::unordered_set<glm::ivec3, IVec3Hash>& outTouchedSections,
                               bool& modified) {
+            (void)rootSectionCoord;
             auto setIfEmpty = [&](const glm::ivec3& cell, uint32_t id, uint32_t color) -> bool {
-                if (!cellBelongsToSection(cell, rootSectionCoord, sectionSize)) return false;
                 if (getBlockAt(voxelWorld, cell) != 0u) return false;
                 voxelWorld.setBlock(cell, id, color, false);
-                outTouchedSections.insert(rootSectionCoord);
+                outTouchedSections.insert(sectionCoordForWorldCell(cell, sectionSize));
                 modified = true;
                 return true;
             };
@@ -372,12 +378,13 @@
                                   uint32_t seed,
                                   std::unordered_set<glm::ivec3, IVec3Hash>& outTouchedSections,
                                   bool& modified) {
+            (void)sectionTier;
+            (void)rootSectionCoord;
             if (trunkPrototypeID < 0 || trunkHeight < 2) return;
             auto setIfEmpty = [&](const glm::ivec3& cell, uint32_t id, uint32_t color) -> bool {
-                if (!cellBelongsToSection(cell, rootSectionCoord, sectionSize)) return false;
                 if (getBlockAt(voxelWorld, cell) != 0u) return false;
                 voxelWorld.setBlock(cell, id, color, false);
-                outTouchedSections.insert(rootSectionCoord);
+                outTouchedSections.insert(sectionCoordForWorldCell(cell, sectionSize));
                 modified = true;
                 return true;
             };
@@ -478,11 +485,12 @@
                                     int canopyRadius,
                                     std::unordered_set<glm::ivec3, IVec3Hash>& outTouchedSections,
                                     bool& modified) {
+            (void)sectionTier;
+            (void)rootSectionCoord;
             auto setIfEmpty = [&](const glm::ivec3& cell, uint32_t id, uint32_t color) -> bool {
-                if (!cellBelongsToSection(cell, rootSectionCoord, sectionSize)) return false;
                 if (getBlockAt(voxelWorld, cell) != 0u) return false;
                 voxelWorld.setBlock(cell, id, color, false);
-                outTouchedSections.insert(rootSectionCoord);
+                outTouchedSections.insert(sectionCoordForWorldCell(cell, sectionSize));
                 modified = true;
                 return true;
             };

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <cstring>
@@ -59,7 +60,33 @@ namespace VoxelMeshingSystemLogic {
             bool workersStarted = false;
         };
 
+        struct MeshingPerfStats {
+            size_t pendingJobs = 0;
+            size_t activeJobs = 0;
+            size_t requestedJobs = 0;
+            size_t completedBuffered = 0;
+            size_t dirtySections = 0;
+            size_t candidates = 0;
+            size_t missingSections = 0;
+            size_t queued = 0;
+            size_t snapshots = 0;
+            size_t completedPopped = 0;
+            size_t completedAccepted = 0;
+            size_t completedDropped = 0;
+            size_t outstandingBlocked = 0;
+            float frameSnapshotMs = 0.0f;
+            float lastSnapshotMs = 0.0f;
+            int lastSnapshotY = 0;
+            int lastSnapshotNonAir = 0;
+            uint64_t totalQueued = 0;
+            uint64_t totalCompleted = 0;
+            uint64_t totalDropped = 0;
+            uint64_t totalSnapshots = 0;
+            uint64_t totalOutstandingBlocked = 0;
+        };
+
         MeshingRuntime g_meshingRuntime;
+        MeshingPerfStats g_meshingPerfStats;
 
         constexpr size_t kMeshingWorkerCount = 2;
         constexpr size_t kMaxOutstandingJobs = 4;
@@ -156,7 +183,8 @@ namespace VoxelMeshingSystemLogic {
             outSnapshot.sectionSize = sectionSize;
             outSnapshot.nonAirCount = section.nonAirCount;
             outSnapshot.dirtyTicket = dirtyTicket;
-            outSnapshot.binaryGreedyEnabled = true;
+            outSnapshot.binaryGreedyEnabled =
+                ::RenderInitSystemLogic::getRegistryBool(baseSystem, "voxelNearBinaryGreedyEnabled", true);
             outSnapshot.voxelLightingEnabled =
                 ::RenderInitSystemLogic::getRegistryBool(baseSystem, "VoxelLightingEnabled", true);
             outSnapshot.voxelLightingStrength = glm::clamp(
@@ -301,6 +329,59 @@ namespace VoxelMeshingSystemLogic {
         }
     }
 
+    void GetVoxelMeshingRuntimePerfStats(size_t& pendingJobs,
+                                         size_t& activeJobs,
+                                         size_t& requestedJobs,
+                                         size_t& completedBuffered,
+                                         size_t& dirtySections,
+                                         size_t& candidates,
+                                         size_t& missingSections,
+                                         size_t& queued,
+                                         size_t& snapshots,
+                                         size_t& completedPopped,
+                                         size_t& completedAccepted,
+                                         size_t& completedDropped,
+                                         size_t& outstandingBlocked,
+                                         float& frameSnapshotMs,
+                                         float& lastSnapshotMs,
+                                         int& lastSnapshotY,
+                                         int& lastSnapshotNonAir,
+                                         uint64_t& totalQueued,
+                                         uint64_t& totalCompleted,
+                                         uint64_t& totalDropped,
+                                         uint64_t& totalSnapshots,
+                                         uint64_t& totalOutstandingBlocked) {
+        const MeshingPerfStats stats = g_meshingPerfStats;
+        pendingJobs = stats.pendingJobs;
+        activeJobs = stats.activeJobs;
+        requestedJobs = stats.requestedJobs;
+        completedBuffered = stats.completedBuffered;
+        dirtySections = stats.dirtySections;
+        candidates = stats.candidates;
+        missingSections = stats.missingSections;
+        queued = stats.queued;
+        snapshots = stats.snapshots;
+        completedPopped = stats.completedPopped;
+        completedAccepted = stats.completedAccepted;
+        completedDropped = stats.completedDropped;
+        outstandingBlocked = stats.outstandingBlocked;
+        frameSnapshotMs = stats.frameSnapshotMs;
+        lastSnapshotMs = stats.lastSnapshotMs;
+        lastSnapshotY = stats.lastSnapshotY;
+        lastSnapshotNonAir = stats.lastSnapshotNonAir;
+        totalQueued = stats.totalQueued;
+        totalCompleted = stats.totalCompleted;
+        totalDropped = stats.totalDropped;
+        totalSnapshots = stats.totalSnapshots;
+        totalOutstandingBlocked = stats.totalOutstandingBlocked;
+
+        std::lock_guard<std::mutex> lock(g_meshingRuntime.mutex);
+        pendingJobs = g_meshingRuntime.pendingJobs.size();
+        activeJobs = g_meshingRuntime.activeJobs;
+        requestedJobs = g_meshingRuntime.requestedTickets.size();
+        completedBuffered = g_meshingRuntime.completedJobs.size();
+    }
+
     void ResetMeshingRuntime() {
         std::vector<std::thread> workers;
         {
@@ -326,6 +407,7 @@ namespace VoxelMeshingSystemLogic {
         std::lock_guard<std::mutex> lock(g_meshingRuntime.mutex);
         g_meshingRuntime.stopRequested = false;
         g_meshingRuntime.activeJobs = 0;
+        g_meshingPerfStats = {};
     }
 
     void RequestPriorityVoxelRemesh(BaseSystem& baseSystem,
@@ -367,6 +449,9 @@ namespace VoxelMeshingSystemLogic {
                 g_meshingRuntime.completedJobs.pop_front();
             }
         }
+        const size_t completedPoppedThisFrame = completed.size();
+        size_t completedAcceptedThisFrame = 0;
+        size_t completedDroppedThisFrame = 0;
 
         for (MeshingResult& result : completed) {
             {
@@ -386,6 +471,7 @@ namespace VoxelMeshingSystemLogic {
                 voxelRender.wireframeMeshes.erase(result.key);
                 voxelRender.renderBuffersDirty.erase(result.key);
                 voxelWorld.clearSectionDirty(result.key);
+                ++completedDroppedThisFrame;
                 continue;
             }
 
@@ -393,14 +479,17 @@ namespace VoxelMeshingSystemLogic {
             if (currentTicket == 0 || currentTicket != result.mesh.dirtyTicket) {
                 voxelRender.preparedMeshes.erase(result.key);
                 voxelRender.wireframeMeshes.erase(result.key);
+                ++completedDroppedThisFrame;
                 continue;
             }
             if (!isRenderableSection(voxelWorld, result.key)) {
+                ++completedDroppedThisFrame;
                 continue;
             }
 
             voxelRender.preparedMeshes[result.key] = std::move(result.mesh);
             voxelRender.renderBuffersDirty.insert(result.key);
+            ++completedAcceptedThisFrame;
         }
 
         struct Candidate {
@@ -460,6 +549,12 @@ namespace VoxelMeshingSystemLogic {
         });
 
         size_t enqueuedThisFrame = 0;
+        size_t snapshotsThisFrame = 0;
+        size_t outstandingBlockedThisFrame = 0;
+        float frameSnapshotMs = 0.0f;
+        float lastSnapshotMs = 0.0f;
+        int lastSnapshotY = 0;
+        int lastSnapshotNonAir = 0;
         for (const Candidate& candidate : candidates) {
             if (enqueuedThisFrame >= kMaxNewSnapshotsPerFrame) break;
 
@@ -475,9 +570,26 @@ namespace VoxelMeshingSystemLogic {
             if (voxelWorld.getSectionDirtyTicket(candidate.key) != candidate.dirtyTicket) continue;
 
             VoxelMeshingSnapshot snapshot;
-            if (!captureMeshingSnapshot(baseSystem, voxelWorld, candidate.key, sectionIt->second, candidate.dirtyTicket, snapshot)) {
+            const auto snapshotStart = std::chrono::steady_clock::now();
+            const bool capturedSnapshot = captureMeshingSnapshot(
+                baseSystem,
+                voxelWorld,
+                candidate.key,
+                sectionIt->second,
+                candidate.dirtyTicket,
+                snapshot
+            );
+            const float snapshotMs = std::chrono::duration<float, std::milli>(
+                std::chrono::steady_clock::now() - snapshotStart
+            ).count();
+            if (!capturedSnapshot) {
                 continue;
             }
+            frameSnapshotMs += snapshotMs;
+            lastSnapshotMs = snapshotMs;
+            lastSnapshotY = candidate.key.coord.y;
+            lastSnapshotNonAir = sectionIt->second.nonAirCount;
+            ++snapshotsThisFrame;
 
             bool queued = false;
             {
@@ -489,6 +601,7 @@ namespace VoxelMeshingSystemLogic {
                 }
                 const size_t outstandingJobs = g_meshingRuntime.pendingJobs.size() + g_meshingRuntime.activeJobs;
                 if (outstandingJobs >= kMaxOutstandingJobs) {
+                    ++outstandingBlockedThisFrame;
                     break;
                 }
                 MeshingJob job;
@@ -504,5 +617,34 @@ namespace VoxelMeshingSystemLogic {
                 enqueuedThisFrame += 1;
             }
         }
+
+        MeshingPerfStats stats{};
+        stats.dirtySections = voxelWorld.dirtySections.size();
+        stats.candidates = candidates.size();
+        stats.missingSections = missingSections.size();
+        stats.queued = enqueuedThisFrame;
+        stats.snapshots = snapshotsThisFrame;
+        stats.completedPopped = completedPoppedThisFrame;
+        stats.completedAccepted = completedAcceptedThisFrame;
+        stats.completedDropped = completedDroppedThisFrame;
+        stats.outstandingBlocked = outstandingBlockedThisFrame;
+        stats.frameSnapshotMs = frameSnapshotMs;
+        stats.lastSnapshotMs = lastSnapshotMs;
+        stats.lastSnapshotY = lastSnapshotY;
+        stats.lastSnapshotNonAir = lastSnapshotNonAir;
+        stats.totalQueued = g_meshingPerfStats.totalQueued + static_cast<uint64_t>(enqueuedThisFrame);
+        stats.totalCompleted = g_meshingPerfStats.totalCompleted + static_cast<uint64_t>(completedAcceptedThisFrame);
+        stats.totalDropped = g_meshingPerfStats.totalDropped + static_cast<uint64_t>(completedDroppedThisFrame);
+        stats.totalSnapshots = g_meshingPerfStats.totalSnapshots + static_cast<uint64_t>(snapshotsThisFrame);
+        stats.totalOutstandingBlocked = g_meshingPerfStats.totalOutstandingBlocked
+            + static_cast<uint64_t>(outstandingBlockedThisFrame);
+        {
+            std::lock_guard<std::mutex> lock(g_meshingRuntime.mutex);
+            stats.pendingJobs = g_meshingRuntime.pendingJobs.size();
+            stats.activeJobs = g_meshingRuntime.activeJobs;
+            stats.requestedJobs = g_meshingRuntime.requestedTickets.size();
+            stats.completedBuffered = g_meshingRuntime.completedJobs.size();
+        }
+        g_meshingPerfStats = stats;
     }
 }
