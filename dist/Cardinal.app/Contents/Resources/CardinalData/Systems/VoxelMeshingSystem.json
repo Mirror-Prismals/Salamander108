@@ -1,0 +1,14 @@
+{
+    "update_steps": {
+        "UpdateVoxelMeshing": {
+            "dependencies": [
+                "RendererContext",
+                "PlayerContext",
+                "WorldContext",
+                "RegistryContext",
+                "VoxelWorldContext",
+                "VoxelRenderContext"
+            ]
+        }
+    }
+}

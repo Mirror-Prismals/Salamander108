@@ -351,6 +351,10 @@ struct FarTerrainCachedCell {
     int size = 1;
     int topY = 0;
     int lodRing = 0;
+    bool hasWaterSurface = false;
+    int waterSurfaceY = 0;
+    int waterFloorY = 0;
+    int waterWaveClass = 0;
     const char* prototypeName = "GrassBlockTex";
     const char* sidePrototypeName = "DirtBlockTex";
     const char* deepPrototypeName = "StoneBlockTex";
@@ -425,6 +429,8 @@ struct FarTerrainClipmapContext {
     std::vector<FarTerrainCachedCell> bodyCells;
     std::array<std::vector<FaceInstanceRenderData>, 6> handoffFaces;
     std::array<std::vector<FaceInstanceRenderData>, 6> bodyFaces;
+    std::array<std::vector<WaterFaceInstanceRenderData>, 6> handoffWaterSurfaceFaces;
+    std::array<std::vector<WaterFaceInstanceRenderData>, 6> bodyWaterSurfaceFaces;
     std::vector<VoxelRenderCluster> handoffRenderClusters;
     std::vector<VoxelRenderCluster> bodyRenderClusters;
     ChunkRenderBuffers handoffRenderBuffers{};

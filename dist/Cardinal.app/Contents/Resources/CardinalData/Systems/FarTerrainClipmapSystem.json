@@ -1,0 +1,11 @@
+{
+    "update_steps": {
+        "UpdateFarTerrainClipmap": {
+            "dependencies": [
+                "WorldContext",
+                "PlayerContext",
+                "FarTerrainClipmapContext"
+            ]
+        }
+    }
+}

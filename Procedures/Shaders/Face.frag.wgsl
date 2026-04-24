@@ -74,6 +74,7 @@ struct FSIn {
     @location(8) aoCorners: vec4<f32>,
     @location(9) screenUv: vec2<f32>,
     @location(10) localRectUv: vec2<f32>,
+    @location(11) instanceScale: vec2<f32>,
     @builtin(front_facing) frontFacing: bool,
 };
 
@@ -376,6 +377,263 @@ fn waterBlockGlassAlpha(worldPos: vec3<f32>, normalIn: vec3<f32>, decodedAo: f32
     return clamp(mix(0.42, 0.62, faceDepth) + fresnel * 0.08, 0.42, 0.70);
 }
 
+fn sdSegment2(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
+    let pa = p - a;
+    let ba = b - a;
+    let h = clamp(dot(pa, ba) / max(dot(ba, ba), 0.0001), 0.0, 1.0);
+    return length(pa - ba * h);
+}
+
+fn farTreeBillboardEncodedLeafTile(encodedTile: i32) -> i32 {
+    let base = 65536;
+    let stride = 1024;
+    if (encodedTile < base) {
+        return -1;
+    }
+    return (encodedTile - base) / stride;
+}
+
+fn farTreeBillboardEncodedTrunkTile(encodedTile: i32) -> i32 {
+    let base = 65536;
+    let stride = 1024;
+    if (encodedTile < base) {
+        return -1;
+    }
+    return (encodedTile - base) % stride;
+}
+
+fn farTreeSampleAtlasTile(tileIndex: i32, uv: vec2<f32>, tilesPerRow: i32, tilesPerCol: i32, atlasTileSize: vec2<f32>, atlasTextureSize: vec2<f32>) -> vec4<f32> {
+    if (tileIndex < 0 || tilesPerRow <= 0 || tilesPerCol <= 0 || atlasTextureSize.x <= 0.0 || atlasTextureSize.y <= 0.0) {
+        return vec4<f32>(1.0);
+    }
+    return sampleAtlasBase(tileIndex, fract(uv), tilesPerRow, tilesPerCol, atlasTileSize, atlasTextureSize);
+}
+
+fn farTreeBillboardBlockInfo(tiledUv: vec2<f32>, billboardScale: vec2<f32>) -> vec4<f32> {
+    let grid = max(vec2<f32>(1.0), floor(billboardScale + vec2<f32>(0.5)));
+    let coord = floor(clamp(tiledUv, vec2<f32>(0.0), grid - vec2<f32>(0.001)));
+    return vec4<f32>(coord, grid);
+}
+
+fn farTreeLeafTileForBlock(alphaTag: f32, encodedTile: i32, blockCoord: vec2<f32>, instanceCell: vec3<f32>) -> i32 {
+    let h = hash3dToU32(vec3<i32>(
+        i32(blockCoord.x + round(instanceCell.x)),
+        i32(blockCoord.y + round(instanceCell.y)),
+        i32(round(instanceCell.z))
+    ));
+    if (alphaTag <= -35.5) {
+        return 376 + i32(h & 1u);
+    }
+    if (alphaTag <= -34.5) {
+        return farTreeBillboardEncodedLeafTile(encodedTile);
+    }
+    return 382 + i32(h & 3u);
+}
+
+fn farTreeTrunkTileForBlock(alphaTag: f32, encodedTile: i32, blockCoord: vec2<f32>, instanceCell: vec3<f32>) -> i32 {
+    let h = hash3dToU32(vec3<i32>(
+        i32(blockCoord.x + round(instanceCell.x)),
+        i32(blockCoord.y + round(instanceCell.y)),
+        i32(round(instanceCell.z)) + 131
+    ));
+    if (alphaTag <= -35.5 || alphaTag <= -34.5) {
+        return farTreeBillboardEncodedTrunkTile(encodedTile);
+    }
+    return 12 + i32((h >> 3u) & 1u);
+}
+
+fn farTreeBillboardCellKind(alphaTag: f32, blockCoord: vec2<f32>, grid: vec2<f32>) -> i32 {
+    if (blockCoord.x < 0.0 || blockCoord.y < 0.0 || blockCoord.x >= grid.x || blockCoord.y >= grid.y) {
+        return 0;
+    }
+
+    let blockUv = (blockCoord + vec2<f32>(0.5)) / grid;
+    let trunkColumn = floor(grid.x * 0.5);
+    let onTrunkColumn = abs(blockCoord.x - trunkColumn) < 0.5;
+    let x = blockUv.x - 0.5;
+    let y = blockUv.y;
+
+    if (alphaTag <= -35.5) {
+        let trunk = onTrunkColumn && y > 0.02 && y < 0.70;
+        let canopyA = length((blockUv - vec2<f32>(0.50, 0.66)) / vec2<f32>(0.34, 0.29)) < 1.0;
+        let canopyB = length((blockUv - vec2<f32>(0.34, 0.62)) / vec2<f32>(0.20, 0.18)) < 1.0;
+        let canopyC = length((blockUv - vec2<f32>(0.66, 0.61)) / vec2<f32>(0.21, 0.18)) < 1.0;
+        let canopyD = length((blockUv - vec2<f32>(0.50, 0.83)) / vec2<f32>(0.24, 0.16)) < 1.0;
+        let canopy = y > 0.30 && (canopyA || canopyB || canopyC || canopyD);
+        if (canopy) {
+            return 1;
+        }
+        if (trunk) {
+            return 2;
+        }
+        return 0;
+    }
+
+    if (alphaTag <= -34.5) {
+        let p = vec2<f32>(x, y);
+        let trunk = onTrunkColumn && y > 0.02 && y < 0.92;
+        let b0 = sdSegment2(p, vec2<f32>(0.00, 0.26), vec2<f32>(-0.26, 0.48)) < 0.030;
+        let b1 = sdSegment2(p, vec2<f32>(0.00, 0.34), vec2<f32>(0.29, 0.56)) < 0.027;
+        let b2 = sdSegment2(p, vec2<f32>(0.00, 0.49), vec2<f32>(-0.20, 0.74)) < 0.024;
+        let b3 = sdSegment2(p, vec2<f32>(0.00, 0.58), vec2<f32>(0.20, 0.83)) < 0.022;
+        if (trunk || b0 || b1 || b2 || b3) {
+            return 2;
+        }
+        return 0;
+    }
+
+    let dxBlocks = abs(blockCoord.x - (grid.x - 1.0) * 0.5);
+    let trunk = onTrunkColumn && y > 0.02 && y < 0.78;
+    let tier = floor(y * 7.0);
+    let wobble = 0.92 + sin(tier * 2.37) * 0.08;
+    let taper = clamp((y - 0.15) / 0.82, 0.0, 1.0);
+    let halfWidthBlocks = mix(max(1.0, grid.x * 0.42), 0.55, taper) * wobble;
+    let canopy = y > 0.15 && y < 0.98 && dxBlocks <= halfWidthBlocks;
+    if (canopy) {
+        return 1;
+    }
+    if (trunk) {
+        return 2;
+    }
+    return 0;
+}
+
+fn farTreeBillboardColor(
+    alphaTag: f32,
+    encodedTile: i32,
+    uvIn: vec2<f32>,
+    tiledUv: vec2<f32>,
+    billboardScale: vec2<f32>,
+    instanceCell: vec3<f32>,
+    tilesPerRow: i32,
+    tilesPerCol: i32,
+    atlasTileSize: vec2<f32>,
+    atlasTextureSize: vec2<f32>
+) -> vec4<f32> {
+    let info = farTreeBillboardBlockInfo(tiledUv, billboardScale);
+    let blockCoord = info.xy;
+    let grid = info.zw;
+    let blockUv = (blockCoord + vec2<f32>(0.5)) / grid;
+    let tileUv = fract(tiledUv);
+    let y = blockUv.y;
+    let kind = farTreeBillboardCellKind(alphaTag, blockCoord, grid);
+    if (kind == 0) {
+        return vec4<f32>(0.0);
+    }
+
+    let leafTile = farTreeLeafTileForBlock(alphaTag, encodedTile, blockCoord, instanceCell);
+    let trunkTile = farTreeTrunkTileForBlock(alphaTag, encodedTile, blockCoord, instanceCell);
+
+    if (alphaTag <= -35.5) {
+        let leafTex = farTreeSampleAtlasTile(leafTile, tileUv, tilesPerRow, tilesPerCol, atlasTileSize, atlasTextureSize);
+        let trunkTex = farTreeSampleAtlasTile(trunkTile, tileUv, tilesPerRow, tilesPerCol, atlasTileSize, atlasTextureSize);
+        let leafShade = mix(0.84, 1.08, clamp(y, 0.0, 1.0));
+        let leafColor = leafTex.rgb * leafShade;
+        let trunkColor = trunkTex.rgb * mix(0.82, 1.04, clamp(y, 0.0, 1.0));
+        let useTrunk = kind == 2;
+        let col = select(leafColor, trunkColor, useTrunk);
+        let alpha = select(leafTex.a, trunkTex.a, useTrunk);
+        return vec4<f32>(col, alpha);
+    }
+
+    if (alphaTag <= -34.5) {
+        let branchTex = farTreeSampleAtlasTile(trunkTile, tileUv, tilesPerRow, tilesPerCol, atlasTileSize, atlasTextureSize);
+        return vec4<f32>(branchTex.rgb * mix(0.82, 1.05, y), branchTex.a);
+    }
+
+    let leafTex = farTreeSampleAtlasTile(leafTile, tileUv, tilesPerRow, tilesPerCol, atlasTileSize, atlasTextureSize);
+    let trunkTex = farTreeSampleAtlasTile(trunkTile, tileUv, tilesPerRow, tilesPerCol, atlasTileSize, atlasTextureSize);
+    let leafShade = mix(0.78, 1.08, clamp(y, 0.0, 1.0));
+    let leafColor = leafTex.rgb * leafShade;
+    let trunkColor = trunkTex.rgb * mix(0.80, 1.03, clamp(y, 0.0, 1.0));
+    let useTrunk = kind == 2;
+    let col = select(leafColor, trunkColor, useTrunk);
+    let alpha = select(leafTex.a, trunkTex.a, useTrunk);
+    return vec4<f32>(col, alpha);
+}
+
+fn farTreeBillboardCellOccludes(alphaTag: f32, blockCoord: vec2<f32>, grid: vec2<f32>) -> bool {
+    return farTreeBillboardCellKind(alphaTag, blockCoord, grid) != 0;
+}
+
+fn farTreeBillboardCornerAo(sideA: bool, sideB: bool, corner: bool) -> f32 {
+    if (sideA && sideB) {
+        return 0.60;
+    }
+    let occlusionLevel = select(0, 1, sideA) + select(0, 1, sideB) + select(0, 1, corner);
+    if (occlusionLevel == 1) {
+        return 0.86;
+    }
+    if (occlusionLevel == 2) {
+        return 0.72;
+    }
+    return 1.0;
+}
+
+fn farTreeBillboardBakedAo(alphaTag: f32, tiledUv: vec2<f32>, billboardScale: vec2<f32>) -> f32 {
+    let info = farTreeBillboardBlockInfo(tiledUv, billboardScale);
+    let blockCoord = info.xy;
+    let grid = info.zw;
+    let kind = farTreeBillboardCellKind(alphaTag, blockCoord, grid);
+    if (kind == 0) {
+        return 1.0;
+    }
+
+    let left = farTreeBillboardCellOccludes(alphaTag, blockCoord + vec2<f32>(-1.0, 0.0), grid);
+    let right = farTreeBillboardCellOccludes(alphaTag, blockCoord + vec2<f32>(1.0, 0.0), grid);
+    let down = farTreeBillboardCellOccludes(alphaTag, blockCoord + vec2<f32>(0.0, -1.0), grid);
+    let up = farTreeBillboardCellOccludes(alphaTag, blockCoord + vec2<f32>(0.0, 1.0), grid);
+    let downLeft = farTreeBillboardCellOccludes(alphaTag, blockCoord + vec2<f32>(-1.0, -1.0), grid);
+    let downRight = farTreeBillboardCellOccludes(alphaTag, blockCoord + vec2<f32>(1.0, -1.0), grid);
+    let upRight = farTreeBillboardCellOccludes(alphaTag, blockCoord + vec2<f32>(1.0, 1.0), grid);
+    let upLeft = farTreeBillboardCellOccludes(alphaTag, blockCoord + vec2<f32>(-1.0, 1.0), grid);
+
+    let ao00 = farTreeBillboardCornerAo(left, down, downLeft);
+    let ao10 = farTreeBillboardCornerAo(right, down, downRight);
+    let ao11 = farTreeBillboardCornerAo(right, up, upRight);
+    let ao01 = farTreeBillboardCornerAo(left, up, upLeft);
+    let localUv = fract(tiledUv);
+    let bottom = mix(ao00, ao10, localUv.x);
+    let top = mix(ao01, ao11, localUv.x);
+    let structuralAo = mix(bottom, top, localUv.y);
+    let aoStrength = select(0.42, 1.0, kind == 2);
+    return mix(1.0, structuralAo, aoStrength);
+}
+
+fn farTreeBillboardSceneLight(
+    lightDir: vec3<f32>,
+    foliageLightingEnabled: bool,
+    leafDirectionalLightingEnabled: bool,
+    leafDirectionalLightingIntensity: f32
+) -> f32 {
+    var directional = 1.0;
+    if (foliageLightingEnabled && leafDirectionalLightingEnabled) {
+        let averageSideDiff = clamp(max(lightDir.y, 0.0) * 0.20 + (abs(lightDir.x) + abs(lightDir.z)) * 0.25, 0.0, 1.0);
+        let shadowAmount = 1.0 - averageSideDiff;
+        directional = mix(1.0, 1.0 - 0.6 * shadowAmount, leafDirectionalLightingIntensity);
+    }
+    return clamp(directional, 0.40, 1.0);
+}
+
+fn farTerrainLodLightFactor(ambientLight: vec3<f32>, diffuseLight: vec3<f32>) -> f32 {
+    let sceneLevel = clamp(
+        dot(ambientLight + diffuseLight, vec3<f32>(0.33333334)),
+        0.0,
+        1.0
+    );
+    let sky01 = clamp((sceneLevel - 0.18) / 0.52, 0.0, 1.0);
+    let curvedSky = pow(sky01, 1.35);
+    return mix(0.402, 1.0, curvedSky);
+}
+
+fn farGrassBillboardSceneLight(lightDir: vec3<f32>, foliageLightingEnabled: bool) -> f32 {
+    if (!foliageLightingEnabled) {
+        return 1.0;
+    }
+    let averageSideDiff = clamp(max(lightDir.y, 0.0) * 0.20 + (abs(lightDir.x) + abs(lightDir.z)) * 0.25, 0.0, 1.0);
+    return 0.65 + 0.35 * averageSideDiff;
+}
+
 @fragment
 fn fs_main(input: FSIn) -> @location(0) vec4<f32> {
     if (input.localRectUv.x < 0.0 || input.localRectUv.x > 1.0
@@ -488,10 +746,13 @@ fn fs_main(input: FSIn) -> @location(0) vec4<f32> {
     let maskedFoliageTranslucentPass = (maskedFoliagePassMode == 2);
     let isBookPage = (input.alpha <= -39.5);
     let alphaTag = select(input.alpha, 1.0, isBookPage);
-    let isWallDecal = (alphaTag <= -15.5);
-    let isChalkDust = (alphaTag <= -14.5) && !isWallDecal;
-    let isGrassCover = (alphaTag <= -13.5) && !isChalkDust && !isWallDecal;
-    let isCavePot = (alphaTag <= -9.5) && !isGrassCover && !isChalkDust && !isWallDecal;
+    let isFarTreeBillboard = (alphaTag <= -33.5) && (alphaTag > -36.5);
+    let isFarGrassBillboard = (alphaTag <= -36.5) && (alphaTag > -37.5);
+    let isFarBillboard = isFarTreeBillboard || isFarGrassBillboard;
+    let isWallDecal = (alphaTag <= -15.5) && !isFarBillboard;
+    let isChalkDust = (alphaTag <= -14.5) && !isWallDecal && !isFarBillboard;
+    let isGrassCover = (alphaTag <= -13.5) && !isChalkDust && !isWallDecal && !isFarBillboard;
+    let isCavePot = (alphaTag <= -9.5) && !isGrassCover && !isChalkDust && !isWallDecal && !isFarBillboard;
     let isSlopeFaceRegular = (alphaTag <= -3.5) && (alphaTag > -9.5);
     let isWaterSlopeFace = (alphaTag <= -23.5) && (alphaTag > -33.5);
     let isSlopeFace = isSlopeFaceRegular || isWaterSlopeFace;
@@ -502,7 +763,7 @@ fn fs_main(input: FSIn) -> @location(0) vec4<f32> {
     var outAlpha = select(
         max(alphaTag, 0.0),
         1.0,
-        ((isSlopeFace && !isWaterSlopeFace) || isCavePot || isGrassCover || isChalkDust || isWallDecal || isBookPage)
+        ((isSlopeFace && !isWaterSlopeFace) || isCavePot || isGrassCover || isChalkDust || isWallDecal || isBookPage || isFarBillboard)
     );
     let isFlower = (alphaTag > -3.5) && (alphaTag <= -2.5);
     let isShortGrass = (alphaTag > -2.5) && (alphaTag <= -2.15);
@@ -510,7 +771,8 @@ fn fs_main(input: FSIn) -> @location(0) vec4<f32> {
     let isGrass = isTallGrass || isShortGrass;
     let isLeaf = (alphaTag > -1.5) && (alphaTag < 0.0);
     let isTranslucentFace = (alphaTag > 0.0) && (alphaTag < 0.999);
-    let useAtlas = (atlasEnabled == 1)
+    let useAtlas = !isFarBillboard
+        && (atlasEnabled == 1)
         && (decodedTileIndex >= 0)
         && (tilesPerRow > 0)
         && (tilesPerCol > 0)
@@ -619,6 +881,51 @@ fn fs_main(input: FSIn) -> @location(0) vec4<f32> {
         outAlpha = outAlpha * texel.a;
     }
 
+    if (isFarTreeBillboard) {
+        let tree = farTreeBillboardColor(
+            alphaTag,
+            input.tileIndex,
+            input.localRectUv,
+            input.texCoord,
+            input.instanceScale,
+            input.instanceCell,
+            tilesPerRow,
+            tilesPerCol,
+            atlasTileSize,
+            atlasTextureSize
+        );
+        if (tree.a <= 0.001) {
+            discard;
+        }
+        let sceneLight = farTreeBillboardSceneLight(
+            lightDir,
+            foliageLightingEnabled,
+            leafDirectionalLightingEnabled == 1,
+            leafDirectionalLightingIntensity
+        );
+        let canopyAo = farTreeBillboardBakedAo(alphaTag, input.texCoord, input.instanceScale);
+        let lodLight = farTerrainLodLightFactor(ambientLight, diffuseLight);
+        return vec4<f32>(tree.rgb * decodedAo * canopyAo * sceneLight * lodLight, 1.0);
+    }
+
+    if (isFarGrassBillboard) {
+        if (atlasEnabled != 1
+            || input.tileIndex < 0
+            || tilesPerRow <= 0
+            || tilesPerCol <= 0
+            || atlasTextureSize.x <= 0.0
+            || atlasTextureSize.y <= 0.0) {
+            discard;
+        }
+        let texel = sampleAtlasBase(input.tileIndex, fract(input.texCoord), tilesPerRow, tilesPerCol, atlasTileSize, atlasTextureSize);
+        if (texel.a <= maskedFoliageOpaqueThreshold) {
+            discard;
+        }
+        let sceneLight = farGrassBillboardSceneLight(lightDir, foliageLightingEnabled);
+        let lodLight = farTerrainLodLightFactor(ambientLight, diffuseLight);
+        return vec4<f32>(texel.rgb * input.fragColor * decodedAo * sceneLight * lodLight, 1.0);
+    }
+
     if (isSlopeCapA || isSlopeCapB) {
         let localUv = fract(input.texCoord);
         let keepFragment = select(
@@ -681,7 +988,7 @@ fn fs_main(input: FSIn) -> @location(0) vec4<f32> {
         }
     }
 
-    if (!isBookPage && !isLeaf && !isGrass && !isFlower && !isCavePot && !isTranslucentFace && !isChalkDust && !isWallDecal) {
+    if (!isBookPage && !isFarBillboard && !isLeaf && !isGrass && !isFlower && !isCavePot && !isTranslucentFace && !isChalkDust && !isWallDecal) {
         let grid = 24.0;
         let line = 0.03;
         let f = fract(input.texCoord * grid);
@@ -1195,5 +1502,6 @@ fn fs_main(input: FSIn) -> @location(0) vec4<f32> {
     let _unusedBehavior = behaviorType;
     let translucentLikeFace = isTranslucentFace || isWaterSlopeFace;
     let finalAo = select(decodedAo, mix(1.0, decodedAo, 0.30), translucentLikeFace);
-    return vec4<f32>(bc * finalAo, outAlpha);
+    let lodLight = select(1.0, farTerrainLodLightFactor(ambientLight, diffuseLight), sectionTier > 0 && !translucentLikeFace);
+    return vec4<f32>(bc * finalAo * lodLight, outAlpha);
 }

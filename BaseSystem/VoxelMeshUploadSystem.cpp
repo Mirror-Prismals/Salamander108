@@ -43,6 +43,10 @@ namespace VoxelMeshUploadSystemLogic {
             return alpha <= -23.5f && alpha > -33.5f;
         }
 
+        bool isFarTerrainBillboardAlpha(float alpha) {
+            return alpha <= -33.5f && alpha > -37.5f;
+        }
+
         bool isMaskedFoliageTaggedFace(float alpha) {
             // Leaf blocks and card foliage are authored with negative sentinel alpha tags.
             // They need both a depth-writing opaque slice and a blended translucent slice.
@@ -957,7 +961,7 @@ namespace VoxelMeshUploadSystemLogic {
                     legacyOpaque.reserve(opaque.size());
                     clippedOpaque.reserve(opaque.size());
                     for (const FaceInstanceRenderData& face : opaque) {
-                        if (face.alpha >= 0.999f) {
+                        if (face.alpha >= 0.999f || isFarTerrainBillboardAlpha(face.alpha)) {
                             clippedOpaque.push_back(face);
                         } else {
                             legacyOpaque.push_back(face);

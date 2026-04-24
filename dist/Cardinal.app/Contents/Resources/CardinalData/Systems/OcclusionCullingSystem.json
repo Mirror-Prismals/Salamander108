@@ -1,0 +1,12 @@
+{
+    "update_steps": {
+        "UpdateOcclusionCulling": {
+            "dependencies": [
+                "VoxelWorldContext",
+                "VoxelRenderContext",
+                "PlayerContext",
+                "OcclusionCullingContext"
+            ]
+        }
+    }
+}

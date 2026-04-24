@@ -55,6 +55,7 @@ struct VSOut {
     @location(8) aoCorners: vec4<f32>,
     @location(9) screenUv: vec2<f32>,
     @location(10) localRectUv: vec2<f32>,
+    @location(11) instanceScale: vec2<f32>,
 };
 
 fn rotateY(v: vec3<f32>, r: f32) -> vec3<f32> {
@@ -165,10 +166,13 @@ fn vs_main(input: VSIn) -> VSOut {
     pos.x = pos.x * input.scale.x;
     pos.y = pos.y * input.scale.y;
 
-    let isWallDecal = (input.alpha <= -15.5);
-    let isChalkDust = (input.alpha <= -14.5) && !isWallDecal;
-    let isGrassCover = (input.alpha <= -13.5) && !isChalkDust && !isWallDecal;
-    let isCavePot = (input.alpha <= -9.5) && !isGrassCover && !isChalkDust && !isWallDecal;
+    let isTreeBillboard = (input.alpha <= -33.5) && (input.alpha > -36.5);
+    let isGrassBillboard = (input.alpha <= -36.5) && (input.alpha > -37.5);
+    let isFarBillboard = isTreeBillboard || isGrassBillboard;
+    let isWallDecal = (input.alpha <= -15.5) && !isFarBillboard;
+    let isChalkDust = (input.alpha <= -14.5) && !isWallDecal && !isFarBillboard;
+    let isGrassCover = (input.alpha <= -13.5) && !isChalkDust && !isWallDecal && !isFarBillboard;
+    let isCavePot = (input.alpha <= -9.5) && !isGrassCover && !isChalkDust && !isWallDecal && !isFarBillboard;
     let isSlopeFaceRegular = (input.alpha <= -3.5) && (input.alpha > -9.5);
     let isWaterSlopeFace = (input.alpha <= -23.5) && (input.alpha > -33.5);
     let isSlopeFace = isSlopeFaceRegular || isWaterSlopeFace;
@@ -205,30 +209,41 @@ fn vs_main(input: VSIn) -> VSOut {
         }
     }
 
-    if (faceType == 0) {
-        pos = rotateY(pos, 1.57079632679);
-        normal = normalize(rotateY(normal, 1.57079632679));
-    } else if (faceType == 1) {
-        pos = rotateY(pos, -1.57079632679);
-        normal = normalize(rotateY(normal, -1.57079632679));
-    } else if (faceType == 2) {
-        pos = rotateX(pos, -1.57079632679);
-        normal = normalize(rotateX(normal, -1.57079632679));
-    } else if (faceType == 3) {
-        pos = rotateX(pos, 1.57079632679);
-        normal = normalize(rotateX(normal, 1.57079632679));
-    } else if (faceType == 5) {
-        pos = rotateY(pos, 3.14159265359);
-        normal = normalize(rotateY(normal, 3.14159265359));
-    }
+    if (isFarBillboard) {
+        var toCamera = vec2<f32>(cameraPos.x - input.offset.x, cameraPos.z - input.offset.z);
+        if (dot(toCamera, toCamera) < 0.0001) {
+            toCamera = vec2<f32>(0.0, 1.0);
+        }
+        let billboardNormal = normalize(vec3<f32>(toCamera.x, 0.0, toCamera.y));
+        let billboardRight = vec3<f32>(billboardNormal.z, 0.0, -billboardNormal.x);
+        pos = billboardRight * pos.x + vec3<f32>(0.0, pos.y, 0.0);
+        normal = billboardNormal;
+    } else {
+        if (faceType == 0) {
+            pos = rotateY(pos, 1.57079632679);
+            normal = normalize(rotateY(normal, 1.57079632679));
+        } else if (faceType == 1) {
+            pos = rotateY(pos, -1.57079632679);
+            normal = normalize(rotateY(normal, -1.57079632679));
+        } else if (faceType == 2) {
+            pos = rotateX(pos, -1.57079632679);
+            normal = normalize(rotateX(normal, -1.57079632679));
+        } else if (faceType == 3) {
+            pos = rotateX(pos, 1.57079632679);
+            normal = normalize(rotateX(normal, 1.57079632679));
+        } else if (faceType == 5) {
+            pos = rotateY(pos, 3.14159265359);
+            normal = normalize(rotateY(normal, 3.14159265359));
+        }
 
-    if (faceType == 0 || faceType == 1) {
-        pos.z = -pos.z;
-        normal.z = -normal.z;
-    }
-    if (faceType == 2 || faceType == 3) {
-        pos.x = -pos.x;
-        normal.x = -normal.x;
+        if (faceType == 0 || faceType == 1) {
+            pos.z = -pos.z;
+            normal.z = -normal.z;
+        }
+        if (faceType == 2 || faceType == 3) {
+            pos.x = -pos.x;
+            normal.x = -normal.x;
+        }
     }
 
     if (isSlopeTop && faceType == 2) {
@@ -433,7 +448,7 @@ fn vs_main(input: VSIn) -> VSOut {
     }
 
     if (foliageWindEnabled && input.alpha < 0.0) {
-        if (!isPlant && !isSlopeFace && !isGrassCover && !isChalkDust && !isWallDecal && sectionTier == 0) {
+        if (!isPlant && !isSlopeFace && !isGrassCover && !isChalkDust && !isWallDecal && !isFarBillboard && sectionTier == 0) {
             let swayAmount = 0.05;
             let swaySpeed = 0.30;
             let phaseA = input.offset.x * 0.13 + input.offset.z * 0.17;
@@ -479,5 +494,6 @@ fn vs_main(input: VSIn) -> VSOut {
     out.alpha = input.alpha;
     out.aoCorners = input.ao;
     out.localRectUv = baseTex;
+    out.instanceScale = input.scale;
     return out;
 }

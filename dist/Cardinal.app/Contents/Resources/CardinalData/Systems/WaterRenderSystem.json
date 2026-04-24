@@ -1,0 +1,9 @@
+{
+    "init_steps": {},
+    "update_steps": {
+        "RenderWater": {
+            "dependencies": ["RendererContext", "WorldContext", "PlayerContext", "VoxelRenderContext"]
+        }
+    },
+    "cleanup_steps": {}
+}

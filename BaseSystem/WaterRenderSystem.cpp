@@ -18,27 +18,49 @@ namespace {
                                      const glm::vec3& cameraPos,
                                      std::vector<VisibleWaterSection>& outSections) {
         outSections.clear();
-        if (!baseSystem.voxelWorld || !baseSystem.voxelRender) return;
-        const VoxelWorldContext& voxelWorld = *baseSystem.voxelWorld;
-        const VoxelRenderContext& voxelRender = *baseSystem.voxelRender;
         size_t clusterCapacity = 0;
-        for (const auto& [_, clusters] : voxelRender.renderClusters) clusterCapacity += clusters.size();
+        if (baseSystem.voxelRender) {
+            for (const auto& [_, clusters] : baseSystem.voxelRender->renderClusters) clusterCapacity += clusters.size();
+        }
+        if (baseSystem.farTerrain && baseSystem.farTerrain->enabled) {
+            clusterCapacity += baseSystem.farTerrain->bodyRenderClusters.size();
+            clusterCapacity += baseSystem.farTerrain->handoffRenderClusters.size();
+        }
         outSections.reserve(clusterCapacity);
-        for (const auto& [sectionKey, clusters] : voxelRender.renderClusters) {
-            auto secIt = voxelWorld.sections.find(sectionKey);
-            if (secIt == voxelWorld.sections.end()) continue;
-            for (const VoxelRenderCluster& cluster : clusters) {
-                if (!chunkHasWaterBuffers(cluster.buffers)) continue;
-                if (!FrustumCullingSystemLogic::ShouldRenderWorldAabb(baseSystem, cluster.minBounds, cluster.maxBounds)) {
-                    continue;
-                }
-                if (OcclusionCullingSystemLogic::IsWorldAabbOccluded(baseSystem, cluster.minBounds, cluster.maxBounds)) {
-                    continue;
-                }
-                const glm::vec3 center = 0.5f * (cluster.minBounds + cluster.maxBounds);
-                const glm::vec3 delta = center - cameraPos;
-                outSections.push_back({&cluster.buffers, cluster.minBounds, cluster.maxBounds, glm::dot(delta, delta)});
+
+        auto appendCluster = [&](const VoxelRenderCluster& cluster) {
+            if (!chunkHasWaterBuffers(cluster.buffers)) return;
+            if (!FrustumCullingSystemLogic::ShouldRenderWorldAabb(baseSystem, cluster.minBounds, cluster.maxBounds)) {
+                return;
             }
+            if (OcclusionCullingSystemLogic::IsWorldAabbOccluded(baseSystem, cluster.minBounds, cluster.maxBounds)) {
+                return;
+            }
+            const glm::vec3 center = 0.5f * (cluster.minBounds + cluster.maxBounds);
+            const glm::vec3 delta = center - cameraPos;
+            outSections.push_back({&cluster.buffers, cluster.minBounds, cluster.maxBounds, glm::dot(delta, delta)});
+        };
+
+        if (baseSystem.voxelWorld && baseSystem.voxelRender) {
+            const VoxelWorldContext& voxelWorld = *baseSystem.voxelWorld;
+            const VoxelRenderContext& voxelRender = *baseSystem.voxelRender;
+            for (const auto& [sectionKey, clusters] : voxelRender.renderClusters) {
+                auto secIt = voxelWorld.sections.find(sectionKey);
+                if (secIt == voxelWorld.sections.end()) continue;
+                for (const VoxelRenderCluster& cluster : clusters) {
+                    appendCluster(cluster);
+                }
+            }
+        }
+
+        if (baseSystem.farTerrain && baseSystem.farTerrain->enabled) {
+            auto appendFarClusters = [&](const std::vector<VoxelRenderCluster>& clusters) {
+                for (const VoxelRenderCluster& cluster : clusters) {
+                    appendCluster(cluster);
+                }
+            };
+            appendFarClusters(baseSystem.farTerrain->bodyRenderClusters);
+            appendFarClusters(baseSystem.farTerrain->handoffRenderClusters);
         }
     }
 

@@ -910,11 +910,7 @@ namespace TerrainSystemLogic {
                     }
                     const Entity* topSurfaceProto = isBeach ? sandBeachProto : biomeSurfaceProto;
                     if (biomeID == 2 && !isBeach) {
-                        const uint32_t desertVariantSeed = hash2DInt(worldXi + 4049, worldZi - 8081);
-                        const size_t desertVariantIndex = static_cast<size_t>(
-                            desertVariantSeed % static_cast<uint32_t>(sandDesertVariantProtos.size())
-                        );
-                        topSurfaceProto = sandDesertVariantProtos[desertVariantIndex];
+                        topSurfaceProto = sandDesertProto;
                     }
                     if (isDepthLevel) {
                         isBeach = false;

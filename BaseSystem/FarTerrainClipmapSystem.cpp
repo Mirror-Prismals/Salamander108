@@ -5,6 +5,7 @@
 #include <limits>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace {
     struct FarTerrainBuildPerfStats {
@@ -15,6 +16,17 @@ namespace {
         double clusterPrepMs = 0.0;
         double clusterUploadMs = 0.0;
     };
+
+    constexpr int kFarTerrainWaterWaveClassPond = 1;
+    constexpr int kFarTerrainWaterWaveClassLake = 2;
+    constexpr int kFarTerrainWaterWaveClassRiver = 3;
+    constexpr int kFarTerrainWaterWaveClassOcean = 4;
+    constexpr float kFarTerrainPineBillboardAlpha = -34.0f;
+    constexpr float kFarTerrainBareBillboardAlpha = -35.0f;
+    constexpr float kFarTerrainJungleBillboardAlpha = -36.0f;
+    constexpr float kFarTerrainGrassBillboardAlpha = -37.0f;
+    constexpr int kFarTerrainTreeBillboardTileEncodeBase = 65536;
+    constexpr int kFarTerrainTreeBillboardTileStride = 1024;
 
     bool farTerrainGetRegistryBool(const BaseSystem& baseSystem, const std::string& key, bool fallback) {
         if (!baseSystem.registry) return fallback;
@@ -65,6 +77,20 @@ namespace {
         h ^= (h >> 13);
         h *= 1274126177u;
         h ^= (h >> 16);
+        return h;
+    }
+
+    uint64_t farTerrainHash3DInt(int x, int y, int z) {
+        uint64_t h = 1469598103934665603ull;
+        h ^= static_cast<uint64_t>(static_cast<uint32_t>(x));
+        h *= 1099511628211ull;
+        h ^= static_cast<uint64_t>(static_cast<uint32_t>(y));
+        h *= 1099511628211ull;
+        h ^= static_cast<uint64_t>(static_cast<uint32_t>(z));
+        h *= 1099511628211ull;
+        h ^= h >> 32u;
+        h *= 0xd6e8feb86659fd93ull;
+        h ^= h >> 32u;
         return h;
     }
 
@@ -292,6 +318,43 @@ namespace {
         };
     }
 
+    bool farTerrainIsWithinJungleVolcano(const ExpanseConfig& cfg,
+                                         int biomeID,
+                                         int worldX,
+                                         int worldZ) {
+        if (!cfg.loaded
+            || !cfg.jungleVolcanoEnabled
+            || !cfg.secondaryBiomeEnabled
+            || cfg.islandRadius <= 0.0f) {
+            return false;
+        }
+        if (biomeID != 3) return false;
+        const float centerFactorX = std::clamp(cfg.jungleVolcanoCenterFactorX, 0.0f, 1.0f);
+        const float centerFactorZ = std::clamp(cfg.jungleVolcanoCenterFactorZ, 0.0f, 1.0f);
+        const float volcanoCenterX = cfg.islandCenterX + cfg.islandRadius * centerFactorX;
+        const float volcanoCenterZ = cfg.islandCenterZ + cfg.islandRadius * centerFactorZ;
+        const float volcanoRadius = std::max(8.0f, cfg.jungleVolcanoOuterRadius);
+        const float dx = static_cast<float>(worldX) - volcanoCenterX;
+        const float dz = static_cast<float>(worldZ) - volcanoCenterZ;
+        return (dx * dx + dz * dz) <= (volcanoRadius * volcanoRadius);
+    }
+
+    int farTerrainTreeBillboardFaceTypeForCamera(const BaseSystem& baseSystem) {
+        const glm::vec2 forward = farTerrainCameraForwardXZ(baseSystem);
+        if (std::abs(forward.x) > std::abs(forward.y)) {
+            return forward.x >= 0.0f ? 1 : 0;
+        }
+        return forward.y >= 0.0f ? 5 : 4;
+    }
+
+    int farTerrainEncodeTreeBillboardTiles(int leafTile, int trunkTile) {
+        leafTile = std::clamp(leafTile, 0, kFarTerrainTreeBillboardTileStride - 1);
+        trunkTile = std::clamp(trunkTile, 0, kFarTerrainTreeBillboardTileStride - 1);
+        return kFarTerrainTreeBillboardTileEncodeBase
+            + leafTile * kFarTerrainTreeBillboardTileStride
+            + trunkTile;
+    }
+
     struct FarTerrainHydrologyCell {
         bool valid = false;
         bool centerIsLand = false;
@@ -342,6 +405,14 @@ namespace {
         float riverDepthMultiplier = 3.0f;
         std::unordered_map<uint64_t, FarTerrainHydrologyCell> lakeCache;
         std::unordered_map<uint64_t, FarTerrainHydrologyCell> pondCache;
+    };
+
+    struct FarTerrainHydrologySample {
+        int terrainSurfaceY = 0;
+        bool hasWater = false;
+        int waterSurfaceY = 0;
+        int waterFloorY = 0;
+        int waterWaveClass = 0;
     };
 
     uint64_t farTerrainHydrologyCellKey(int cellX, int cellZ) {
@@ -466,15 +537,23 @@ namespace {
         return sampler.pondCache.emplace(key, info).first->second;
     }
 
-    int farTerrainHydrologySurfaceY(FarTerrainHydrologySampler& sampler,
-                                    const WorldContext& world,
-                                    float worldX,
-                                    float worldZ,
-                                    bool isLand,
-                                    int rawSurfaceY) {
-        if (!isLand || sampler.isDepthLevel) return rawSurfaceY;
+    FarTerrainHydrologySample farTerrainHydrologySample(FarTerrainHydrologySampler& sampler,
+                                                        const WorldContext& world,
+                                                        float worldX,
+                                                        float worldZ,
+                                                        bool isLand,
+                                                        int rawSurfaceY) {
+        FarTerrainHydrologySample result{};
+        result.terrainSurfaceY = rawSurfaceY;
+        result.waterSurfaceY = rawSurfaceY;
+        result.waterFloorY = rawSurfaceY;
+        if (!isLand || sampler.isDepthLevel) return result;
 
         int surfaceY = rawSurfaceY;
+        bool hasWater = false;
+        int waterSurfaceY = rawSurfaceY;
+        int waterFloorY = rawSurfaceY;
+        int waterWaveClass = 0;
         const int worldXi = static_cast<int>(std::floor(worldX));
         const int worldZi = static_cast<int>(std::floor(worldZ));
         const ExpanseConfig& cfg = world.expanse;
@@ -521,6 +600,10 @@ namespace {
                             if (lakeFloorY < surfaceY && lakeWaterY > sampler.waterSurfaceY) {
                                 surfaceY = lakeFloorY;
                                 lakeColumn = true;
+                                hasWater = true;
+                                waterSurfaceY = lakeWaterY;
+                                waterFloorY = lakeFloorY;
+                                waterWaveClass = kFarTerrainWaterWaveClassLake;
                             }
                         }
                     }
@@ -569,6 +652,10 @@ namespace {
                             if (pondFloorY < surfaceY && pondWaterY > sampler.waterSurfaceY) {
                                 surfaceY = pondFloorY;
                                 pondColumn = true;
+                                hasWater = true;
+                                waterSurfaceY = pondWaterY;
+                                waterFloorY = pondFloorY;
+                                waterWaveClass = kFarTerrainWaterWaveClassPond;
                             }
                         }
                     }
@@ -627,12 +714,21 @@ namespace {
                     );
                     if (riverWaterY > sampler.waterSurfaceY && baseRiverFloorY < surfaceY) {
                         surfaceY = baseRiverFloorY;
+                        hasWater = true;
+                        waterSurfaceY = riverWaterY;
+                        waterFloorY = baseRiverFloorY;
+                        waterWaveClass = kFarTerrainWaterWaveClassRiver;
                     }
                 }
             }
         }
 
-        return surfaceY;
+        result.terrainSurfaceY = surfaceY;
+        result.hasWater = hasWater;
+        result.waterSurfaceY = waterSurfaceY;
+        result.waterFloorY = waterFloorY;
+        result.waterWaveClass = waterWaveClass;
+        return result;
     }
 
     const Entity* farTerrainFindPrototypeByName(const char* name, const std::vector<Entity>& prototypes) {
@@ -697,6 +793,10 @@ namespace {
         visibleFaceCount = 0;
     }
 
+    void farTerrainClearWaterFaceSet(std::array<std::vector<WaterFaceInstanceRenderData>, 6>& faces) {
+        for (auto& batch : faces) batch.clear();
+    }
+
     void farTerrainSyncVisibleFaceCount(FarTerrainClipmapContext& ctx) {
         ctx.visibleFaceCount = ctx.handoffVisibleFaceCount + ctx.bodyVisibleFaceCount;
     }
@@ -704,6 +804,8 @@ namespace {
     void farTerrainClearAllFaces(FarTerrainClipmapContext& ctx) {
         farTerrainClearFaceSet(ctx.handoffFaces, ctx.handoffVisibleFaceCount);
         farTerrainClearFaceSet(ctx.bodyFaces, ctx.bodyVisibleFaceCount);
+        farTerrainClearWaterFaceSet(ctx.handoffWaterSurfaceFaces);
+        farTerrainClearWaterFaceSet(ctx.bodyWaterSurfaceFaces);
         farTerrainSyncVisibleFaceCount(ctx);
         ctx.lastLandCellCount = 0;
         ctx.lastHandoffCellCount = 0;
@@ -715,6 +817,10 @@ namespace {
         ctx.visibleRingCount = 0;
         ctx.lodCellCounts.fill(0);
         ctx.lodFaceCounts.fill(0);
+    }
+
+    int farTerrainCellTopYForBounds(const FarTerrainCachedCell& cell) {
+        return cell.hasWaterSurface ? std::max(cell.topY, cell.waterSurfaceY) : cell.topY;
     }
 
     void farTerrainDestroyRenderBuffer(BaseSystem& baseSystem,
@@ -820,6 +926,7 @@ namespace {
 
     void farTerrainUploadRenderClusterSet(BaseSystem& baseSystem,
                                           const std::array<std::vector<FaceInstanceRenderData>, 6>& faces,
+                                          const std::array<std::vector<WaterFaceInstanceRenderData>, 6>& waterSurfaceFaces,
                                           int clusterSizeBlocks,
                                           std::vector<VoxelRenderCluster>& renderClusters,
                                           ChunkRenderBuffers& legacyRenderBuffers,
@@ -858,6 +965,14 @@ namespace {
                     farTerrainClusterCoordForPosition(face.position, clusterSizeBlocks);
                 FarTerrainClusterPreparedMesh& cluster = getCluster(coord);
                 cluster.mesh.opaqueFaces[static_cast<size_t>(faceType)].push_back(face);
+                const glm::vec3 halfExtents = farTerrainFaceHalfExtents(faceType, face.scale);
+                farTerrainExpandClusterBounds(cluster, face.position - halfExtents, face.position + halfExtents);
+            }
+            for (const WaterFaceInstanceRenderData& face : waterSurfaceFaces[static_cast<size_t>(faceType)]) {
+                const FarTerrainRenderClusterCoord coord =
+                    farTerrainClusterCoordForPosition(face.position, clusterSizeBlocks);
+                FarTerrainClusterPreparedMesh& cluster = getCluster(coord);
+                cluster.mesh.waterSurfaceFaces[static_cast<size_t>(faceType)].push_back(face);
                 const glm::vec3 halfExtents = farTerrainFaceHalfExtents(faceType, face.scale);
                 farTerrainExpandClusterBounds(cluster, face.position - halfExtents, face.position + halfExtents);
             }
@@ -904,6 +1019,7 @@ namespace {
         farTerrainUploadRenderClusterSet(
             baseSystem,
             ctx.handoffFaces,
+            ctx.handoffWaterSurfaceFaces,
             handoffClusterSizeBlocks,
             ctx.handoffRenderClusters,
             ctx.handoffRenderBuffers,
@@ -914,6 +1030,7 @@ namespace {
         farTerrainUploadRenderClusterSet(
             baseSystem,
             ctx.bodyFaces,
+            ctx.bodyWaterSurfaceFaces,
             bodyClusterSizeBlocks,
             ctx.bodyRenderClusters,
             ctx.bodyRenderBuffers,
@@ -1196,6 +1313,443 @@ namespace {
             perfStats->topGreedyMs += std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - greedyStart
             ).count();
+        }
+    }
+
+    struct FarTerrainWaterCellInfo {
+        int gridX = 0;
+        int gridZ = 0;
+        int waterSurfaceY = 0;
+        int waterFloorY = 0;
+        int waterWaveClass = 0;
+    };
+
+    bool farTerrainWaterCellsCompatible(const FarTerrainWaterCellInfo& a,
+                                        const FarTerrainWaterCellInfo& b) {
+        return a.waterSurfaceY == b.waterSurfaceY
+            && a.waterFloorY == b.waterFloorY
+            && a.waterWaveClass == b.waterWaveClass;
+    }
+
+    void farTerrainAppendGreedyWaterSurfaceFaces(
+        std::array<std::vector<WaterFaceInstanceRenderData>, 6>& waterSurfaceFaces,
+        size_t& visibleFaceCount,
+        const std::vector<FarTerrainCachedCell>& cells,
+        int cellSize
+    ) {
+        if (cells.empty() || cellSize <= 0) return;
+
+        int minCellX = std::numeric_limits<int>::max();
+        int maxCellX = std::numeric_limits<int>::min();
+        int minCellZ = std::numeric_limits<int>::max();
+        int maxCellZ = std::numeric_limits<int>::min();
+        std::vector<FarTerrainWaterCellInfo> waterCells;
+        waterCells.reserve(cells.size());
+        std::unordered_map<uint64_t, size_t> waterCellIndex;
+        waterCellIndex.reserve(cells.size() * 2);
+
+        for (const FarTerrainCachedCell& cell : cells) {
+            if (!cell.hasWaterSurface || cell.waterWaveClass <= 0) continue;
+            const int gridX = farTerrainFloorDivInt(cell.x, cellSize);
+            const int gridZ = farTerrainFloorDivInt(cell.z, cellSize);
+            minCellX = std::min(minCellX, gridX);
+            maxCellX = std::max(maxCellX, gridX);
+            minCellZ = std::min(minCellZ, gridZ);
+            maxCellZ = std::max(maxCellZ, gridZ);
+            const size_t index = waterCells.size();
+            waterCells.push_back({
+                gridX,
+                gridZ,
+                cell.waterSurfaceY,
+                cell.waterFloorY,
+                cell.waterWaveClass
+            });
+            waterCellIndex.emplace(farTerrainCellKey(gridX, gridZ), index);
+        }
+        if (waterCells.empty()) return;
+
+        std::vector<uint8_t> consumed(waterCells.size(), 0u);
+        for (int cellZ = minCellZ; cellZ <= maxCellZ; ++cellZ) {
+            for (int cellX = minCellX; cellX <= maxCellX; ++cellX) {
+                auto startIt = waterCellIndex.find(farTerrainCellKey(cellX, cellZ));
+                if (startIt == waterCellIndex.end()) continue;
+                const size_t startIndex = startIt->second;
+                if (consumed[startIndex]) continue;
+
+                const FarTerrainWaterCellInfo& startCell = waterCells[startIndex];
+                int spanXCells = 1;
+                while (true) {
+                    const int nextX = cellX + spanXCells;
+                    auto nextIt = waterCellIndex.find(farTerrainCellKey(nextX, cellZ));
+                    if (nextIt == waterCellIndex.end()) break;
+                    const size_t nextIndex = nextIt->second;
+                    if (consumed[nextIndex]
+                        || !farTerrainWaterCellsCompatible(startCell, waterCells[nextIndex])) {
+                        break;
+                    }
+                    spanXCells += 1;
+                }
+
+                int spanZCells = 1;
+                while (true) {
+                    const int nextZ = cellZ + spanZCells;
+                    bool rowMatches = true;
+                    for (int dx = 0; dx < spanXCells; ++dx) {
+                        auto rowIt = waterCellIndex.find(farTerrainCellKey(cellX + dx, nextZ));
+                        if (rowIt == waterCellIndex.end()) {
+                            rowMatches = false;
+                            break;
+                        }
+                        const size_t rowIndex = rowIt->second;
+                        if (consumed[rowIndex]
+                            || !farTerrainWaterCellsCompatible(startCell, waterCells[rowIndex])) {
+                            rowMatches = false;
+                            break;
+                        }
+                    }
+                    if (!rowMatches) break;
+                    spanZCells += 1;
+                }
+
+                for (int dz = 0; dz < spanZCells; ++dz) {
+                    for (int dx = 0; dx < spanXCells; ++dx) {
+                        auto markIt = waterCellIndex.find(farTerrainCellKey(cellX + dx, cellZ + dz));
+                        if (markIt != waterCellIndex.end()) {
+                            consumed[markIt->second] = 1u;
+                        }
+                    }
+                }
+
+                const int spanXBlocks = spanXCells * cellSize;
+                const int spanZBlocks = spanZCells * cellSize;
+                if (spanXBlocks <= 0 || spanZBlocks <= 0) continue;
+
+                WaterFaceInstanceRenderData face{};
+                face.position = glm::vec3(
+                    static_cast<float>(cellX * cellSize) + 0.5f * static_cast<float>(spanXBlocks - 1),
+                    static_cast<float>(startCell.waterSurfaceY) + 0.5f,
+                    static_cast<float>(cellZ * cellSize) + 0.5f * static_cast<float>(spanZBlocks - 1)
+                );
+                face.waveClass = static_cast<float>(startCell.waterWaveClass);
+                const float depth = static_cast<float>(std::max(1, startCell.waterSurfaceY - startCell.waterFloorY + 1));
+                face.metrics = glm::vec4(depth, depth, 0.0f, 0.0f);
+                face.scale = glm::vec2(static_cast<float>(spanXBlocks), static_cast<float>(spanZBlocks));
+                face.uvScale = face.scale;
+                waterSurfaceFaces[2].push_back(face);
+                visibleFaceCount += 1;
+            }
+        }
+    }
+
+    void farTerrainAppendTreeBillboardFaces(std::array<std::vector<FaceInstanceRenderData>, 6>& faces,
+                                            size_t& visibleFaceCount,
+                                            const BaseSystem& baseSystem,
+                                            const WorldContext& world,
+                                            const std::vector<FarTerrainCachedCell>& cells) {
+        if (cells.empty()) return;
+        if (!farTerrainGetRegistryBool(baseSystem, "FarTerrainTreeBillboardsEnabled", true)) return;
+
+        const int minCellSize = std::max(2, farTerrainGetRegistryInt(baseSystem, "FarTerrainTreeBillboardMinCellSize", 2));
+        const int maxPerCell = std::max(1, std::min(16, farTerrainGetRegistryInt(baseSystem, "FarTerrainTreeBillboardMaxPerCell", 4)));
+        const int attemptsPerBillboard = std::max(8, std::min(256, farTerrainGetRegistryInt(baseSystem, "FarTerrainTreeBillboardAttemptsPerBillboard", 64)));
+        const int faceType = farTerrainTreeBillboardFaceTypeForCamera(baseSystem);
+
+        const int pineCanopyBaseHeight = std::max(2, farTerrainGetRegistryInt(baseSystem, "PineCanopyBaseHeight", 10));
+        constexpr int kPineBaseTrunkHeight = 30;
+        constexpr int kPineBaseCanopyLayers = 30;
+        const int pineBaseCanopyOffset = std::max(1, kPineBaseTrunkHeight - pineCanopyBaseHeight);
+        const int pineBaseCanopyBase = std::max(2, kPineBaseTrunkHeight - pineBaseCanopyOffset);
+        const int pineBaseTopOverhang = kPineBaseCanopyLayers - pineBaseCanopyOffset - 1;
+        const int pineMinTrunkHeight = std::max(6, farTerrainGetRegistryInt(baseSystem, "PineTrunkHeightMin", 15));
+        const int pineMaxTrunkHeight = std::max(
+            pineMinTrunkHeight,
+            farTerrainGetRegistryInt(baseSystem, "PineTrunkHeightMax", kPineBaseTrunkHeight)
+        );
+        const bool meadowTreeGenerationEnabled = farTerrainGetRegistryBool(baseSystem, "MeadowTreeGenerationEnabled", true);
+        const int meadowTreeSpawnModulo = std::max(1, farTerrainGetRegistryInt(baseSystem, "MeadowTreeSpawnModulo", 140));
+        const int jungleTreeSpawnModulo = std::max(1, farTerrainGetRegistryInt(baseSystem, "JungleTreeSpawnModulo", 1000));
+        const int jungleTreeTrunkMin = std::max(4, farTerrainGetRegistryInt(baseSystem, "JungleTreeTrunkHeightMin", 6));
+        const int jungleTreeTrunkMax = std::max(jungleTreeTrunkMin, farTerrainGetRegistryInt(baseSystem, "JungleTreeTrunkHeightMax", 9));
+        const int jungleTreeCanopyRadius = std::max(2, std::min(8, farTerrainGetRegistryInt(baseSystem, "JungleTreeCanopyRadius", 4)));
+        const int bareTreeSpawnModulo = std::max(1, farTerrainGetRegistryInt(baseSystem, "BareTreeSpawnModulo", 380));
+        const int bareTreeTrunkMin = std::max(4, farTerrainGetRegistryInt(baseSystem, "BareTreeTrunkHeightMin", 7));
+        const int bareTreeTrunkMax = std::max(bareTreeTrunkMin, farTerrainGetRegistryInt(baseSystem, "BareTreeTrunkHeightMax", 12));
+        const bool islandQuadrants = (world.expanse.islandRadius > 0.0f) && world.expanse.secondaryBiomeEnabled;
+        const int waterSurfaceY = static_cast<int>(std::floor(world.expanse.waterSurface));
+        const bool hasSeaLevelWater = world.expanse.waterSurface > world.expanse.waterFloor;
+
+        for (const FarTerrainCachedCell& cell : cells) {
+            if (cell.size < minCellSize || cell.size <= 0 || cell.hasWaterSurface) continue;
+            const int area = cell.size * cell.size;
+            const int targetCount = std::max(1, std::min(maxPerCell, area / 96));
+            const int maxAttempts = std::min(4096, targetCount * attemptsPerBillboard);
+            int emitted = 0;
+            std::unordered_set<uint64_t> emittedPositions;
+            emittedPositions.reserve(static_cast<size_t>(targetCount * 2));
+
+            auto tryEmitTreeBillboard = [&](int worldX, int worldZ) {
+                const uint64_t posKey = farTerrainCellKey(worldX, worldZ);
+                if (!emittedPositions.emplace(posKey).second) return false;
+
+                const int biomeID = ExpanseBiomeSystemLogic::ResolveBiome(
+                    world,
+                    static_cast<float>(worldX),
+                    static_cast<float>(worldZ)
+                );
+                if (biomeID == 2) return false;
+                if (farTerrainIsWithinJungleVolcano(world.expanse, biomeID, worldX, worldZ)) return false;
+
+                int kind = -1;
+                if (biomeID == 0
+                    && (farTerrainHash2DInt(worldX, worldZ) % 100u) == 0u) {
+                    kind = 0;
+                } else if (meadowTreeGenerationEnabled
+                    && biomeID == 1
+                    && (farTerrainHash2DInt(worldX + 571, worldZ - 313) % static_cast<uint32_t>(meadowTreeSpawnModulo)) == 0u) {
+                    kind = 0;
+                } else if (islandQuadrants
+                    && (biomeID == 0 || biomeID == 3)
+                    && (farTerrainHash2DInt(worldX + 173, worldZ - 911) % static_cast<uint32_t>(jungleTreeSpawnModulo)) == 0u) {
+                    kind = 2;
+                } else if (biomeID == 4
+                    && (farTerrainHash2DInt(worldX - 433, worldZ + 1259) % static_cast<uint32_t>(bareTreeSpawnModulo)) == 0u) {
+                    kind = 1;
+                }
+                if (kind < 0) return false;
+
+                float terrainHeight = 0.0f;
+                const bool isLand = ExpanseBiomeSystemLogic::SampleTerrain(
+                    world,
+                    static_cast<float>(worldX),
+                    static_cast<float>(worldZ),
+                    terrainHeight
+                );
+                if (!isLand) return false;
+                const int groundY = static_cast<int>(std::floor(terrainHeight));
+                if (hasSeaLevelWater && groundY <= waterSurfaceY) return false;
+
+                float billboardHeight = 8.0f;
+                float billboardWidth = 4.0f;
+                float alphaTag = kFarTerrainPineBillboardAlpha;
+                const uint32_t tileSeed = farTerrainHash2DInt(worldX + 2111, worldZ - 3499);
+                int leafTile = 382 + static_cast<int>(tileSeed & 3u);
+                int trunkTile = 12 + static_cast<int>((tileSeed >> 5u) & 1u);
+                if (kind == 0) {
+                    const int pineHeightSpan = pineMaxTrunkHeight - pineMinTrunkHeight + 1;
+                    const uint32_t pineSeed = farTerrainHash2DInt(worldX + 9091, worldZ - 7919);
+                    const int trunkHeight = pineMinTrunkHeight
+                        + static_cast<int>(pineSeed % static_cast<uint32_t>(pineHeightSpan));
+                    const int canopyTop = std::max(pineBaseCanopyBase, trunkHeight + pineBaseTopOverhang);
+                    const int treeHeight = std::max(trunkHeight, canopyTop);
+                    billboardHeight = static_cast<float>(treeHeight) + 1.0f;
+                    billboardWidth = glm::clamp(billboardHeight * 0.34f, 5.0f, 14.0f);
+                    alphaTag = kFarTerrainPineBillboardAlpha;
+                    leafTile = 382 + static_cast<int>(tileSeed & 3u);
+                    trunkTile = 12 + static_cast<int>((tileSeed >> 5u) & 1u);
+                } else if (kind == 1) {
+                    const uint32_t bareSeed = farTerrainHash2DInt(worldX + 6097, worldZ - 2953);
+                    const int bareHeightSpan = bareTreeTrunkMax - bareTreeTrunkMin + 1;
+                    const int trunkHeight = bareTreeTrunkMin
+                        + static_cast<int>(bareSeed % static_cast<uint32_t>(bareHeightSpan));
+                    billboardHeight = static_cast<float>(trunkHeight + 3);
+                    billboardWidth = glm::clamp(billboardHeight * 0.46f, 3.5f, 7.0f);
+                    alphaTag = kFarTerrainBareBillboardAlpha;
+                    leafTile = 376 + static_cast<int>(tileSeed & 1u);
+                    trunkTile = 18;
+                } else {
+                    const uint32_t jungleSeed = farTerrainHash2DInt(worldX + 4041, worldZ - 7927);
+                    const int jungleHeightSpan = jungleTreeTrunkMax - jungleTreeTrunkMin + 1;
+                    const int trunkHeight = jungleTreeTrunkMin
+                        + static_cast<int>(jungleSeed % static_cast<uint32_t>(jungleHeightSpan));
+                    billboardHeight = static_cast<float>(trunkHeight + 2 + jungleTreeCanopyRadius);
+                    billboardWidth = glm::clamp(static_cast<float>(jungleTreeCanopyRadius) * 2.6f, 5.5f, 15.0f);
+                    alphaTag = kFarTerrainJungleBillboardAlpha;
+                    leafTile = 376 + static_cast<int>(tileSeed & 1u);
+                    trunkTile = 18;
+                }
+                billboardWidth = std::max(1.0f, std::round(billboardWidth));
+                billboardHeight = std::max(1.0f, std::round(billboardHeight));
+
+                FaceInstanceRenderData face{};
+                face.position = glm::vec3(
+                    static_cast<float>(worldX) + 0.5f,
+                    static_cast<float>(groundY + 1) + billboardHeight * 0.5f,
+                    static_cast<float>(worldZ) + 0.5f
+                );
+                face.tileIndex = farTerrainEncodeTreeBillboardTiles(leafTile, trunkTile);
+                face.color = glm::vec3(1.0f);
+                face.alpha = alphaTag;
+                face.ao = glm::vec4(1.0f);
+                face.scale = glm::vec2(billboardWidth, billboardHeight);
+                face.uvScale = face.scale;
+                faces[static_cast<size_t>(faceType)].push_back(face);
+                visibleFaceCount += 1;
+                emitted += 1;
+                return true;
+            };
+
+            if (cell.size <= 16) {
+                const int totalCandidates = cell.size * cell.size;
+                const int startOffset = static_cast<int>(
+                    farTerrainHash3DInt(cell.x, cell.lodRing * 997, cell.z)
+                    % static_cast<uint64_t>(std::max(1, totalCandidates))
+                );
+                for (int i = 0; i < totalCandidates && emitted < targetCount; ++i) {
+                    const int offset = (startOffset + i) % totalCandidates;
+                    const int worldX = cell.x + (offset % cell.size);
+                    const int worldZ = cell.z + (offset / cell.size);
+                    tryEmitTreeBillboard(worldX, worldZ);
+                }
+                continue;
+            }
+
+            for (int attempt = 0; attempt < maxAttempts && emitted < targetCount; ++attempt) {
+                const uint64_t h = farTerrainHash3DInt(cell.x, attempt + cell.lodRing * 997, cell.z);
+                const int worldX = cell.x + static_cast<int>(h % static_cast<uint64_t>(cell.size));
+                const int worldZ = cell.z + static_cast<int>((h >> 17u) % static_cast<uint64_t>(cell.size));
+                tryEmitTreeBillboard(worldX, worldZ);
+            }
+        }
+    }
+
+    const char* farTerrainGrassBillboardPrototypeForBiome(int biomeID,
+                                                          bool islandQuadrants,
+                                                          uint32_t seed,
+                                                          int shortGrassPercent) {
+        if (biomeID == 2) return nullptr;
+        if (biomeID == 1) {
+            if (static_cast<int>((seed >> 11u) % 100u) < shortGrassPercent) {
+                return "GrassTuftShortMeadow";
+            }
+            return "GrassTuftMeadow";
+        }
+        if (islandQuadrants && biomeID == 3) {
+            return "GrassTuftJungle";
+        }
+        if (biomeID == 4) {
+            static const std::array<const char*, 4> kBareGrass = {
+                "GrassTuftBareV001",
+                "GrassTuftBareV002",
+                "GrassTuftBareV003",
+                "GrassTuftBareV004"
+            };
+            return kBareGrass[static_cast<size_t>((seed >> 14u) & 3u)];
+        }
+        if (static_cast<int>((seed >> 11u) % 100u) < shortGrassPercent) {
+            return "GrassTuftShort";
+        }
+        return "GrassTuft";
+    }
+
+    void farTerrainAppendGrassBillboardFaces(std::array<std::vector<FaceInstanceRenderData>, 6>& faces,
+                                             size_t& visibleFaceCount,
+                                             const BaseSystem& baseSystem,
+                                             const WorldContext& world,
+                                             FarTerrainMaterialTileCache& tileCache,
+                                             const std::vector<FarTerrainCachedCell>& cells) {
+        if (cells.empty()) return;
+        if (!farTerrainGetRegistryBool(baseSystem, "FarTerrainGrassBillboardsEnabled", true)) return;
+
+        const int minCellSize = std::max(2, farTerrainGetRegistryInt(baseSystem, "FarTerrainGrassBillboardMinCellSize", 4));
+        const int maxPerCell = std::max(1, std::min(32, farTerrainGetRegistryInt(baseSystem, "FarTerrainGrassBillboardMaxPerCell", 3)));
+        const int attemptsPerBillboard = std::max(4, std::min(128, farTerrainGetRegistryInt(baseSystem, "FarTerrainGrassBillboardAttemptsPerBillboard", 24)));
+        const int grassSpawnModulo = std::max(1, farTerrainGetRegistryInt(baseSystem, "GrassSpawnModulo", 1));
+        const int grassTuftPercent = std::max(0, std::min(100, farTerrainGetRegistryInt(baseSystem, "GrassTuftPercent", 45)));
+        const int shortGrassPercent = std::max(0, std::min(100, farTerrainGetRegistryInt(baseSystem, "ShortGrassPercent", 50)));
+        if (grassTuftPercent <= 0) return;
+
+        const int faceType = farTerrainTreeBillboardFaceTypeForCamera(baseSystem);
+        const bool islandQuadrants = (world.expanse.islandRadius > 0.0f) && world.expanse.secondaryBiomeEnabled;
+        const int waterSurfaceY = static_cast<int>(std::floor(world.expanse.waterSurface));
+        const bool hasSeaLevelWater = world.expanse.waterSurface > world.expanse.waterFloor;
+
+        for (const FarTerrainCachedCell& cell : cells) {
+            if (cell.size < minCellSize || cell.size <= 0 || cell.hasWaterSurface) continue;
+            const int area = cell.size * cell.size;
+            const int targetCount = std::max(1, std::min(maxPerCell, area / 96));
+            const int maxAttempts = std::min(2048, targetCount * attemptsPerBillboard);
+            int emitted = 0;
+            std::unordered_set<uint64_t> emittedPositions;
+            emittedPositions.reserve(static_cast<size_t>(targetCount * 2));
+
+            auto tryEmitGrassBillboard = [&](int worldX, int worldZ) {
+                const uint64_t posKey = farTerrainCellKey(worldX, worldZ);
+                if (!emittedPositions.emplace(posKey).second) return false;
+
+                const int biomeID = ExpanseBiomeSystemLogic::ResolveBiome(
+                    world,
+                    static_cast<float>(worldX),
+                    static_cast<float>(worldZ)
+                );
+                if (biomeID == 2) return false;
+
+                const uint32_t seed = farTerrainHash2DInt(worldX, worldZ);
+                if (((seed >> 1u) % static_cast<uint32_t>(grassSpawnModulo)) != 0u) return false;
+                const uint32_t tuftSeed = farTerrainHash2DInt(worldX + 1847, worldZ - 563);
+                if (static_cast<int>(tuftSeed % 100u) >= grassTuftPercent) return false;
+
+                float terrainHeight = 0.0f;
+                const bool isLand = ExpanseBiomeSystemLogic::SampleTerrain(
+                    world,
+                    static_cast<float>(worldX),
+                    static_cast<float>(worldZ),
+                    terrainHeight
+                );
+                if (!isLand) return false;
+                const int groundY = static_cast<int>(std::floor(terrainHeight));
+                if (hasSeaLevelWater && groundY <= waterSurfaceY) return false;
+
+                const char* prototypeName = farTerrainGrassBillboardPrototypeForBiome(
+                    biomeID,
+                    islandQuadrants,
+                    seed,
+                    shortGrassPercent
+                );
+                if (!prototypeName) return false;
+
+                const int tileIndex = tileCache.get(prototypeName, 2);
+                if (tileIndex < 0) return false;
+                const std::string prototypeNameString(prototypeName);
+                const bool shortGrass = prototypeNameString.find("Short") != std::string::npos;
+                const float billboardHeight = shortGrass ? 0.72f : 1.05f;
+                const float billboardWidth = shortGrass ? 0.72f : 0.92f;
+
+                FaceInstanceRenderData face{};
+                face.position = glm::vec3(
+                    static_cast<float>(worldX) + 0.5f,
+                    static_cast<float>(groundY + 1) + billboardHeight * 0.5f,
+                    static_cast<float>(worldZ) + 0.5f
+                );
+                face.tileIndex = tileIndex;
+                face.color = glm::vec3(1.0f);
+                face.alpha = kFarTerrainGrassBillboardAlpha;
+                face.ao = glm::vec4(1.0f);
+                face.scale = glm::vec2(billboardWidth, billboardHeight);
+                face.uvScale = glm::vec2(1.0f);
+                faces[static_cast<size_t>(faceType)].push_back(face);
+                visibleFaceCount += 1;
+                emitted += 1;
+                return true;
+            };
+
+            if (cell.size <= 8) {
+                for (int dz = 0; dz < cell.size && emitted < targetCount; ++dz) {
+                    for (int dx = 0; dx < cell.size && emitted < targetCount; ++dx) {
+                        tryEmitGrassBillboard(cell.x + dx, cell.z + dz);
+                    }
+                }
+                continue;
+            }
+
+            for (int attempt = 0; attempt < maxAttempts && emitted < targetCount; ++attempt) {
+                const uint32_t h = farTerrainHash2DInt(
+                    cell.x + attempt * 733 + cell.size * 17,
+                    cell.z - attempt * 977 - cell.size * 29
+                );
+                const int localX = static_cast<int>(h % static_cast<uint32_t>(cell.size));
+                const int localZ = static_cast<int>((h >> 16u) % static_cast<uint32_t>(cell.size));
+                tryEmitGrassBillboard(cell.x + localX, cell.z + localZ);
+            }
         }
     }
 
@@ -1660,7 +2214,9 @@ namespace {
     }
 
     void farTerrainAppendCellFaces(std::array<std::vector<FaceInstanceRenderData>, 6>& faces,
+                                   std::array<std::vector<WaterFaceInstanceRenderData>, 6>& waterSurfaceFaces,
                                    size_t& visibleFaceCount,
+                                   const BaseSystem& baseSystem,
                                    const WorldContext& world,
                                    const std::vector<Entity>& prototypes,
                                    const std::vector<FarTerrainCachedCell>& cells,
@@ -1697,7 +2253,29 @@ namespace {
                 entry.first,
                 perfStats
             );
+            farTerrainAppendGreedyWaterSurfaceFaces(
+                waterSurfaceFaces,
+                visibleFaceCount,
+                entry.second,
+                entry.first
+            );
         }
+
+        farTerrainAppendTreeBillboardFaces(
+            faces,
+            visibleFaceCount,
+            baseSystem,
+            world,
+            cells
+        );
+        farTerrainAppendGrassBillboardFaces(
+            faces,
+            visibleFaceCount,
+            baseSystem,
+            world,
+            tileCache,
+            cells
+        );
 
         std::unordered_map<FarTerrainVerticalRunKey, std::vector<std::pair<int, int>>, FarTerrainVerticalRunKeyHash> verticalRuns;
         std::unordered_map<FarTerrainVerticalRunKey, FarTerrainVerticalRunInfo, FarTerrainVerticalRunKeyHash> verticalRunInfos;
@@ -1845,6 +2423,7 @@ namespace {
                                        size_t* outSuppressedCellCount = nullptr,
                                        FarTerrainBuildPerfStats* perfStats = nullptr) {
         farTerrainClearFaceSet(ctx.handoffFaces, ctx.handoffVisibleFaceCount);
+        farTerrainClearWaterFaceSet(ctx.handoffWaterSurfaceFaces);
         std::vector<FarTerrainCachedCell> visibleCells;
         visibleCells.reserve(ctx.handoffCells.size());
         std::unordered_map<VoxelSectionKey, bool, VoxelSectionKeyHash> coverageCache;
@@ -1866,6 +2445,7 @@ namespace {
                 continue;
             }
             ctx.frustumCellTests += 1;
+            const int cellRenderTopY = farTerrainCellTopYForBounds(cell);
             const int cellBottomY = std::max(worldMinY, std::max(waterFloorY, cell.topY - skirtDepth));
             if (!farTerrainConservativeAabbVisible(
                     baseSystem,
@@ -1873,7 +2453,7 @@ namespace {
                     cellBottomY,
                     cell.z,
                     cell.x + cell.size,
-                    cell.topY + 1,
+                    cellRenderTopY + 1,
                     cell.z + cell.size
                 )) {
                 ctx.frustumCellRejected += 1;
@@ -1888,7 +2468,9 @@ namespace {
         }
         farTerrainAppendCellFaces(
             ctx.handoffFaces,
+            ctx.handoffWaterSurfaceFaces,
             ctx.handoffVisibleFaceCount,
+            baseSystem,
             world,
             prototypes,
             visibleCells,
@@ -2268,16 +2850,19 @@ namespace FarTerrainClipmapSystemLogic {
                             float height = 0.0f;
                             const bool isLand = ExpanseBiomeSystemLogic::SampleTerrain(world, centerX, centerZ, height);
                             const int rawSurfaceY = static_cast<int>(std::floor(height));
-                            const int resolvedSurfaceY = isLand
-                                ? farTerrainHydrologySurfaceY(
+                            FarTerrainHydrologySample hydrology{};
+                            int resolvedSurfaceY = waterFloorY;
+                            if (isLand) {
+                                hydrology = farTerrainHydrologySample(
                                     hydrologySampler,
                                     world,
                                     centerX,
                                     centerZ,
                                     isLand,
                                     rawSurfaceY
-                                )
-                                : waterFloorY;
+                                );
+                                resolvedSurfaceY = hydrology.terrainSurfaceY;
+                            }
 
                             const int biome = isLand
                                 ? ExpanseBiomeSystemLogic::ResolveBiome(world, centerX, centerZ)
@@ -2294,6 +2879,17 @@ namespace FarTerrainClipmapSystemLogic {
                             cell.size = cellSize;
                             cell.topY = std::max(resolvedSurfaceY, waterFloorY);
                             cell.lodRing = ring;
+                            if (isLand && hydrology.hasWater) {
+                                cell.hasWaterSurface = true;
+                                cell.waterSurfaceY = hydrology.waterSurfaceY;
+                                cell.waterFloorY = hydrology.waterFloorY;
+                                cell.waterWaveClass = hydrology.waterWaveClass;
+                            } else if (!isLand && world.expanse.waterSurface > world.expanse.waterFloor) {
+                                cell.hasWaterSurface = true;
+                                cell.waterSurfaceY = static_cast<int>(std::floor(world.expanse.waterSurface));
+                                cell.waterFloorY = waterFloorY;
+                                cell.waterWaveClass = kFarTerrainWaterWaveClassOcean;
+                            }
                             cell.prototypeName = material.prototypeName ? material.prototypeName : "GrassBlockTex";
                             cell.sidePrototypeName = sideMaterial.prototypeName ? sideMaterial.prototypeName : "DirtBlockTex";
                             cell.deepPrototypeName = deepMaterial.prototypeName ? deepMaterial.prototypeName : "StoneBlockTex";
@@ -2323,7 +2919,9 @@ namespace FarTerrainClipmapSystemLogic {
                     const size_t facesBefore = ctx.bodyVisibleFaceCount;
                     farTerrainAppendCellFaces(
                         ctx.bodyFaces,
+                        ctx.bodyWaterSurfaceFaces,
                         ctx.bodyVisibleFaceCount,
+                        baseSystem,
                         world,
                         prototypes,
                         visibleBodyCells,
