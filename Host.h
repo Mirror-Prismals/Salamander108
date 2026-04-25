@@ -503,6 +503,12 @@ struct PlayerContext {
     bool firstMouse=true;
     glm::mat4 viewMatrix;
     glm::mat4 projectionMatrix;
+    bool paniniProjectionEnabled=false;
+    bool paniniProjectionVertexWarpEnabled=false;
+    float paniniProjectionDistance=1.0f;
+    float paniniProjectionCompression=1.0f;
+    float paniniProjectionStrength=0.0f;
+    float paniniProjectionZoom=1.0f;
     bool rightMouseDown=false;
     bool leftMouseDown=false;
     bool middleMouseDown=false;
@@ -1916,6 +1922,7 @@ namespace AudicleSystemLogic { void ProcessAudicles(BaseSystem&, std::vector<Ent
 namespace AudioVisualizerFollowerSystemLogic { void UpdateAudioVisualizerFollower(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
 namespace SpawnSystemLogic { void SetPlayerSpawn(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
 namespace CameraSystemLogic { void UpdateCameraMatrices(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
+namespace PaniniProjectionSystemLogic { void UpdatePaniniProjection(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); void ApplyProjectionWarpUniforms(const PlayerContext&, const Shader&); void ApplyPostProjectionWarpUniforms(const PlayerContext&, const Shader&); void DisableProjectionWarpUniforms(const Shader&); }
 namespace KeyboardInputSystemLogic { void ProcessKeyboardInput(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
 namespace BookSystemLogic {
     void UpdateBookSystem(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle);

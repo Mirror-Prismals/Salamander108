@@ -61,10 +61,11 @@ namespace DebugWireframeSystemLogic {
             renderer.blockShader->use();
             renderer.blockShader->setMat4("view", view);
             renderer.blockShader->setMat4("projection", projection);
-        renderer.blockShader->setVec3("cameraPos", cameraPos);
-        renderer.blockShader->setFloat("time", time);
-        renderer.blockShader->setFloat("instanceScale", 1.0f);
-        renderer.blockShader->setVec3("lightDir", glm::vec3(0.0f, 1.0f, 0.0f));
+            PaniniProjectionSystemLogic::ApplyProjectionWarpUniforms(player, *renderer.blockShader);
+            renderer.blockShader->setVec3("cameraPos", cameraPos);
+            renderer.blockShader->setFloat("time", time);
+            renderer.blockShader->setFloat("instanceScale", 1.0f);
+            renderer.blockShader->setVec3("lightDir", glm::vec3(0.0f, 1.0f, 0.0f));
             renderer.blockShader->setVec3("ambientLight", glm::vec3(0.4f));
             renderer.blockShader->setVec3("diffuseLight", glm::vec3(0.6f));
             renderer.blockShader->setMat4("model", glm::mat4(1.0f));

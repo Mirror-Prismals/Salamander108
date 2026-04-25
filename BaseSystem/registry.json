@@ -24,6 +24,7 @@
   "WalkModeSystem": true,
   "CollisionSystem": true,
   "CameraSystem": true,
+  "PaniniProjectionSystem": true,
   "AudicleSystem": true,
   "AudioVisualizerFollowerSystem": true,
   "MicrophoneBlockSystem": true,

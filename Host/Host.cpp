@@ -335,6 +335,7 @@ void Host::registerSystemFunctions() {
     functionRegistry["ProcessWalkMovement"] = WalkModeSystemLogic::ProcessWalkMovement;
     functionRegistry["ApplyGravity"] = GravitySystemLogic::ApplyGravity;
     functionRegistry["UpdateCameraMatrices"] = CameraSystemLogic::UpdateCameraMatrices;
+    functionRegistry["UpdatePaniniProjection"] = PaniniProjectionSystemLogic::UpdatePaniniProjection;
     functionRegistry["ProcessKeyboardInput"] = KeyboardInputSystemLogic::ProcessKeyboardInput;
     functionRegistry["UpdateBookSystem"] = BookSystemLogic::UpdateBookSystem;
     functionRegistry["ProcessVolumeFills"] = VolumeFillSystemLogic::ProcessVolumeFills;

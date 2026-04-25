@@ -1299,6 +1299,7 @@ namespace GemSystemLogic {
         renderer.audioRayShader->use();
         renderer.audioRayShader->setMat4("view", player.viewMatrix);
         renderer.audioRayShader->setMat4("projection", player.projectionMatrix);
+        PaniniProjectionSystemLogic::ApplyProjectionWarpUniforms(player, *renderer.audioRayShader);
         renderBackend.bindVertexArray(renderer.gemVAO);
         if (fillCount > 0 || lineCount > 0) {
             std::vector<GemVertex> upload;

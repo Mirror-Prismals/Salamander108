@@ -53,6 +53,7 @@
 #include "BaseSystem/AudicleSystem.cpp"
 #include "BaseSystem/AudioVisualizerFollowerSystem.cpp"
 #include "BaseSystem/CameraSystem.cpp"
+#include "BaseSystem/PaniniProjectionSystem.cpp"
 #include "BaseSystem/RenderInitSystem.cpp"
 #include "BaseSystem/FrustumCullingSystem.cpp"
 #include "BaseSystem/VoxelMeshInitSystem.cpp"

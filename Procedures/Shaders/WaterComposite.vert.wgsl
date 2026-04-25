@@ -24,6 +24,8 @@ struct Uniforms {
     intParams6: vec4<i32>,
     blockDamageCells: array<vec4<i32>, 64>,
     blockDamageProgress: array<vec4<f32>, 16>,
+    projectionWarp: vec4<f32>,
+    projectionFlags: vec4<i32>,
 };
 
 @group(0) @binding(0)

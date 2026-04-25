@@ -1869,6 +1869,7 @@ namespace FishingSystemLogic {
                 renderer.faceShader->use();
                 renderer.faceShader->setMat4("view", player.viewMatrix);
                 renderer.faceShader->setMat4("projection", player.projectionMatrix);
+                PaniniProjectionSystemLogic::ApplyProjectionWarpUniforms(player, *renderer.faceShader);
                 renderer.faceShader->setMat4("model", rodModel);
                 renderer.faceShader->setVec3("cameraPos", player.cameraPosition);
                 renderer.faceShader->setFloat("time", static_cast<float>(PlatformInput::GetTimeSeconds()));
@@ -2016,6 +2017,7 @@ namespace FishingSystemLogic {
         renderer.audioRayShader->use();
         renderer.audioRayShader->setMat4("view", player.viewMatrix);
         renderer.audioRayShader->setMat4("projection", player.projectionMatrix);
+        PaniniProjectionSystemLogic::ApplyProjectionWarpUniforms(player, *renderer.audioRayShader);
         renderBackend.bindVertexArray(renderer.fishingVAO);
         if (!fillVerts.empty()) {
             renderBackend.uploadArrayBufferData(

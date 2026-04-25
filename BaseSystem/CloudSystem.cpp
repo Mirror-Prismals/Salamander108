@@ -135,6 +135,7 @@ namespace CloudSystemLogic {
         renderer.faceShader->use();
         renderer.faceShader->setMat4("view", view);
         renderer.faceShader->setMat4("projection", projection);
+        PaniniProjectionSystemLogic::ApplyProjectionWarpUniforms(player, *renderer.faceShader);
         renderer.faceShader->setMat4("model", glm::mat4(1.0f));
         renderer.faceShader->setVec3("cameraPos", playerPos);
         renderer.faceShader->setVec3("lightDir", lightDir);

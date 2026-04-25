@@ -24,6 +24,8 @@ struct Uniforms {
     intParams6: vec4<i32>,
     blockDamageCells: array<vec4<i32>, 64>,
     blockDamageProgress: array<vec4<f32>, 16>,
+    projectionWarp: vec4<f32>,
+    projectionFlags: vec4<i32>,
 };
 
 @group(0) @binding(0)
@@ -142,6 +144,24 @@ fn decodeWaterWaveClassFromAo(ao: vec4<f32>) -> i32 {
     let waveClassStride = 8.0;
     let cls = i32(floor(maxAo / waveClassStride));
     return clamp(cls, 0, 4);
+}
+
+fn applyProjectionWarp(clip: vec4<f32>) -> vec4<f32> {
+    let strength = clamp(u.projectionWarp.z, 0.0, 1.0);
+    if (u.projectionFlags.x == 0 || strength <= 0.0001 || clip.w <= 0.0001) {
+        return clip;
+    }
+    let ndc = clip.xy / clip.w;
+    let d = max(u.projectionWarp.x, 0.05);
+    let compression = clamp(u.projectionWarp.y, 0.0, 1.0);
+    let zoom = max(u.projectionWarp.w, 0.25);
+    let paniniScale = (d + 1.0) / (d + sqrt(ndc.x * ndc.x + 1.0));
+    let panini = vec2<f32>(
+        ndc.x * paniniScale,
+        ndc.y * mix(1.0, paniniScale, compression)
+    );
+    let warped = mix(ndc, panini, strength) * zoom;
+    return vec4<f32>(warped * clip.w, clip.z, clip.w);
 }
 
 @vertex
@@ -462,10 +482,11 @@ fn vs_main(input: VSIn) -> VSOut {
     let worldPos4 = u.model * vec4<f32>(finalPos, 1.0);
     out.worldPos = worldPos4.xyz;
     let clipPos = u.projection * u.view * worldPos4;
-    out.position = clipPos;
+    let warpedClipPos = applyProjectionWarp(clipPos);
+    out.position = warpedClipPos;
     out.screenUv = vec2<f32>(
-        clipPos.x / clipPos.w * 0.5 + 0.5,
-        -clipPos.y / clipPos.w * 0.5 + 0.5
+        warpedClipPos.x / warpedClipPos.w * 0.5 + 0.5,
+        -warpedClipPos.y / warpedClipPos.w * 0.5 + 0.5
     );
 
     var finalTexCoord = baseTex * input.uvScale;

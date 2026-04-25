@@ -1,5 +1,8 @@
 #pragma once
 #include "Host/PlatformInput.h"
+#include <algorithm>
+#include <cctype>
+#include <string>
 #include <vector>
 
 namespace OreMiningSystemLogic { bool IsMiningActive(const BaseSystem& baseSystem); }
@@ -64,6 +67,26 @@ namespace KeyboardInputSystemLogic {
             return std::get<std::string>(it->second);
         }
 
+        std::string toLowerCopy(std::string value) {
+            std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+            return value;
+        }
+
+        bool projectionModeIsPanini(const std::string& mode) {
+            const std::string lowered = toLowerCopy(mode);
+            return lowered == "panini" || lowered == "panini_projection" || lowered == "paniniprojection";
+        }
+
+        void toggleProjectionMode(BaseSystem& baseSystem) {
+            if (!baseSystem.registry) return;
+            const std::string mode = getRegistryString(baseSystem, "ProjectionMode", "rectilinear");
+            (*baseSystem.registry)["ProjectionMode"] = projectionModeIsPanini(mode)
+                ? std::string("rectilinear")
+                : std::string("panini");
+        }
+
     }
 
     void ProcessKeyboardInput(BaseSystem& baseSystem, std::vector<Entity>& prototypes, float dt, PlatformWindowHandle win) {
@@ -89,6 +112,14 @@ namespace KeyboardInputSystemLogic {
 
         if (!baseSystem.level || baseSystem.level->worlds.empty()) return;
         if (baseSystem.ui && baseSystem.ui->active) return;
+
+        static bool y_pressed_last_frame = false;
+        const bool y_pressed = PlatformInput::IsKeyDown(win, PlatformInput::Key::Y);
+        if (y_pressed && !y_pressed_last_frame) {
+            toggleProjectionMode(baseSystem);
+        }
+        y_pressed_last_frame = y_pressed;
+
         if (OreMiningSystemLogic::IsMiningActive(baseSystem)) return;
         if (GroundCraftingSystemLogic::IsRitualActive(baseSystem)) return;
         if (GemChiselSystemLogic::IsChiselActive(baseSystem)) return;

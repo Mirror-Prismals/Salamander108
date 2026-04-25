@@ -1388,6 +1388,7 @@ namespace OreMiningSystemLogic {
         renderer.audioRayShader->use();
         renderer.audioRayShader->setMat4("view", player.viewMatrix);
         renderer.audioRayShader->setMat4("projection", player.projectionMatrix);
+        PaniniProjectionSystemLogic::ApplyProjectionWarpUniforms(player, *renderer.audioRayShader);
 
         renderBackend.bindVertexArray(s.vao);
         renderBackend.uploadArrayBufferData(s.vbo, fillVerts.data(), fillVerts.size() * sizeof(ColorVertex), true);

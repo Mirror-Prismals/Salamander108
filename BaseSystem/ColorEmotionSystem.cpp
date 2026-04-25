@@ -705,6 +705,7 @@ namespace ColorEmotionSystemLogic {
                     renderer.audioRayShader->use();
                     renderer.audioRayShader->setMat4("view", player.viewMatrix);
                     renderer.audioRayShader->setMat4("projection", player.projectionMatrix);
+                    PaniniProjectionSystemLogic::ApplyProjectionWarpUniforms(player, *renderer.audioRayShader);
                     renderBackend.bindVertexArray(renderer.audioRayVAO);
                     renderBackend.uploadArrayBufferData(
                         renderer.audioRayVBO,

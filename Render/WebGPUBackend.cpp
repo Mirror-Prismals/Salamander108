@@ -134,6 +134,8 @@ struct WebGPUBackend::BackendState {
         float waterReflectionPlaneY = 0.0f;
         std::array<int32_t, 64 * 4> blockDamageCells{};
         std::array<float, 64> blockDamageProgress{};
+        std::array<float, 4> projectionWarp{1.0f, 1.0f, 0.0f, 1.0f};
+        int32_t paniniProjectionEnabled = 0;
     };
 
     struct ProgramResource {
@@ -761,6 +763,8 @@ namespace {
         int32_t intParams6[4];
         int32_t blockDamageCells[64][4];
         float blockDamageProgress[64];
+        float projectionWarp[4];
+        int32_t projectionFlags[4];
     };
 
     const char* kFallbackShaderWgsl = R"(
@@ -790,6 +794,8 @@ struct Uniforms {
     intParams6: vec4<i32>,
     blockDamageCells: array<vec4<i32>, 64>,
     blockDamageProgress: array<vec4<f32>, 16>,
+    projectionWarp: vec4<f32>,
+    projectionFlags: vec4<i32>,
 };
 
 @group(0) @binding(0)
@@ -1824,6 +1830,14 @@ fn fs_main() -> @location(0) vec4<f32> {
             block.blockDamageCells[i][3] = program.uniforms.blockDamageCells[base + 3u];
             block.blockDamageProgress[i] = program.uniforms.blockDamageProgress[i];
         }
+        block.projectionWarp[0] = program.uniforms.projectionWarp[0];
+        block.projectionWarp[1] = program.uniforms.projectionWarp[1];
+        block.projectionWarp[2] = program.uniforms.projectionWarp[2];
+        block.projectionWarp[3] = program.uniforms.projectionWarp[3];
+        block.projectionFlags[0] = program.uniforms.paniniProjectionEnabled;
+        block.projectionFlags[1] = 0;
+        block.projectionFlags[2] = 0;
+        block.projectionFlags[3] = 0;
         wgpuQueueWriteBuffer(state.queue, targetBuffer, destinationOffset, &block, sizeof(block));
     }
 
@@ -2134,6 +2148,12 @@ void WebGPUBackend::setShaderUniformVec3(int location, const float* value3) {
     if (progIt == state->programs.end()) return;
     BackendState::ProgramResource& prog = progIt->second;
     const std::string lower = toLowerCase(locIt->second.name);
+    if (lower.find("paniniprojectionparams") != std::string::npos) {
+        prog.uniforms.projectionWarp[0] = value3[0];
+        prog.uniforms.projectionWarp[1] = value3[1];
+        prog.uniforms.projectionWarp[2] = value3[2];
+        return;
+    }
     if (lower.find("camerapos") != std::string::npos) {
         prog.uniforms.cameraPos[0] = value3[0];
         prog.uniforms.cameraPos[1] = value3[1];
@@ -2269,6 +2289,10 @@ void WebGPUBackend::setShaderUniformFloat(int location, float value) {
     if (progIt == state->programs.end()) return;
     BackendState::ProgramResource& prog = progIt->second;
     const std::string lower = toLowerCase(locIt->second.name);
+    if (lower.find("paniniprojectionzoom") != std::string::npos) {
+        prog.uniforms.projectionWarp[3] = value;
+        return;
+    }
     if (lower == "t" || lower.find("time") != std::string::npos) {
         prog.uniforms.time = value;
         return;
@@ -2411,6 +2435,10 @@ void WebGPUBackend::setShaderUniformInt(int location, int value) {
     auto progIt = state->programs.find(locIt->second.program);
     if (progIt == state->programs.end()) return;
     const std::string lower = toLowerCase(locIt->second.name);
+    if (lower.find("paniniprojectionenabled") != std::string::npos) {
+        progIt->second.uniforms.paniniProjectionEnabled = value != 0 ? 1 : 0;
+        return;
+    }
     if (lower.find("samples") != std::string::npos) {
         progIt->second.uniforms.samples = static_cast<float>(std::max(1, value));
     }

@@ -31,6 +31,7 @@
         "UAVSystem.json",
         "WalkModeSystem.json",
         "CameraSystem.json",
+        "PaniniProjectionSystem.json",
         "AudicleSystem.json",
         "AudioVisualizerFollowerSystem.json",
         "MicrophoneBlockSystem.json",

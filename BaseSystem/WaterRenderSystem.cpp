@@ -67,9 +67,15 @@ namespace {
     void drawCompositePass(RendererContext& renderer,
                            IRenderBackend& renderBackend,
                            Shader& shader,
-                           RenderHandle sourceTexture) {
+                           RenderHandle sourceTexture,
+                           const PlayerContext* postProjectionPlayer = nullptr) {
         if (!renderer.godrayQuadVAO || sourceTexture == 0) return;
         shader.use();
+        if (postProjectionPlayer) {
+            PaniniProjectionSystemLogic::ApplyPostProjectionWarpUniforms(*postProjectionPlayer, shader);
+        } else {
+            PaniniProjectionSystemLogic::DisableProjectionWarpUniforms(shader);
+        }
         renderBackend.setDepthTestEnabled(false);
         renderBackend.setDepthWriteEnabled(false);
         renderBackend.setBlendEnabled(false);
@@ -187,6 +193,7 @@ namespace WaterRenderSystemLogic {
             renderer.waterShader->use();
             renderer.waterShader->setMat4("view", view);
             renderer.waterShader->setMat4("projection", projection);
+            PaniniProjectionSystemLogic::ApplyProjectionWarpUniforms(player, *renderer.waterShader);
             renderer.waterShader->setMat4("model", glm::mat4(1.0f));
             renderer.waterShader->setVec3("cameraPos", playerPos);
             renderer.waterShader->setFloat("time", time);
@@ -231,6 +238,6 @@ namespace WaterRenderSystemLogic {
         }
 
         renderBackend.clearDefaultFramebuffer(0.0f, 0.0f, 0.0f, 1.0f, true);
-        drawCompositePass(renderer, renderBackend, *renderer.waterCompositeShader, renderer.waterSceneTex);
+        drawCompositePass(renderer, renderBackend, *renderer.waterCompositeShader, renderer.waterSceneTex, &player);
     }
 }

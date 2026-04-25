@@ -51,9 +51,10 @@ namespace SkyboxSystemLogic {
     }
 
     void RenderSkyAndCelestials(BaseSystem& baseSystem, const std::vector<Entity>& prototypes, const std::vector<glm::vec3>& starPositions, float time, float dayFraction, const glm::mat4& view, const glm::mat4& projection, const glm::vec3& playerPos, glm::vec3& outLightDir) {
-        if (!baseSystem.renderer || !baseSystem.world || !baseSystem.renderBackend) return;
+        if (!baseSystem.renderer || !baseSystem.world || !baseSystem.renderBackend || !baseSystem.player) return;
         RendererContext& renderer = *baseSystem.renderer;
         WorldContext& world = *baseSystem.world;
+        const PlayerContext& player = *baseSystem.player;
         auto& renderBackend = *baseSystem.renderBackend;
 
         glm::vec3 skyTop, skyBottom;
@@ -127,7 +128,7 @@ namespace SkyboxSystemLogic {
         setDepthTestEnabled(false);
         setDepthWriteEnabled(false);
         setBlendEnabled(false);
-        renderer.sunMoonShader->use(); renderer.sunMoonShader->setMat4("v", view); renderer.sunMoonShader->setMat4("p", projection); renderer.sunMoonShader->setFloat("time", time);
+        renderer.sunMoonShader->use(); renderer.sunMoonShader->setMat4("v", view); renderer.sunMoonShader->setMat4("p", projection); PaniniProjectionSystemLogic::ApplyProjectionWarpUniforms(player, *renderer.sunMoonShader); renderer.sunMoonShader->setFloat("time", time);
         glm::mat4 sunM = billboard(playerPos + sunDir * 500.0f, 42.0f);
         renderer.sunMoonShader->setMat4("m",sunM); renderer.sunMoonShader->setVec3("c",glm::vec3(1,1,0.8f));
         renderBackend.bindVertexArray(renderer.sunMoonVAO); renderBackend.drawArraysTriangles(0, 6);
@@ -162,6 +163,7 @@ namespace SkyboxSystemLogic {
         renderer.skyboxShader->setVec3("sB", skyBottom);
         glm::mat4 viewNoTranslation = glm::mat4(glm::mat3(view));
         renderer.skyboxShader->setMat4("projection", projection);
+        PaniniProjectionSystemLogic::ApplyProjectionWarpUniforms(player, *renderer.skyboxShader);
         renderer.skyboxShader->setMat4("view", viewNoTranslation);
         renderBackend.bindVertexArray(renderer.skyboxVAO);
         renderBackend.drawArraysTriangles(0, 6);
@@ -186,6 +188,7 @@ namespace SkyboxSystemLogic {
             glm::mat4 viewNoTranslationStars = glm::mat4(glm::mat3(view));
             renderer.starShader->setMat4("v", viewNoTranslationStars);
             renderer.starShader->setMat4("p", projection);
+            PaniniProjectionSystemLogic::ApplyProjectionWarpUniforms(player, *renderer.starShader);
             setProgramPointSizeEnabled(true);
             renderBackend.drawArraysPoints(0, static_cast<int>(starPositions.size()));
             setProgramPointSizeEnabled(false);
@@ -194,7 +197,7 @@ namespace SkyboxSystemLogic {
         // Sun and moon main pass
         setBlendEnabled(true);
         setBlendModeAlpha();
-        renderer.sunMoonShader->use(); renderer.sunMoonShader->setMat4("v", view); renderer.sunMoonShader->setMat4("p", projection); renderer.sunMoonShader->setFloat("time", time);
+        renderer.sunMoonShader->use(); renderer.sunMoonShader->setMat4("v", view); renderer.sunMoonShader->setMat4("p", projection); PaniniProjectionSystemLogic::ApplyProjectionWarpUniforms(player, *renderer.sunMoonShader); renderer.sunMoonShader->setFloat("time", time);
         renderer.sunMoonShader->setMat4("m", sunM); renderer.sunMoonShader->setVec3("c", glm::vec3(1,1,0.8f));
         renderBackend.bindVertexArray(renderer.sunMoonVAO); renderBackend.drawArraysTriangles(0, 6);
         renderer.sunMoonShader->setMat4("m", moonM); renderer.sunMoonShader->setVec3("c", glm::vec3(0.9f,0.9f,1));

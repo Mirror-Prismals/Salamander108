@@ -402,6 +402,7 @@ void RenderHeldItemPass(
                     renderer.faceShader->use();
                     renderer.faceShader->setMat4("view", view);
                     renderer.faceShader->setMat4("projection", projection);
+                    PaniniProjectionSystemLogic::ApplyProjectionWarpUniforms(player, *renderer.faceShader);
                     renderer.faceShader->setMat4("model", glm::mat4(1.0f));
                     renderer.faceShader->setVec3("cameraPos", playerPos);
                     renderer.faceShader->setFloat("time", time);
@@ -1101,6 +1102,7 @@ void RenderHeldItemPass(
                 renderer.blockShader->use();
                 renderer.blockShader->setMat4("view", view);
                 renderer.blockShader->setMat4("projection", projection);
+                PaniniProjectionSystemLogic::ApplyProjectionWarpUniforms(player, *renderer.blockShader);
                 renderer.blockShader->setVec3("cameraPos", playerPos);
                 renderer.blockShader->setFloat("time", time);
                 renderer.blockShader->setFloat("instanceScale", 1.0f);
@@ -1231,6 +1233,7 @@ void RenderHeldItemPass(
             renderer.faceShader->use();
             renderer.faceShader->setMat4("view", view);
             renderer.faceShader->setMat4("projection", projection);
+            PaniniProjectionSystemLogic::ApplyProjectionWarpUniforms(player, *renderer.faceShader);
             renderer.faceShader->setMat4("model", glm::mat4(1.0f));
             renderer.faceShader->setVec3("cameraPos", playerPos);
             renderer.faceShader->setFloat("time", time);

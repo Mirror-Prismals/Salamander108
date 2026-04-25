@@ -568,6 +568,7 @@ namespace OverlayRenderSystemLogic {
             renderer.selectionShader->setMat4("model", selectionModel);
             renderer.selectionShader->setMat4("view", view);
             renderer.selectionShader->setMat4("projection", projection);
+            PaniniProjectionSystemLogic::ApplyProjectionWarpUniforms(player, *renderer.selectionShader);
             renderer.selectionShader->setVec3("cameraPos", playerPos);
             renderer.selectionShader->setFloat("time", time);
             renderBackend.bindVertexArray(renderer.selectionVAO);
@@ -580,6 +581,7 @@ namespace OverlayRenderSystemLogic {
             renderer.audioRayShader->use();
             renderer.audioRayShader->setMat4("view", view);
             renderer.audioRayShader->setMat4("projection", projection);
+            PaniniProjectionSystemLogic::ApplyProjectionWarpUniforms(player, *renderer.audioRayShader);
             renderBackend.bindVertexArray(renderer.audioRayVAO);
             setLineWidth(1.6f);
             renderBackend.drawArraysLines(0, renderer.audioRayVertexCount);
@@ -605,6 +607,7 @@ namespace OverlayRenderSystemLogic {
                 renderer.audioRayShader->use();
                 renderer.audioRayShader->setMat4("view", view);
                 renderer.audioRayShader->setMat4("projection", projection);
+                PaniniProjectionSystemLogic::ApplyProjectionWarpUniforms(player, *renderer.audioRayShader);
                 renderBackend.bindVertexArray(renderer.leyLineDebugVAO);
                 setLineWidth(1.4f);
                 renderBackend.drawArraysLines(0, renderer.leyLineDebugVertexCount);
@@ -633,6 +636,7 @@ namespace OverlayRenderSystemLogic {
                 renderer.audioRayShader->use();
                 renderer.audioRayShader->setMat4("view", view);
                 renderer.audioRayShader->setMat4("projection", projection);
+                PaniniProjectionSystemLogic::ApplyProjectionWarpUniforms(player, *renderer.audioRayShader);
                 renderBackend.bindVertexArray(renderer.leyLineDebugVAO);
                 setLineWidth(1.8f);
                 renderBackend.drawArraysLines(0, static_cast<int>(vertices.size()));
@@ -659,6 +663,7 @@ namespace OverlayRenderSystemLogic {
                 renderer.audioRayShader->use();
                 renderer.audioRayShader->setMat4("view", view);
                 renderer.audioRayShader->setMat4("projection", projection);
+                PaniniProjectionSystemLogic::ApplyProjectionWarpUniforms(player, *renderer.audioRayShader);
                 renderBackend.bindVertexArray(renderer.leyLineDebugVAO);
                 setLineWidth(1.1f);
                 renderBackend.drawArraysLines(0, static_cast<int>(vertices.size()));
