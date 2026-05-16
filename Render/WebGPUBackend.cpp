@@ -2293,6 +2293,10 @@ void WebGPUBackend::setShaderUniformFloat(int location, float value) {
         prog.uniforms.projectionWarp[3] = value;
         return;
     }
+    if (lower.find("grasssurfaceyoffset") != std::string::npos) {
+        prog.uniforms.waterReflectionPlaneY = value;
+        return;
+    }
     if (lower == "t" || lower.find("time") != std::string::npos) {
         prog.uniforms.time = value;
         return;

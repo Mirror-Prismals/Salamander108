@@ -373,6 +373,7 @@ struct FarTerrainClipmapContext {
     int ringCount = 4;
     uint64_t rebuildCount = 0;
     uint64_t lastBuildFrame = 0;
+    uint64_t proxyVoxelConfigSignature = 0;
     size_t visibleFaceCount = 0;
     uint64_t lastBoundaryCoverageSignature = 0;
     size_t handoffVisibleFaceCount = 0;
@@ -618,6 +619,11 @@ struct RendererContext {
     std::unique_ptr<Shader> occlusionFaceShader;
     std::unique_ptr<Shader> waterShader;
     std::unique_ptr<Shader> waterCompositeShader;
+    std::unique_ptr<Shader> grass3DShader;
+    RenderHandle grass3DVolumeVAO = 0;
+    RenderHandle grass3DVolumeVBO = 0;
+    RenderHandle grass3DVolumeInstanceVBO = 0;
+    int grass3DVolumeVertexCount = 0;
     std::unique_ptr<Shader> fontShader;
     RenderHandle cubeVBO;
     std::vector<RenderHandle> behaviorVAOs;
@@ -740,6 +746,8 @@ struct RendererContext {
     std::array<RenderHandle, 2> terrainTextures{0, 0};
     int terrainTextureCount = 0;
     RenderHandle waterOverlayTexture = 0;
+    RenderHandle proceduralGrassTexture = 0;
+    glm::ivec2 proceduralGrassTextureSize{0, 0};
 };
 struct GameplaySfxEvent {
     uint16_t clipIndex = 0;

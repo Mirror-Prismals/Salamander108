@@ -1,0 +1,7 @@
+{
+  "update_steps": {
+    "UpdateProceduralGrassMaterial": {
+      "dependencies": ["RendererContext"]
+    }
+  }
+}

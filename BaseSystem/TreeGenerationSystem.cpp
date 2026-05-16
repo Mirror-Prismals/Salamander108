@@ -2382,7 +2382,7 @@ namespace TreeGenerationSystemLogic {
                                 tierX += 1;
                                 continue;
                             }
-                            if (biomeID == 2) {
+                            if (biomeID == 2 || biomeID == 5) {
                                 tierX += 1;
                                 continue;
                             }

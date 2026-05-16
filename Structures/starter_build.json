@@ -289,11 +289,27 @@
       "palette": -1
     },
     {
-      "count": 14,
+      "count": 8,
       "palette": 0
     },
     {
-      "count": 34,
+      "count": 1,
+      "palette": -1
+    },
+    {
+      "count": 5,
+      "palette": 0
+    },
+    {
+      "count": 11,
+      "palette": -1
+    },
+    {
+      "count": 1,
+      "palette": 0
+    },
+    {
+      "count": 22,
       "palette": -1
     },
     {
@@ -493,7 +509,15 @@
       "palette": -1
     },
     {
-      "count": 14,
+      "count": 8,
+      "palette": 0
+    },
+    {
+      "count": 1,
+      "palette": -1
+    },
+    {
+      "count": 5,
       "palette": 0
     },
     {

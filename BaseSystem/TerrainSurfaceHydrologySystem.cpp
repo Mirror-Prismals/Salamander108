@@ -111,6 +111,7 @@ namespace TerrainSystemLogic {
                 pickBlockProto({"GrassBlockTexV004", "GrassBlockTex", "ScaffoldBlock"})
             };
             const Entity* surfaceProtoConifer = surfaceProtoConiferVariants[0];
+            const Entity* surfaceProtoProceduralGrassBiome = pickBlockProto({"GrassBlockProceduralBiomeTex", "GrassBlockDebugBiomeTex", "DebugBlockTex", "GrassBlockTex", "ScaffoldBlock"});
             const Entity* surfaceProtoMeadow = pickBlockProto({"GrassBlockMeadowTex", "GrassBlockTex", "ScaffoldBlock"});
             const Entity* surfaceProtoJungle = pickBlockProto({"GrassBlockJungleTex", "GrassBlockTex", "ScaffoldBlock"});
             const Entity* surfaceProtoBareWinter = pickBlockProto({"GrassBlockBareWinterTex", "GrassBlockTemperateTex", "GrassBlockTex", "ScaffoldBlock"});
@@ -199,6 +200,7 @@ namespace TerrainSystemLogic {
             for (auto& proto : surfaceProtoConiferVariants) {
                 if (!proto) proto = surfaceProtoConifer;
             }
+            if (!surfaceProtoProceduralGrassBiome) surfaceProtoProceduralGrassBiome = surfaceProtoConifer;
             if (!surfaceProtoMeadow) surfaceProtoMeadow = surfaceProtoConifer;
             if (!surfaceProtoJungle) surfaceProtoJungle = surfaceProtoConifer;
             if (!surfaceProtoBareWinter) surfaceProtoBareWinter = surfaceProtoConifer;
@@ -891,6 +893,9 @@ namespace TerrainSystemLogic {
                     } else if (biomeID == 4) {
                         biomeSurfaceProto = surfaceProtoBareWinter;
                         biomeSurfaceColor = glm::mix(glm::vec3(0.43f, 0.40f, 0.34f), grassColor, 0.15f);
+                    } else if (biomeID == 5) {
+                        biomeSurfaceProto = surfaceProtoProceduralGrassBiome;
+                        biomeSurfaceColor = glm::vec3(1.0f);
                     }
                     float volcanoDist = std::numeric_limits<float>::max();
                     bool volcanoArea = false;

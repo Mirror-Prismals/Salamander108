@@ -78,6 +78,8 @@ namespace {
             {"WATER_FRAGMENT_SHADER", "Procedures/Shaders/Water.frag.wgsl"},
             {"WATER_COMPOSITE_VERTEX_SHADER", "Procedures/Shaders/WaterComposite.vert.wgsl"},
             {"WATER_COMPOSITE_FRAGMENT_SHADER", "Procedures/Shaders/WaterComposite.frag.wgsl"},
+            {"GRASS3D_VERTEX_SHADER", "Procedures/Shaders/3DGrass.vert.wgsl"},
+            {"GRASS3D_FRAGMENT_SHADER", "Procedures/Shaders/3DGrass.frag.wgsl"},
             {"SKYBOX_VERTEX_SHADER", "Procedures/Shaders/Skybox.vert.wgsl"},
             {"SKYBOX_FRAGMENT_SHADER", "Procedures/Shaders/Skybox.frag.wgsl"},
             {"SUNMOON_VERTEX_SHADER", "Procedures/Shaders/SunMoon.vert.wgsl"},

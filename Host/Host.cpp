@@ -191,12 +191,13 @@ namespace {
             const char* vertexKey = nullptr;
             const char* fragmentKey = nullptr;
         };
-        const std::array<ShaderBinding, 20> bindings = {{
+        const std::array<ShaderBinding, 21> bindings = {{
             {"blockShader", &renderer.blockShader, "BLOCK_VERTEX_SHADER", "BLOCK_FRAGMENT_SHADER"},
             {"faceShader", &renderer.faceShader, "FACE_VERTEX_SHADER", "FACE_FRAGMENT_SHADER"},
             {"occlusionFaceShader", &renderer.occlusionFaceShader, "OCCLUSION_FACE_VERTEX_SHADER", "OCCLUSION_FACE_FRAGMENT_SHADER"},
             {"waterShader", &renderer.waterShader, "WATER_VERTEX_SHADER", "WATER_FRAGMENT_SHADER"},
             {"waterCompositeShader", &renderer.waterCompositeShader, "WATER_COMPOSITE_VERTEX_SHADER", "WATER_COMPOSITE_FRAGMENT_SHADER"},
+            {"grass3DShader", &renderer.grass3DShader, "GRASS3D_VERTEX_SHADER", "GRASS3D_FRAGMENT_SHADER"},
             {"skyboxShader", &renderer.skyboxShader, "SKYBOX_VERTEX_SHADER", "SKYBOX_FRAGMENT_SHADER"},
             {"sunMoonShader", &renderer.sunMoonShader, "SUNMOON_VERTEX_SHADER", "SUNMOON_FRAGMENT_SHADER"},
             {"starShader", &renderer.starShader, "STAR_VERTEX_SHADER", "STAR_FRAGMENT_SHADER"},
@@ -353,6 +354,7 @@ void Host::registerSystemFunctions() {
     functionRegistry["UpdateOcclusionCulling"] = OcclusionCullingSystemLogic::UpdateOcclusionCulling;
     functionRegistry["RenderWorld"] = WorldRenderSystemLogic::RenderWorld;
     functionRegistry["RenderWater"] = WaterRenderSystemLogic::RenderWater;
+    functionRegistry["Render3DGrass"] = ThreeDGrassSystemLogic::Render3DGrass;
     functionRegistry["RenderOverlays"] = OverlayRenderSystemLogic::RenderOverlays;
     functionRegistry["GenerateTerrain"] = TerrainSystemLogic::GenerateTerrain;
     functionRegistry["UpdateExpanseTerrain"] = TerrainSystemLogic::UpdateExpanseTerrain;
@@ -452,6 +454,7 @@ void Host::registerSystemFunctions() {
     functionRegistry["UpdatePerf"] = PerfSystemLogic::UpdatePerf;
     functionRegistry["UpdateBootSequence"] = BootSequenceSystemLogic::UpdateBootSequence;
     functionRegistry["LoadBlockTextures"] = BlockTextureSystemLogic::LoadBlockTextures;
+    functionRegistry["UpdateProceduralGrassMaterial"] = ProceduralGrassSystemLogic::UpdateProceduralGrassMaterial;
 }
 
 void Host::init() {

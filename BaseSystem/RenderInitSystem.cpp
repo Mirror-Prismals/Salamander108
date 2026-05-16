@@ -169,6 +169,9 @@ namespace RenderInitSystemLogic {
             if (faceType == 3) return (bottom >= 0) ? bottom : side;
             return side;
         }
+        if (ProceduralGrassSystemLogic::IsProceduralGrassPrototypeName(proto.name)) {
+            return ProceduralGrassSystemLogic::ProceduralGrassTileIndex();
+        }
         int resolved = side;
         switch (faceType) {
             case 2: resolved = top; break;
@@ -633,6 +636,10 @@ namespace RenderInitSystemLogic {
         renderBackend.destroyArrayBuffer(renderer.faceVBO);
         renderBackend.destroyArrayBuffer(renderer.faceClippedVBO);
         renderBackend.destroyArrayBuffer(renderer.faceInstanceVBO);
+        renderBackend.destroyVertexArray(renderer.grass3DVolumeVAO);
+        renderBackend.destroyArrayBuffer(renderer.grass3DVolumeVBO);
+        renderBackend.destroyArrayBuffer(renderer.grass3DVolumeInstanceVBO);
+        renderer.grass3DVolumeVertexCount = 0;
         auto destroyTexture = [&](RenderHandle& texture) {
             if (!texture) return;
             renderBackend.destroyTexture(texture);
@@ -655,6 +662,8 @@ namespace RenderInitSystemLogic {
         }
         renderer.terrainTextureCount = 0;
         destroyTexture(renderer.waterOverlayTexture);
+        destroyTexture(renderer.proceduralGrassTexture);
+        renderer.proceduralGrassTextureSize = glm::ivec2(0);
         renderBackend.destroyColorRenderTarget(renderer.godrayOcclusionFBO, renderer.godrayOcclusionTex);
         renderBackend.destroyColorRenderTarget(renderer.occlusionHzbFBO, renderer.occlusionHzbTex);
         renderBackend.destroyColorRenderTarget(renderer.godrayBlurFBO, renderer.godrayBlurTex);
@@ -680,6 +689,7 @@ namespace RenderInitSystemLogic {
         renderer.occlusionFaceShader.reset();
         renderer.waterShader.reset();
         renderer.waterCompositeShader.reset();
+        renderer.grass3DShader.reset();
         renderer.fontShader.reset();
         renderer.uiShader.reset();
         renderer.uiColorShader.reset();

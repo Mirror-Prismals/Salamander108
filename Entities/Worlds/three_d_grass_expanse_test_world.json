@@ -1,0 +1,7 @@
+{
+  "name": "3DGrassExpanseTestWorld",
+  "isWorld": true,
+  "instances": [
+    { "name": "GrassBlockTexV002", "position": [-326.0, 148.0, -326.0] }
+  ]
+}

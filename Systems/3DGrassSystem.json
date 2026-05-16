@@ -1,0 +1,14 @@
+{
+  "update_steps": {
+    "Render3DGrass": {
+      "dependencies": [
+        "RendererContext",
+        "WorldContext",
+        "PlayerContext",
+        "LevelContext",
+        "VoxelWorldContext",
+        "VoxelRenderContext"
+      ]
+    }
+  }
+}

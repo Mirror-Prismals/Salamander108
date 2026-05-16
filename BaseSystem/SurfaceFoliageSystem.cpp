@@ -174,6 +174,9 @@
                         static_cast<float>(worldX),
                         static_cast<float>(worldZ)
                     );
+                    if (biomeID == 5) {
+                        continue;
+                    }
                     if (isWithinJungleVolcano(worldCtx.expanse, biomeID, worldX, worldZ)) {
                         continue;
                     }

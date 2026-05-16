@@ -61,6 +61,8 @@ var terrainTextureStone: texture_2d<f32>;
 var waterOverlayTexture: texture_2d<f32>;
 @group(0) @binding(16)
 var waterReflectionTexture: texture_2d<f32>;
+@group(0) @binding(17)
+var proceduralGrassTexture: texture_2d<f32>;
 
 struct FSIn {
     @location(0) texCoord: vec2<f32>,
@@ -217,6 +219,26 @@ fn sampleGrass(variant: i32, uv: vec2<f32>, useShortSet: bool) -> vec4<f32> {
         return textureSample(grassTexture2, sceneSampler, uv);
     }
     return textureSample(grassTexture0, sceneSampler, uv);
+}
+
+fn proceduralGrassFaceUv(worldPos: vec3<f32>, normal: vec3<f32>) -> vec2<f32> {
+    let an = abs(normal);
+    if (an.y >= an.x && an.y >= an.z) {
+        return worldPos.xz;
+    }
+    if (an.x >= an.z) {
+        return worldPos.zy;
+    }
+    return worldPos.xy;
+}
+
+fn proceduralGrassColor(worldPos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
+    let textureSizePx = 192.0;
+    let tileSpanBlocks = 8.0;
+    let faceUv = proceduralGrassFaceUv(worldPos, normal);
+    let pixel = floor(fract(faceUv / tileSpanBlocks) * textureSizePx);
+    let uv = (pixel + vec2<f32>(0.5)) / textureSizePx;
+    return textureSample(proceduralGrassTexture, sceneSampler, uv).rgb;
 }
 
 fn waterFaceUv(worldPos: vec3<f32>, normal: vec3<f32>) -> vec2<f32> {
@@ -778,6 +800,8 @@ fn fs_main(input: FSIn) -> @location(0) vec4<f32> {
         && (tilesPerCol > 0)
         && (atlasTextureSize.x > 0.0)
         && (atlasTextureSize.y > 0.0);
+    let proceduralGrassTileIndex = -30;
+    let useProceduralGrass = !isFarBillboard && decodedTileIndex == proceduralGrassTileIndex;
 
     if (leafBackfacesWhenInside == 1 && !input.frontFacing && !isLeaf) {
         discard;
@@ -879,6 +903,11 @@ fn fs_main(input: FSIn) -> @location(0) vec4<f32> {
         let texel = sampleTerrain(terrainVariant, uv);
         bc = texel.rgb * input.fragColor;
         outAlpha = outAlpha * texel.a;
+    }
+
+    if (useProceduralGrass) {
+        bc = proceduralGrassColor(input.worldPos, input.normal) * input.fragColor;
+        outAlpha = 1.0;
     }
 
     if (isFarTreeBillboard) {
@@ -998,7 +1027,7 @@ fn fs_main(input: FSIn) -> @location(0) vec4<f32> {
                 clamp(vec3<f32>(1.0) - bc, vec3<f32>(0.0), vec3<f32>(1.0)),
                 voxelGridLineInvertColorEnabled
             );
-        } else if (!(useAtlas || useOreTexture || useTerrainTexture)) {
+        } else if (!(useAtlas || useOreTexture || useTerrainTexture || useProceduralGrass)) {
             let d = input.instanceDistance / 100.0;
             bc = clamp(input.fragColor + vec3<f32>(0.03 * d), vec3<f32>(0.0), vec3<f32>(1.0));
         }

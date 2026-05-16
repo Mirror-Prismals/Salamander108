@@ -70,6 +70,91 @@ namespace {
         return std::get<std::string>(it->second);
     }
 
+    struct FarTerrainProxyVoxelConfig {
+        bool enabled = false;
+        bool terrainVoxelsEnabled = false;
+        int startRing = 0;
+        int minCellSize = 1;
+        int columnHeight = 1;
+        int fullCoverMaxCellSize = 4;
+        float terrainScale = 0.04f;
+        int maxProjectedFootprint = 128;
+        int seamPadding = 1;
+        float terrainHeightScale = 0.35f;
+        bool includeWater = true;
+        bool treeVoxelsEnabled = false;
+        float treeScale = 0.18f;
+        int treeMaxHeight = 7;
+    };
+
+    FarTerrainProxyVoxelConfig farTerrainReadProxyVoxelConfig(const BaseSystem& baseSystem) {
+        FarTerrainProxyVoxelConfig cfg{};
+        cfg.enabled = farTerrainGetRegistryBool(baseSystem, "FarTerrainProxyVoxelLodEnabled", true);
+        cfg.terrainVoxelsEnabled = farTerrainGetRegistryBool(baseSystem, "FarTerrainProxyVoxelTerrainEnabled", true);
+        cfg.startRing = std::max(0, farTerrainGetRegistryInt(baseSystem, "FarTerrainProxyVoxelStartRing", cfg.startRing));
+        cfg.minCellSize = std::max(1, farTerrainGetRegistryInt(baseSystem, "FarTerrainProxyVoxelMinCellSize", cfg.minCellSize));
+        cfg.columnHeight = std::max(1, farTerrainGetRegistryInt(baseSystem, "FarTerrainProxyVoxelColumnHeight", cfg.columnHeight));
+        cfg.fullCoverMaxCellSize = std::max(1, farTerrainGetRegistryInt(baseSystem, "FarTerrainProxyVoxelFullCoverMaxCellSize", cfg.fullCoverMaxCellSize));
+        cfg.terrainScale = glm::clamp(
+            farTerrainGetRegistryFloat(baseSystem, "FarTerrainProxyVoxelTerrainScale", cfg.terrainScale),
+            0.01f,
+            1.0f
+        );
+        cfg.maxProjectedFootprint = std::max(1, farTerrainGetRegistryInt(baseSystem, "FarTerrainProxyVoxelMaxProjectedFootprint", cfg.maxProjectedFootprint));
+        cfg.seamPadding = std::max(0, farTerrainGetRegistryInt(baseSystem, "FarTerrainProxyVoxelSeamPadding", cfg.seamPadding));
+        cfg.terrainHeightScale = glm::clamp(
+            farTerrainGetRegistryFloat(baseSystem, "FarTerrainProxyVoxelTerrainHeightScale", cfg.terrainHeightScale),
+            0.05f,
+            1.0f
+        );
+        cfg.includeWater = farTerrainGetRegistryBool(baseSystem, "FarTerrainProxyVoxelIncludeWater", cfg.includeWater);
+        cfg.treeVoxelsEnabled = farTerrainGetRegistryBool(baseSystem, "FarTerrainProxyVoxelTreesEnabled", cfg.treeVoxelsEnabled);
+        cfg.treeScale = glm::clamp(
+            farTerrainGetRegistryFloat(baseSystem, "FarTerrainProxyVoxelTreeScale", cfg.treeScale),
+            0.04f,
+            1.0f
+        );
+        cfg.treeMaxHeight = std::max(2, farTerrainGetRegistryInt(baseSystem, "FarTerrainProxyVoxelTreeMaxHeight", cfg.treeMaxHeight));
+        return cfg;
+    }
+
+    uint64_t farTerrainProxyVoxelConfigSignature(const FarTerrainProxyVoxelConfig& cfg) {
+        uint64_t h = 1469598103934665603ull;
+        auto mix = [&](int value) {
+            h ^= static_cast<uint64_t>(static_cast<uint32_t>(value));
+            h *= 1099511628211ull;
+        };
+        mix(cfg.enabled ? 1 : 0);
+        mix(cfg.terrainVoxelsEnabled ? 1 : 0);
+        mix(cfg.startRing);
+        mix(cfg.minCellSize);
+        mix(cfg.columnHeight);
+        mix(cfg.fullCoverMaxCellSize);
+        mix(static_cast<int>(std::round(cfg.terrainScale * 1000.0f)));
+        mix(cfg.maxProjectedFootprint);
+        mix(cfg.seamPadding);
+        mix(static_cast<int>(std::round(cfg.terrainHeightScale * 1000.0f)));
+        mix(cfg.includeWater ? 1 : 0);
+        mix(cfg.treeVoxelsEnabled ? 1 : 0);
+        mix(static_cast<int>(std::round(cfg.treeScale * 1000.0f)));
+        mix(cfg.treeMaxHeight);
+        return h;
+    }
+
+    bool farTerrainCellUsesProxyVoxelLod(const FarTerrainCachedCell& cell,
+                                         const FarTerrainProxyVoxelConfig& cfg) {
+        if (!cfg.enabled) return false;
+        if (cell.lodRing < cfg.startRing) return false;
+        if (cell.size < cfg.minCellSize) return false;
+        if (!cfg.includeWater && cell.hasWaterSurface) return false;
+        return true;
+    }
+
+    bool farTerrainCellUsesProxyTerrainLod(const FarTerrainCachedCell& cell,
+                                           const FarTerrainProxyVoxelConfig& cfg) {
+        return cfg.terrainVoxelsEnabled && farTerrainCellUsesProxyVoxelLod(cell, cfg);
+    }
+
     uint32_t farTerrainHash2DInt(int x, int z) {
         uint32_t ux = static_cast<uint32_t>(x) * 73856093u;
         uint32_t uz = static_cast<uint32_t>(z) * 19349663u;
@@ -254,6 +339,12 @@ namespace {
             return {
                 "SandBlockDesertTex",
                 farTerrainColorByName(world, cfg.colorSand, glm::vec3(0.72f, 0.62f, 0.38f))
+            };
+        }
+        if (biome == 5) {
+            return {
+                "GrassBlockProceduralBiomeTex",
+                glm::vec3(1.0f)
             };
         }
         if (biome == 1) {
@@ -1014,8 +1105,14 @@ namespace {
     void farTerrainUploadRenderBuffers(BaseSystem& baseSystem,
                                        FarTerrainClipmapContext& ctx,
                                        FarTerrainBuildPerfStats* perfStats = nullptr) {
-        const int handoffClusterSizeBlocks = std::max(32, ctx.baseCellSize * 32);
-        const int bodyClusterSizeBlocks = std::max(64, ctx.baseCellSize * 64);
+        const int handoffClusterSizeBlocks = std::max(
+            64,
+            farTerrainGetRegistryInt(baseSystem, "FarTerrainHandoffClusterSizeBlocks", 512)
+        );
+        const int bodyClusterSizeBlocks = std::max(
+            128,
+            farTerrainGetRegistryInt(baseSystem, "FarTerrainBodyClusterSizeBlocks", 2048)
+        );
         farTerrainUploadRenderClusterSet(
             baseSystem,
             ctx.handoffFaces,
@@ -1138,6 +1235,526 @@ namespace {
             return glm::vec3(light);
         }
         return cell.fallbackColor * light;
+    }
+
+    glm::vec2 farTerrainTileUvScale(const glm::vec2& faceScale);
+
+    void farTerrainAppendProxyBoxFaces(std::array<std::vector<FaceInstanceRenderData>, 6>& faces,
+                                       size_t& visibleFaceCount,
+                                       const glm::ivec3& minBlock,
+                                       const glm::ivec3& sizeBlocks,
+                                       const std::array<int, 6>& tileIndices,
+                                       const std::array<glm::vec3, 6>& colors,
+                                       const glm::vec4& ao = glm::vec4(1.0f)) {
+        if (sizeBlocks.x <= 0 || sizeBlocks.y <= 0 || sizeBlocks.z <= 0) return;
+
+        const glm::vec3 center(
+            static_cast<float>(minBlock.x) + 0.5f * static_cast<float>(sizeBlocks.x - 1),
+            static_cast<float>(minBlock.y) + 0.5f * static_cast<float>(sizeBlocks.y - 1),
+            static_cast<float>(minBlock.z) + 0.5f * static_cast<float>(sizeBlocks.z - 1)
+        );
+
+        for (int faceType = 0; faceType < 6; ++faceType) {
+            FaceInstanceRenderData face{};
+            face.tileIndex = tileIndices[static_cast<size_t>(faceType)];
+            face.color = colors[static_cast<size_t>(faceType)];
+            face.alpha = 1.0f;
+            face.ao = ao;
+
+            if (faceType == 0) {
+                face.position = glm::vec3(
+                    static_cast<float>(minBlock.x + sizeBlocks.x - 1) + 0.5f,
+                    center.y,
+                    center.z
+                );
+                face.scale = glm::vec2(static_cast<float>(sizeBlocks.z), static_cast<float>(sizeBlocks.y));
+            } else if (faceType == 1) {
+                face.position = glm::vec3(
+                    static_cast<float>(minBlock.x) - 0.5f,
+                    center.y,
+                    center.z
+                );
+                face.scale = glm::vec2(static_cast<float>(sizeBlocks.z), static_cast<float>(sizeBlocks.y));
+            } else if (faceType == 2) {
+                face.position = glm::vec3(
+                    center.x,
+                    static_cast<float>(minBlock.y + sizeBlocks.y - 1) + 0.5f,
+                    center.z
+                );
+                face.scale = glm::vec2(static_cast<float>(sizeBlocks.x), static_cast<float>(sizeBlocks.z));
+            } else if (faceType == 3) {
+                face.position = glm::vec3(
+                    center.x,
+                    static_cast<float>(minBlock.y) - 0.5f,
+                    center.z
+                );
+                face.scale = glm::vec2(static_cast<float>(sizeBlocks.x), static_cast<float>(sizeBlocks.z));
+            } else if (faceType == 4) {
+                face.position = glm::vec3(
+                    center.x,
+                    center.y,
+                    static_cast<float>(minBlock.z + sizeBlocks.z - 1) + 0.5f
+                );
+                face.scale = glm::vec2(static_cast<float>(sizeBlocks.x), static_cast<float>(sizeBlocks.y));
+            } else {
+                face.position = glm::vec3(
+                    center.x,
+                    center.y,
+                    static_cast<float>(minBlock.z) - 0.5f
+                );
+                face.scale = glm::vec2(static_cast<float>(sizeBlocks.x), static_cast<float>(sizeBlocks.y));
+            }
+
+            face.uvScale = farTerrainTileUvScale(face.scale);
+            faces[static_cast<size_t>(faceType)].push_back(face);
+            visibleFaceCount += 1;
+        }
+    }
+
+    void farTerrainAppendProxyUnitVoxel(std::array<std::vector<FaceInstanceRenderData>, 6>& faces,
+                                        size_t& visibleFaceCount,
+                                        const glm::ivec3& block,
+                                        int tileIndex,
+                                        const glm::vec3& fallbackColor) {
+        std::array<int, 6> tiles{};
+        std::array<glm::vec3, 6> colors{};
+        FarTerrainCachedCell litCell{};
+        litCell.fallbackColor = fallbackColor;
+        for (int faceType = 0; faceType < 6; ++faceType) {
+            tiles[static_cast<size_t>(faceType)] = tileIndex;
+            colors[static_cast<size_t>(faceType)] = farTerrainLitColor(litCell, faceType, tileIndex >= 0);
+        }
+        farTerrainAppendProxyBoxFaces(
+            faces,
+            visibleFaceCount,
+            block,
+            glm::ivec3(1, 1, 1),
+            tiles,
+            colors
+        );
+    }
+
+    struct FarTerrainProxySurfaceCell {
+        FarTerrainCachedCell cell;
+        int x = 0;
+        int z = 0;
+    };
+
+    const FarTerrainProxySurfaceCell* farTerrainFindProxySurfaceCell(
+        const std::vector<FarTerrainProxySurfaceCell>& cells,
+        const std::unordered_map<uint64_t, size_t>& cellIndex,
+        int x,
+        int z
+    ) {
+        auto it = cellIndex.find(farTerrainCellKey(x, z));
+        if (it == cellIndex.end()) return nullptr;
+        return &cells[it->second];
+    }
+
+    glm::vec4 farTerrainProxyTopAo(
+        const FarTerrainProxySurfaceCell& cell,
+        const std::vector<FarTerrainProxySurfaceCell>& cells,
+        const std::unordered_map<uint64_t, size_t>& cellIndex
+    ) {
+        const FarTerrainProxySurfaceCell* west = farTerrainFindProxySurfaceCell(cells, cellIndex, cell.x - 1, cell.z);
+        const FarTerrainProxySurfaceCell* east = farTerrainFindProxySurfaceCell(cells, cellIndex, cell.x + 1, cell.z);
+        const FarTerrainProxySurfaceCell* north = farTerrainFindProxySurfaceCell(cells, cellIndex, cell.x, cell.z - 1);
+        const FarTerrainProxySurfaceCell* south = farTerrainFindProxySurfaceCell(cells, cellIndex, cell.x, cell.z + 1);
+        const FarTerrainProxySurfaceCell* northWest = farTerrainFindProxySurfaceCell(cells, cellIndex, cell.x - 1, cell.z - 1);
+        const FarTerrainProxySurfaceCell* northEast = farTerrainFindProxySurfaceCell(cells, cellIndex, cell.x + 1, cell.z - 1);
+        const FarTerrainProxySurfaceCell* southWest = farTerrainFindProxySurfaceCell(cells, cellIndex, cell.x - 1, cell.z + 1);
+        const FarTerrainProxySurfaceCell* southEast = farTerrainFindProxySurfaceCell(cells, cellIndex, cell.x + 1, cell.z + 1);
+
+        const int topY = cell.cell.topY;
+        const bool w = west && west->cell.topY >= topY;
+        const bool e = east && east->cell.topY >= topY;
+        const bool n = north && north->cell.topY >= topY;
+        const bool s = south && south->cell.topY >= topY;
+        return glm::vec4(
+            farTerrainCornerAo(w, n, northWest && northWest->cell.topY >= topY),
+            farTerrainCornerAo(e, n, northEast && northEast->cell.topY >= topY),
+            farTerrainCornerAo(e, s, southEast && southEast->cell.topY >= topY),
+            farTerrainCornerAo(w, s, southWest && southWest->cell.topY >= topY)
+        );
+    }
+
+    void farTerrainAppendProxySurfaceTopFace(
+        std::array<std::vector<FaceInstanceRenderData>, 6>& faces,
+        size_t& visibleFaceCount,
+        FarTerrainMaterialTileCache& tileCache,
+        const FarTerrainProxySurfaceCell& cell,
+        const std::vector<FarTerrainProxySurfaceCell>& cells,
+        const std::unordered_map<uint64_t, size_t>& cellIndex
+    ) {
+        const int tile = tileCache.get(cell.cell.prototypeName, 2);
+        FaceInstanceRenderData face{};
+        face.position = glm::vec3(
+            static_cast<float>(cell.x),
+            static_cast<float>(cell.cell.topY) + 0.5f,
+            static_cast<float>(cell.z)
+        );
+        face.tileIndex = tile;
+        face.color = farTerrainLitColor(cell.cell, 2, tile >= 0);
+        face.alpha = 1.0f;
+        face.ao = farTerrainProxyTopAo(cell, cells, cellIndex);
+        face.scale = glm::vec2(1.0f);
+        face.uvScale = glm::vec2(1.0f);
+        faces[2].push_back(face);
+        visibleFaceCount += 1;
+    }
+
+    void farTerrainAppendProxySurfaceSideFace(
+        std::array<std::vector<FaceInstanceRenderData>, 6>& faces,
+        size_t& visibleFaceCount,
+        FarTerrainMaterialTileCache& tileCache,
+        const FarTerrainProxySurfaceCell& cell,
+        int faceType,
+        int y
+    ) {
+        if (faceType != 0 && faceType != 1 && faceType != 4 && faceType != 5) return;
+
+        constexpr int kSoilDepthBlocks = 5;
+        const bool deep = y < cell.cell.topY - kSoilDepthBlocks;
+        const char* prototypeName = deep ? cell.cell.deepPrototypeName : cell.cell.sidePrototypeName;
+        const glm::vec3 fallbackColor = deep ? cell.cell.deepFallbackColor : cell.cell.sideFallbackColor;
+        const int tile = tileCache.get(prototypeName, faceType);
+
+        FaceInstanceRenderData face{};
+        face.tileIndex = tile;
+        FarTerrainCachedCell litCell = cell.cell;
+        litCell.fallbackColor = fallbackColor;
+        face.color = farTerrainLitColor(litCell, faceType, tile >= 0);
+        face.alpha = 1.0f;
+        face.ao = farTerrainVerticalAo(1, false);
+        face.scale = glm::vec2(1.0f);
+        face.uvScale = glm::vec2(1.0f);
+
+        if (faceType == 0) {
+            face.position = glm::vec3(static_cast<float>(cell.x) + 0.5f, static_cast<float>(y), static_cast<float>(cell.z));
+        } else if (faceType == 1) {
+            face.position = glm::vec3(static_cast<float>(cell.x) - 0.5f, static_cast<float>(y), static_cast<float>(cell.z));
+        } else if (faceType == 4) {
+            face.position = glm::vec3(static_cast<float>(cell.x), static_cast<float>(y), static_cast<float>(cell.z) + 0.5f);
+        } else {
+            face.position = glm::vec3(static_cast<float>(cell.x), static_cast<float>(y), static_cast<float>(cell.z) - 0.5f);
+        }
+
+        faces[static_cast<size_t>(faceType)].push_back(face);
+        visibleFaceCount += 1;
+    }
+
+    void farTerrainAppendProxyWaterSurfaceFace(
+        std::array<std::vector<WaterFaceInstanceRenderData>, 6>& waterSurfaceFaces,
+        size_t& visibleFaceCount,
+        const FarTerrainProxySurfaceCell& cell
+    ) {
+        if (!cell.cell.hasWaterSurface || cell.cell.waterWaveClass <= 0) return;
+
+        WaterFaceInstanceRenderData face{};
+        face.position = glm::vec3(
+            static_cast<float>(cell.x),
+            static_cast<float>(cell.cell.waterSurfaceY) + 0.5f,
+            static_cast<float>(cell.z)
+        );
+        face.waveClass = static_cast<float>(cell.cell.waterWaveClass);
+        const float depth = static_cast<float>(std::max(1, cell.cell.waterSurfaceY - cell.cell.waterFloorY + 1));
+        face.metrics = glm::vec4(depth, depth, 0.0f, 0.0f);
+        face.scale = glm::vec2(1.0f);
+        face.uvScale = glm::vec2(1.0f);
+        waterSurfaceFaces[2].push_back(face);
+        visibleFaceCount += 1;
+    }
+
+    void farTerrainAppendProxySurfaceHeightfieldFaces(
+        std::array<std::vector<FaceInstanceRenderData>, 6>& faces,
+        std::array<std::vector<WaterFaceInstanceRenderData>, 6>& waterSurfaceFaces,
+        size_t& visibleFaceCount,
+        FarTerrainMaterialTileCache& tileCache,
+        const std::vector<FarTerrainProxySurfaceCell>& surfaceCells,
+        const std::unordered_map<uint64_t, size_t>& surfaceCellIndex,
+        const FarTerrainProxyVoxelConfig& proxyConfig
+    ) {
+        if (surfaceCells.empty()) return;
+
+        for (const FarTerrainProxySurfaceCell& surfaceCell : surfaceCells) {
+            farTerrainAppendProxySurfaceTopFace(
+                faces,
+                visibleFaceCount,
+                tileCache,
+                surfaceCell,
+                surfaceCells,
+                surfaceCellIndex
+            );
+            farTerrainAppendProxyWaterSurfaceFace(waterSurfaceFaces, visibleFaceCount, surfaceCell);
+        }
+
+        const int boundaryColumnHeight = std::max(1, proxyConfig.columnHeight);
+        const auto appendSideToNeighbor = [&](const FarTerrainProxySurfaceCell& surfaceCell,
+                                             int faceType,
+                                             int neighborX,
+                                             int neighborZ) {
+            const FarTerrainProxySurfaceCell* neighbor =
+                farTerrainFindProxySurfaceCell(surfaceCells, surfaceCellIndex, neighborX, neighborZ);
+            if (neighbor && neighbor->cell.topY >= surfaceCell.cell.topY) return;
+
+            const int bottomY = neighbor
+                ? neighbor->cell.topY + 1
+                : surfaceCell.cell.topY - boundaryColumnHeight + 1;
+            for (int y = std::min(bottomY, surfaceCell.cell.topY); y <= surfaceCell.cell.topY; ++y) {
+                farTerrainAppendProxySurfaceSideFace(
+                    faces,
+                    visibleFaceCount,
+                    tileCache,
+                    surfaceCell,
+                    faceType,
+                    y
+                );
+            }
+        };
+
+        for (const FarTerrainProxySurfaceCell& surfaceCell : surfaceCells) {
+            appendSideToNeighbor(surfaceCell, 0, surfaceCell.x + 1, surfaceCell.z);
+            appendSideToNeighbor(surfaceCell, 1, surfaceCell.x - 1, surfaceCell.z);
+            appendSideToNeighbor(surfaceCell, 4, surfaceCell.x, surfaceCell.z + 1);
+            appendSideToNeighbor(surfaceCell, 5, surfaceCell.x, surfaceCell.z - 1);
+        }
+    }
+
+    int farTerrainFirstCompressedProxyRing(int baseCellSize, int fullCoverMaxCellSize) {
+        int ring = 0;
+        int cellSize = std::max(1, baseCellSize);
+        const int maxFullCover = std::max(1, fullCoverMaxCellSize);
+        while (cellSize <= maxFullCover && ring < 24) {
+            ring += 1;
+            if (cellSize > (std::numeric_limits<int>::max() / 2)) break;
+            cellSize <<= 1;
+        }
+        return ring;
+    }
+
+    int farTerrainSourceRingInnerRadius(int nearRadiusBlocks, int baseCellSize, int ring) {
+        int innerRadius = 0;
+        const int safeRing = std::max(0, ring);
+        const int safeBaseCellSize = std::max(1, baseCellSize);
+        for (int i = 0; i < safeRing; ++i) {
+            const int cellSize = safeBaseCellSize << i;
+            innerRadius += cellSize * 4;
+            if (i == 0) {
+                innerRadius += std::max(0, nearRadiusBlocks);
+            }
+        }
+        return innerRadius;
+    }
+
+    int farTerrainProjectProxyHeight(int y, int originY, float scale) {
+        return originY + static_cast<int>(std::round(static_cast<float>(y - originY) * scale));
+    }
+
+    FarTerrainCachedCell farTerrainCompressedProxyCell(const FarTerrainCachedCell& source,
+                                                       int waterFloorY,
+                                                       const FarTerrainProxyVoxelConfig& proxyConfig) {
+        FarTerrainCachedCell projected = source;
+        projected.size = 1;
+        projected.topY = farTerrainProjectProxyHeight(
+            source.topY,
+            waterFloorY,
+            proxyConfig.terrainHeightScale
+        );
+        if (source.hasWaterSurface) {
+            projected.waterSurfaceY = farTerrainProjectProxyHeight(
+                source.waterSurfaceY,
+                waterFloorY,
+                proxyConfig.terrainHeightScale
+            );
+            projected.waterFloorY = farTerrainProjectProxyHeight(
+                source.waterFloorY,
+                waterFloorY,
+                proxyConfig.terrainHeightScale
+            );
+            if (projected.waterFloorY > projected.waterSurfaceY) {
+                projected.waterFloorY = projected.waterSurfaceY;
+            }
+            projected.topY = std::max(projected.topY, projected.waterFloorY);
+        }
+        return projected;
+    }
+
+    struct FarTerrainProxyFootprint {
+        glm::ivec2 min{0};
+        int spanX = 1;
+        int spanZ = 1;
+    };
+
+    glm::vec2 farTerrainProjectedProxyPoint(const glm::vec2& source,
+                                            const glm::ivec2& anchor,
+                                            int sourceStartRadius,
+                                            const FarTerrainProxyVoxelConfig& proxyConfig) {
+        const glm::vec2 delta(
+            source.x - static_cast<float>(anchor.x),
+            source.y - static_cast<float>(anchor.y)
+        );
+        const float sourceChebyshev = std::max(std::abs(delta.x), std::abs(delta.y));
+        if (sourceChebyshev <= 0.0001f) {
+            return glm::vec2(anchor);
+        }
+
+        const float visualRadius = static_cast<float>(sourceStartRadius)
+            + std::max(0.0f, sourceChebyshev - static_cast<float>(sourceStartRadius))
+                * proxyConfig.terrainScale;
+        const float positionScale = glm::clamp(
+            visualRadius / sourceChebyshev,
+            proxyConfig.terrainScale,
+            1.0f
+        );
+        return glm::vec2(anchor) + delta * positionScale;
+    }
+
+    FarTerrainProxyFootprint farTerrainProjectedProxyFootprint(const FarTerrainCachedCell& cell,
+                                                               const glm::ivec2& anchor,
+                                                               int nearRadiusBlocks,
+                                                               int baseCellSize,
+                                                               const FarTerrainProxyVoxelConfig& proxyConfig) {
+        const int cellSize = std::max(1, cell.size);
+        const int firstCompressedRing = farTerrainFirstCompressedProxyRing(
+            baseCellSize,
+            proxyConfig.fullCoverMaxCellSize
+        );
+        const int sourceStartRadius = farTerrainSourceRingInnerRadius(
+            nearRadiusBlocks,
+            baseCellSize,
+            firstCompressedRing
+        );
+
+        const float sourceMinX = static_cast<float>(cell.x);
+        const float sourceMaxX = static_cast<float>(cell.x + cellSize - 1);
+        const float sourceMinZ = static_cast<float>(cell.z);
+        const float sourceMaxZ = static_cast<float>(cell.z + cellSize - 1);
+        const glm::vec2 corners[4] = {
+            farTerrainProjectedProxyPoint(glm::vec2(sourceMinX, sourceMinZ), anchor, sourceStartRadius, proxyConfig),
+            farTerrainProjectedProxyPoint(glm::vec2(sourceMaxX, sourceMinZ), anchor, sourceStartRadius, proxyConfig),
+            farTerrainProjectedProxyPoint(glm::vec2(sourceMinX, sourceMaxZ), anchor, sourceStartRadius, proxyConfig),
+            farTerrainProjectedProxyPoint(glm::vec2(sourceMaxX, sourceMaxZ), anchor, sourceStartRadius, proxyConfig)
+        };
+
+        float minX = corners[0].x;
+        float maxX = corners[0].x;
+        float minZ = corners[0].y;
+        float maxZ = corners[0].y;
+        for (const glm::vec2& corner : corners) {
+            minX = std::min(minX, corner.x);
+            maxX = std::max(maxX, corner.x);
+            minZ = std::min(minZ, corner.y);
+            maxZ = std::max(maxZ, corner.y);
+        }
+
+        const int padding = proxyConfig.seamPadding;
+        int blockMinX = static_cast<int>(std::floor(minX)) - padding;
+        int blockMaxX = static_cast<int>(std::ceil(maxX)) + padding;
+        int blockMinZ = static_cast<int>(std::floor(minZ)) - padding;
+        int blockMaxZ = static_cast<int>(std::ceil(maxZ)) + padding;
+
+        if (blockMaxX - blockMinX + 1 > proxyConfig.maxProjectedFootprint) {
+            const int center = (blockMinX + blockMaxX) / 2;
+            blockMinX = center - proxyConfig.maxProjectedFootprint / 2;
+            blockMaxX = blockMinX + proxyConfig.maxProjectedFootprint - 1;
+        }
+        if (blockMaxZ - blockMinZ + 1 > proxyConfig.maxProjectedFootprint) {
+            const int center = (blockMinZ + blockMaxZ) / 2;
+            blockMinZ = center - proxyConfig.maxProjectedFootprint / 2;
+            blockMaxZ = blockMinZ + proxyConfig.maxProjectedFootprint - 1;
+        }
+
+        return FarTerrainProxyFootprint{
+            glm::ivec2(blockMinX, blockMinZ),
+            std::max(1, blockMaxX - blockMinX + 1),
+            std::max(1, blockMaxZ - blockMinZ + 1)
+        };
+    }
+
+    void farTerrainAppendWorldProxyTerrainFaces(
+        std::array<std::vector<FaceInstanceRenderData>, 6>& faces,
+        std::array<std::vector<WaterFaceInstanceRenderData>, 6>& waterSurfaceFaces,
+        size_t& visibleFaceCount,
+        FarTerrainMaterialTileCache& tileCache,
+        const std::vector<FarTerrainCachedCell>& cells,
+        const FarTerrainProxyVoxelConfig& proxyConfig,
+        const glm::ivec2& anchor,
+        int nearRadiusBlocks,
+        int baseCellSize,
+        int waterFloorY
+    ) {
+        if (cells.empty()) return;
+
+        std::vector<FarTerrainProxySurfaceCell> surfaceCells;
+        std::unordered_map<uint64_t, size_t> surfaceCellIndex;
+        surfaceCells.reserve(cells.size() * 4);
+        surfaceCellIndex.reserve(cells.size() * 8);
+
+        auto appendSurfaceCell = [&](const FarTerrainCachedCell& cell, int x, int z) {
+            const uint64_t key = farTerrainCellKey(x, z);
+            auto existing = surfaceCellIndex.find(key);
+            if (existing != surfaceCellIndex.end()) {
+                FarTerrainProxySurfaceCell& surfaceCell = surfaceCells[existing->second];
+                if (cell.topY > surfaceCell.cell.topY) {
+                    surfaceCell.cell = cell;
+                    surfaceCell.cell.x = x;
+                    surfaceCell.cell.z = z;
+                    surfaceCell.cell.size = 1;
+                }
+                return;
+            }
+
+            const size_t index = surfaceCells.size();
+            FarTerrainProxySurfaceCell surfaceCell{};
+            surfaceCell.cell = cell;
+            surfaceCell.cell.x = x;
+            surfaceCell.cell.z = z;
+            surfaceCell.cell.size = 1;
+            surfaceCell.x = x;
+            surfaceCell.z = z;
+            surfaceCells.push_back(surfaceCell);
+            surfaceCellIndex.emplace(key, index);
+        };
+
+        for (const FarTerrainCachedCell& cell : cells) {
+            const int cellSize = std::max(1, cell.size);
+            if (cellSize <= proxyConfig.fullCoverMaxCellSize) {
+                for (int dz = 0; dz < cellSize; ++dz) {
+                    for (int dx = 0; dx < cellSize; ++dx) {
+                        appendSurfaceCell(cell, cell.x + dx, cell.z + dz);
+                    }
+                }
+                continue;
+            }
+
+            const FarTerrainProxyFootprint footprint = farTerrainProjectedProxyFootprint(
+                cell,
+                anchor,
+                nearRadiusBlocks,
+                baseCellSize,
+                proxyConfig
+            );
+            const FarTerrainCachedCell projectedCell = farTerrainCompressedProxyCell(
+                cell,
+                waterFloorY,
+                proxyConfig
+            );
+            for (int dz = 0; dz < footprint.spanZ; ++dz) {
+                for (int dx = 0; dx < footprint.spanX; ++dx) {
+                    appendSurfaceCell(projectedCell, footprint.min.x + dx, footprint.min.y + dz);
+                }
+            }
+        }
+
+        farTerrainAppendProxySurfaceHeightfieldFaces(
+            faces,
+            waterSurfaceFaces,
+            visibleFaceCount,
+            tileCache,
+            surfaceCells,
+            surfaceCellIndex,
+            proxyConfig
+        );
     }
 
     glm::vec2 farTerrainTileUvScale(const glm::vec2& faceScale) {
@@ -1441,11 +2058,84 @@ namespace {
         }
     }
 
+    void farTerrainAppendTreeProxyVoxelFaces(std::array<std::vector<FaceInstanceRenderData>, 6>& faces,
+                                             size_t& visibleFaceCount,
+                                             int worldX,
+                                             int groundY,
+                                             int worldZ,
+                                             int kind,
+                                             int sourceHeightBlocks,
+                                             int leafTile,
+                                             int trunkTile,
+                                             const FarTerrainProxyVoxelConfig& proxyConfig) {
+        const int proxyHeight = std::clamp(
+            static_cast<int>(std::round(static_cast<float>(sourceHeightBlocks) * proxyConfig.treeScale)),
+            3,
+            std::max(3, proxyConfig.treeMaxHeight)
+        );
+        const int trunkHeight = std::clamp(proxyHeight / 2, 1, std::max(1, proxyHeight - 1));
+        const int canopyHeight = std::max(1, proxyHeight - trunkHeight + 1);
+        const int canopyRadius = std::clamp((proxyHeight + 3) / 4, 1, 2);
+        const int baseY = groundY + 1;
+        const glm::vec3 leafFallback = (kind == 1)
+            ? glm::vec3(0.62f, 0.46f, 0.28f)
+            : (kind == 2 ? glm::vec3(0.22f, 0.56f, 0.20f) : glm::vec3(0.28f, 0.62f, 0.22f));
+        const glm::vec3 trunkFallback(0.42f, 0.25f, 0.13f);
+
+        for (int y = 0; y < trunkHeight; ++y) {
+            farTerrainAppendProxyUnitVoxel(
+                faces,
+                visibleFaceCount,
+                glm::ivec3(worldX, baseY + y, worldZ),
+                trunkTile,
+                trunkFallback
+            );
+        }
+
+        std::vector<glm::ivec3> emittedLeaves;
+        emittedLeaves.reserve(32);
+        auto emitLeaf = [&](const glm::ivec3& block) {
+            for (const glm::ivec3& existing : emittedLeaves) {
+                if (existing.x == block.x && existing.y == block.y && existing.z == block.z) return;
+            }
+            emittedLeaves.push_back(block);
+            farTerrainAppendProxyUnitVoxel(
+                faces,
+                visibleFaceCount,
+                block,
+                leafTile,
+                leafFallback
+            );
+        };
+
+        const int canopyBaseY = baseY + std::max(1, trunkHeight - 1);
+        for (int layer = 0; layer < canopyHeight; ++layer) {
+            int radius = canopyRadius;
+            if (kind == 0) {
+                radius = std::max(0, canopyRadius - layer / 2);
+            } else if (layer == canopyHeight - 1) {
+                radius = std::max(0, canopyRadius - 1);
+            }
+            const int y = canopyBaseY + layer;
+            for (int dz = -radius; dz <= radius; ++dz) {
+                for (int dx = -radius; dx <= radius; ++dx) {
+                    const int manhattan = std::abs(dx) + std::abs(dz);
+                    const bool keep = (kind == 0)
+                        ? manhattan <= radius
+                        : manhattan <= radius + 1;
+                    if (!keep) continue;
+                    emitLeaf(glm::ivec3(worldX + dx, y, worldZ + dz));
+                }
+            }
+        }
+    }
+
     void farTerrainAppendTreeBillboardFaces(std::array<std::vector<FaceInstanceRenderData>, 6>& faces,
                                             size_t& visibleFaceCount,
                                             const BaseSystem& baseSystem,
                                             const WorldContext& world,
-                                            const std::vector<FarTerrainCachedCell>& cells) {
+                                            const std::vector<FarTerrainCachedCell>& cells,
+                                            const FarTerrainProxyVoxelConfig& proxyConfig) {
         if (cells.empty()) return;
         if (!farTerrainGetRegistryBool(baseSystem, "FarTerrainTreeBillboardsEnabled", true)) return;
 
@@ -1496,7 +2186,7 @@ namespace {
                     static_cast<float>(worldX),
                     static_cast<float>(worldZ)
                 );
-                if (biomeID == 2) return false;
+                if (biomeID == 2 || biomeID == 5) return false;
                 if (farTerrainIsWithinJungleVolcano(world.expanse, biomeID, worldX, worldZ)) return false;
 
                 int kind = -1;
@@ -1570,6 +2260,24 @@ namespace {
                 billboardWidth = std::max(1.0f, std::round(billboardWidth));
                 billboardHeight = std::max(1.0f, std::round(billboardHeight));
 
+                if (proxyConfig.treeVoxelsEnabled
+                    && farTerrainCellUsesProxyVoxelLod(cell, proxyConfig)) {
+                    farTerrainAppendTreeProxyVoxelFaces(
+                        faces,
+                        visibleFaceCount,
+                        worldX,
+                        groundY,
+                        worldZ,
+                        kind,
+                        static_cast<int>(billboardHeight),
+                        leafTile,
+                        trunkTile,
+                        proxyConfig
+                    );
+                    emitted += 1;
+                    return true;
+                }
+
                 FaceInstanceRenderData face{};
                 face.position = glm::vec3(
                     static_cast<float>(worldX) + 0.5f,
@@ -1616,7 +2324,7 @@ namespace {
                                                           bool islandQuadrants,
                                                           uint32_t seed,
                                                           int shortGrassPercent) {
-        if (biomeID == 2) return nullptr;
+        if (biomeID == 2 || biomeID == 5) return nullptr;
         if (biomeID == 1) {
             if (static_cast<int>((seed >> 11u) % 100u) < shortGrassPercent) {
                 return "GrassTuftShortMeadow";
@@ -1681,7 +2389,7 @@ namespace {
                     static_cast<float>(worldX),
                     static_cast<float>(worldZ)
                 );
-                if (biomeID == 2) return false;
+                if (biomeID == 2 || biomeID == 5) return false;
 
                 const uint32_t seed = farTerrainHash2DInt(worldX, worldZ);
                 if (((seed >> 1u) % static_cast<uint32_t>(grassSpawnModulo)) != 0u) return false;
@@ -2223,21 +2931,38 @@ namespace {
                                    int skirtDepth,
                                    int waterFloorY,
                                    bool boundsDebugEnabled,
+                                   const glm::ivec2& proxyAnchor,
+                                   int proxyNearRadius,
+                                   int proxyBaseCellSize,
                                    FarTerrainBuildPerfStats* perfStats = nullptr) {
-        std::unordered_map<uint64_t, size_t> cellIndex;
-        cellIndex.reserve(cells.size() * 2);
-        for (size_t i = 0; i < cells.size(); ++i) {
-            cellIndex.emplace(farTerrainCellKey(cells[i].x, cells[i].z), i);
-        }
-
-        if (boundsDebugEnabled) {
-            farTerrainAppendMergedBoundsDebugRuns(faces, visibleFaceCount, cells, cellIndex);
-        }
-
+        const FarTerrainProxyVoxelConfig proxyConfig = farTerrainReadProxyVoxelConfig(baseSystem);
+        const bool oldSlabLodEnabled = farTerrainGetRegistryBool(baseSystem, "FarTerrainOldSlabLodEnabled", false);
         FarTerrainMaterialTileCache tileCache(world, prototypes);
+        std::vector<FarTerrainCachedCell> slabCells;
+        std::vector<FarTerrainCachedCell> proxyCells;
+        slabCells.reserve(cells.size());
+        proxyCells.reserve(cells.size());
+        for (const FarTerrainCachedCell& cell : cells) {
+            if (farTerrainCellUsesProxyTerrainLod(cell, proxyConfig)) {
+                proxyCells.push_back(cell);
+            } else if (oldSlabLodEnabled) {
+                slabCells.push_back(cell);
+            }
+        }
+
+        std::unordered_map<uint64_t, size_t> slabCellIndex;
+        slabCellIndex.reserve(slabCells.size() * 2);
+        for (size_t i = 0; i < slabCells.size(); ++i) {
+            slabCellIndex.emplace(farTerrainCellKey(slabCells[i].x, slabCells[i].z), i);
+        }
+
+        if (boundsDebugEnabled && !slabCells.empty()) {
+            farTerrainAppendMergedBoundsDebugRuns(faces, visibleFaceCount, slabCells, slabCellIndex);
+        }
+
         std::unordered_map<int, std::vector<FarTerrainCachedCell>> greedyTopGroups;
         greedyTopGroups.reserve(4);
-        for (const FarTerrainCachedCell& cell : cells) {
+        for (const FarTerrainCachedCell& cell : slabCells) {
             if (cell.size > 0) {
                 greedyTopGroups[cell.size].push_back(cell);
             }
@@ -2249,7 +2974,7 @@ namespace {
                 visibleFaceCount,
                 tileCache,
                 entry.second,
-                cellIndex,
+                slabCellIndex,
                 entry.first,
                 perfStats
             );
@@ -2266,7 +2991,8 @@ namespace {
             visibleFaceCount,
             baseSystem,
             world,
-            cells
+            cells,
+            proxyConfig
         );
         farTerrainAppendGrassBillboardFaces(
             faces,
@@ -2277,22 +3003,37 @@ namespace {
             cells
         );
 
+        farTerrainAppendWorldProxyTerrainFaces(
+            faces,
+            waterSurfaceFaces,
+            visibleFaceCount,
+            tileCache,
+            proxyCells,
+            proxyConfig,
+            proxyAnchor,
+            proxyNearRadius,
+            proxyBaseCellSize,
+            waterFloorY
+        );
+
         std::unordered_map<FarTerrainVerticalRunKey, std::vector<std::pair<int, int>>, FarTerrainVerticalRunKeyHash> verticalRuns;
         std::unordered_map<FarTerrainVerticalRunKey, FarTerrainVerticalRunInfo, FarTerrainVerticalRunKeyHash> verticalRunInfos;
-        verticalRuns.reserve(cells.size() * 4);
-        verticalRunInfos.reserve(cells.size() * 4);
+        verticalRuns.reserve(slabCells.size() * 4);
+        verticalRunInfos.reserve(slabCells.size() * 4);
         const auto verticalStart = std::chrono::steady_clock::now();
 
-        for (const FarTerrainCachedCell& cell : cells) {
+        for (const FarTerrainCachedCell& cell : slabCells) {
             const auto appendEdge = [&](int faceType, int neighborX, int neighborZ) {
-                int targetBottom = std::max(waterFloorY, cell.topY - skirtDepth);
-                bool upperContact = false;
-                auto it = cellIndex.find(farTerrainCellKey(neighborX, neighborZ));
-                if (it != cellIndex.end()) {
-                    const FarTerrainCachedCell& neighbor = cells[it->second];
-                    targetBottom = std::max(targetBottom, neighbor.topY);
-                    upperContact = neighbor.topY >= cell.topY - 1;
+                auto it = slabCellIndex.find(farTerrainCellKey(neighborX, neighborZ));
+                if (it == slabCellIndex.end()) {
+                    // Missing neighbors are LOD/frustum/near-terrain boundaries, not real exposed cliffs.
+                    return;
                 }
+
+                const FarTerrainCachedCell& neighbor = slabCells[it->second];
+                int targetBottom = std::max(waterFloorY, cell.topY - skirtDepth);
+                bool upperContact = neighbor.topY >= cell.topY - 1;
+                targetBottom = std::max(targetBottom, neighbor.topY);
                 farTerrainCollectVerticalFace(
                     verticalRuns,
                     verticalRunInfos,
@@ -2477,6 +3218,9 @@ namespace {
             skirtDepth,
             waterFloorY,
             boundsDebugEnabled,
+            ctx.anchorCell,
+            ctx.nearRadiusBlocks,
+            ctx.baseCellSize,
             perfStats
         );
         ctx.handoffRenderBuffersDirty = true;
@@ -2519,8 +3263,6 @@ namespace FarTerrainClipmapSystemLogic {
         }
 
         constexpr int kSectionSizeBlocks = 16;
-        constexpr int kNormalDetailRadiusChunks = 6;
-        constexpr int kNearProxyRadiusBlocks = kNormalDetailRadiusChunks * kSectionSizeBlocks;
         constexpr int kFirstLodCellBlocks = 2;
         constexpr int kRingRadialCells = 4;
         constexpr int kRingCount = 10;
@@ -2528,8 +3270,14 @@ namespace FarTerrainClipmapSystemLogic {
         constexpr int kRebuildIntervalFrames = 90;
         constexpr int kForwardBiasBlocks = 96;
         constexpr float kFrustumViewBucketDegrees = 45.0f;
-        constexpr int kMaxRadiusBlocks =
-            kNearProxyRadiusBlocks
+        const int normalDetailRadiusChunks = std::clamp(
+            farTerrainGetRegistryInt(baseSystem, "FarTerrainNearProxyRadiusChunks", 4),
+            2,
+            12
+        );
+        const int nearProxyRadiusBlocks = normalDetailRadiusChunks * kSectionSizeBlocks;
+        const int maxRadiusBlocks =
+            nearProxyRadiusBlocks
             + (kFirstLodCellBlocks * kRingRadialCells)
             + (kFirstLodCellBlocks * 2 * kRingRadialCells)
             + (kFirstLodCellBlocks * 4 * kRingRadialCells)
@@ -2541,11 +3289,14 @@ namespace FarTerrainClipmapSystemLogic {
             + (kFirstLodCellBlocks * 256 * kRingRadialCells)
             + (kFirstLodCellBlocks * 512 * kRingRadialCells);
         const int baseCell = kFirstLodCellBlocks;
-        const int nearRadius = kNearProxyRadiusBlocks;
-        const int maxRadius = kMaxRadiusBlocks;
+        const int nearRadius = nearProxyRadiusBlocks;
+        const int maxRadius = maxRadiusBlocks;
         const int ringCount = kRingCount;
         const int skirtDepth = kSkirtDepthBlocks;
-        const int rebuildIntervalFrames = kRebuildIntervalFrames;
+        const int rebuildIntervalFrames = std::max(
+            1,
+            farTerrainGetRegistryInt(baseSystem, "FarTerrainRebuildIntervalFrames", kRebuildIntervalFrames)
+        );
         const int forwardBiasBlocks = kForwardBiasBlocks;
         constexpr bool kHideWhenRealTerrainReady = true;
         constexpr bool kDebugLog = false;
@@ -2556,6 +3307,8 @@ namespace FarTerrainClipmapSystemLogic {
             "FarTerrainLodBoundsDebugEnabled",
             false
         );
+        const FarTerrainProxyVoxelConfig proxyConfig = farTerrainReadProxyVoxelConfig(baseSystem);
+        const uint64_t proxyVoxelConfigSignature = farTerrainProxyVoxelConfigSignature(proxyConfig);
         const int anchorStep = std::max(
             baseCell,
             ((std::max(baseCell * 4, nearRadius / 2) + baseCell - 1) / baseCell) * baseCell
@@ -2617,7 +3370,8 @@ namespace FarTerrainClipmapSystemLogic {
             || ctx.nearRadiusBlocks != nearRadius
             || ctx.maxRadiusBlocks != maxRadius
             || ctx.ringCount != ringCount
-            || ctx.boundsDebugEnabled != boundsDebugEnabled;
+            || ctx.boundsDebugEnabled != boundsDebugEnabled
+            || ctx.proxyVoxelConfigSignature != proxyVoxelConfigSignature;
         const bool anchorChanged = !frustumFrozen && (ctx.anchorCell != anchor);
         const glm::ivec2 anchorDelta = anchor - ctx.anchorCell;
         const bool realMeshCoverageChanged =
@@ -2695,6 +3449,7 @@ namespace FarTerrainClipmapSystemLogic {
         ctx.lastBuildSkipped = false;
         ctx.lastBoundaryCoverageSignature = boundaryCoverageSignature;
         ctx.boundsDebugEnabled = boundsDebugEnabled;
+        ctx.proxyVoxelConfigSignature = proxyVoxelConfigSignature;
         ctx.lastViewYawBucket = viewYawBucket;
         ctx.lastViewPitchBucket = viewPitchBucket;
         size_t suppressedCellCount = 0;
@@ -2802,7 +3557,6 @@ namespace FarTerrainClipmapSystemLogic {
                     innerRadius = outerRadius;
                     continue;
                 }
-                std::vector<FarTerrainCachedCell> visibleBodyCells;
                 const auto cellResolveStart = std::chrono::steady_clock::now();
 
                 for (int z = minZ; z <= maxZ; z += cellSize) {
@@ -2907,36 +3661,61 @@ namespace FarTerrainClipmapSystemLogic {
                             ctx.handoffCells.push_back(cell);
                         } else {
                             ctx.bodyCells.push_back(cell);
-                            visibleBodyCells.push_back(cell);
                         }
                     }
                 }
                 perfStats.cellResolveMs += std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - cellResolveStart
                 ).count();
+                innerRadius = outerRadius;
+            }
+            if (!ctx.bodyCells.empty()) {
+                const size_t facesBefore = ctx.bodyVisibleFaceCount;
+                farTerrainAppendCellFaces(
+                    ctx.bodyFaces,
+                    ctx.bodyWaterSurfaceFaces,
+                    ctx.bodyVisibleFaceCount,
+                    baseSystem,
+                    world,
+                    prototypes,
+                    ctx.bodyCells,
+                    skirtDepth,
+                    waterFloorY,
+                    boundsDebugEnabled,
+                    anchor,
+                    nearRadius,
+                    baseCell,
+                    &perfStats
+                );
 
-                if (!visibleBodyCells.empty()) {
-                    const size_t facesBefore = ctx.bodyVisibleFaceCount;
-                    farTerrainAppendCellFaces(
-                        ctx.bodyFaces,
-                        ctx.bodyWaterSurfaceFaces,
-                        ctx.bodyVisibleFaceCount,
-                        baseSystem,
-                        world,
-                        prototypes,
-                        visibleBodyCells,
-                        skirtDepth,
-                        waterFloorY,
-                        boundsDebugEnabled,
-                        &perfStats
-                    );
-                    if (ring >= 0 && ring < static_cast<int>(ctx.lodFaceCounts.size())) {
-                        const size_t faceDelta = ctx.bodyVisibleFaceCount - facesBefore;
-                        ctx.lodFaceCounts[static_cast<size_t>(ring)] += faceDelta;
-                        ctx.lodTriangleCounts[static_cast<size_t>(ring)] += faceDelta * 2u;
+                const size_t faceDelta = ctx.bodyVisibleFaceCount - facesBefore;
+                if (faceDelta > 0) {
+                    std::array<size_t, 10> bodyCellCounts{};
+                    size_t bodyCellTotal = 0;
+                    for (const FarTerrainCachedCell& cell : ctx.bodyCells) {
+                        if (cell.lodRing >= 0 && cell.lodRing < static_cast<int>(bodyCellCounts.size())) {
+                            bodyCellCounts[static_cast<size_t>(cell.lodRing)] += 1;
+                            bodyCellTotal += 1;
+                        }
+                    }
+                    if (bodyCellTotal > 0) {
+                        size_t assignedFaces = 0;
+                        int lastRingWithCells = -1;
+                        for (size_t i = 0; i < bodyCellCounts.size(); ++i) {
+                            if (bodyCellCounts[i] == 0) continue;
+                            lastRingWithCells = static_cast<int>(i);
+                            const size_t ringFaces = (faceDelta * bodyCellCounts[i]) / bodyCellTotal;
+                            ctx.lodFaceCounts[i] += ringFaces;
+                            ctx.lodTriangleCounts[i] += ringFaces * 2u;
+                            assignedFaces += ringFaces;
+                        }
+                        if (lastRingWithCells >= 0 && assignedFaces < faceDelta) {
+                            const size_t remainder = faceDelta - assignedFaces;
+                            ctx.lodFaceCounts[static_cast<size_t>(lastRingWithCells)] += remainder;
+                            ctx.lodTriangleCounts[static_cast<size_t>(lastRingWithCells)] += remainder * 2u;
+                        }
                     }
                 }
-                innerRadius = outerRadius;
             }
             ctx.lastBodyBuildMs = std::chrono::duration<float, std::milli>(
                 std::chrono::steady_clock::now() - bodyBuildStart

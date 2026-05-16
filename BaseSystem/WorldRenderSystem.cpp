@@ -223,6 +223,11 @@ namespace WorldRenderSystemLogic {
             0,
             RenderInitSystemLogic::getRegistryInt(baseSystem, "voxelRenderMaxVisibleSections", 512)
         );
+        const bool occlusionCullFarTerrain = RenderInitSystemLogic::getRegistryBool(
+            baseSystem,
+            "OcclusionCullingCullFarTerrain",
+            false
+        );
         const int voxelSectionSizeBlocks = baseSystem.voxelWorld
             ? std::max(1, baseSystem.voxelWorld->sectionSize)
             : 16;
@@ -257,6 +262,7 @@ namespace WorldRenderSystemLogic {
                         continue;
                     }
                     if (!mapViewActive
+                        && occlusionCullFarTerrain
                         && OcclusionCullingSystemLogic::IsWorldAabbOccluded(baseSystem, cluster.minBounds, cluster.maxBounds)) {
                         continue;
                     }
@@ -587,6 +593,10 @@ namespace WorldRenderSystemLogic {
             const bool hasWaterReflectionTexture = waterPlanarReflectionsEnabled
                 && allowPlanarReflection
                 && renderer.waterReflectionTex != 0;
+            const bool hasProceduralGrassTexture =
+                renderer.proceduralGrassTexture != 0
+                && renderer.proceduralGrassTextureSize.x == 192
+                && renderer.proceduralGrassTextureSize.y == 192;
             static int sMaxTextureUnits = -1;
             if (sMaxTextureUnits < 0) {
                 sMaxTextureUnits = renderBackend.getMaxTextureImageUnits();
@@ -596,6 +606,7 @@ namespace WorldRenderSystemLogic {
             const bool enoughUnitsForTerrainSet = (sMaxTextureUnits >= 13);
             const bool enoughUnitsForWaterOverlay = (sMaxTextureUnits >= 14);
             const bool enoughUnitsForWaterReflection = (sMaxTextureUnits >= 15);
+            const bool enoughUnitsForProceduralGrass = (sMaxTextureUnits >= 16);
             shader.setInt("grassTextureEnabled", hasAllGrassTextures ? 1 : 0);
             shader.setInt("grassTexture0", 1);
             shader.setInt("grassTexture1", 2);
@@ -620,6 +631,7 @@ namespace WorldRenderSystemLogic {
             );
             shader.setFloat("waterReflectionPlaneY", waterReflectionPlaneY);
             shader.setInt("waterReflectionTexture", 14);
+            shader.setInt("proceduralGrassTexture", 15);
             if (hasAllGrassTextures) {
                 bindTextureUnit2D(1, renderer.grassTextures[0]);
                 bindTextureUnit2D(2, renderer.grassTextures[1]);
@@ -645,6 +657,9 @@ namespace WorldRenderSystemLogic {
             }
             if (hasWaterReflectionTexture && enoughUnitsForWaterReflection) {
                 bindTextureUnit2D(14, renderer.waterReflectionTex);
+            }
+            if (hasProceduralGrassTexture && enoughUnitsForProceduralGrass) {
+                bindTextureUnit2D(15, renderer.proceduralGrassTexture);
             }
             bindTextureUnit2D(0, renderer.atlasTexture);
         };

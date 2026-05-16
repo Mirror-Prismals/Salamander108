@@ -86,6 +86,14 @@ namespace OcclusionCullingSystemLogic {
             }
         }
 
+        bool getRegistryBool(const BaseSystem& baseSystem, const std::string& key, bool fallback) {
+            if (!baseSystem.registry) return fallback;
+            auto it = baseSystem.registry->find(key);
+            if (it == baseSystem.registry->end()) return fallback;
+            if (!std::holds_alternative<bool>(it->second)) return fallback;
+            return std::get<bool>(it->second);
+        }
+
         bool ensureOcclusionRenderTarget(BaseSystem& baseSystem,
                                          PlatformWindowHandle win,
                                          int& outWidth,
@@ -419,6 +427,7 @@ namespace OcclusionCullingSystemLogic {
     }
 
     bool IsWorldAabbOccluded(const BaseSystem& baseSystem, const glm::vec3& minB, const glm::vec3& maxB) {
+        if (!getRegistryBool(baseSystem, "OcclusionCullingSystem", true)) return false;
         if (!baseSystem.occlusionCulling) return false;
         const OcclusionCullingContext& occlusion = *baseSystem.occlusionCulling;
         if (!occlusion.enabled || !occlusion.hzbValid) return false;
@@ -448,6 +457,13 @@ namespace OcclusionCullingSystemLogic {
 
         VoxelRenderContext& voxelRender = *baseSystem.voxelRender;
         OcclusionCullingContext& occlusion = *baseSystem.occlusionCulling;
+        if (!getRegistryBool(baseSystem, "OcclusionCullingSystem", true)) {
+            occlusion.occludedVoxelSections.clear();
+            occlusion.occludedClusterBounds.clear();
+            occlusion.hzbValid = false;
+            occlusion.hzbReadbackPending = false;
+            return;
+        }
 
         if (occlusion.debugFrozen && occlusion.frozenValid) {
             return;
@@ -476,6 +492,7 @@ namespace OcclusionCullingSystemLogic {
             && baseSystem.farTerrain->enabled
             && (!baseSystem.farTerrain->bodyRenderClusters.empty()
                 || !baseSystem.farTerrain->handoffRenderClusters.empty());
+        const bool cullFarTerrain = getRegistryBool(baseSystem, "OcclusionCullingCullFarTerrain", false);
         if (!nearTerrainEnabled && !farTerrainEnabled) {
             occlusion.hzbValid = false;
             return;
@@ -521,7 +538,9 @@ namespace OcclusionCullingSystemLogic {
                         occlusion.frustumRejectedSectionCount += 1;
                         continue;
                     }
-                    candidates.push_back({&cluster, true});
+                    if (cullFarTerrain) {
+                        candidates.push_back({&cluster, true});
+                    }
                     if (clusterHasOccluderGeometry(cluster)) {
                         occluders.push_back(&cluster);
                     }
