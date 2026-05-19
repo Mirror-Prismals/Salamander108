@@ -242,7 +242,9 @@ namespace {
         if (startsWith(line, "TerrainCaptureSummary:")) return "terrain";
         if (startsWith(line, "TerrainCaptureScorecard:")) return "terrain";
         if (startsWith(line, "[VoxelPerf]")) return "voxel";
+        if (startsWith(line, "[VoxelRenderPerf]")) return "voxel";
         if (startsWith(line, "[DebugVoxelMesh]")) return "voxel";
+        if (startsWith(line, "[WebGPU][PassStats]")) return "frame";
         if (startsWith(line, "FrameHitch:")) return "hitch";
         if (startsWith(line, "FrameHitchSummary:")) return "hitch";
         return "other";

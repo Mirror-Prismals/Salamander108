@@ -68,6 +68,7 @@
   "TreeSchedulerSyncRadiusY": "1",
   "TreeSchedulerSyncSectionsPerFrame": "2",
   "TreeSchedulerSyncPassesPerSection": "1",
+  "TreeSchedulerForceCompleteSectionsPerFrame": "0",
   "StructurePlacementSystem": true,
   "RenderInitSystem": true,
   "FrustumCullingSystem": true,

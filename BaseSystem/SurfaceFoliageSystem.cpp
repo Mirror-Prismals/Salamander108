@@ -1,4 +1,4 @@
-        void writeGroundFoliageToSection(const std::vector<Entity>& prototypes,
+        bool writeGroundFoliageToSection(const std::vector<Entity>& prototypes,
                                          const WorldContext& worldCtx,
                                          VoxelWorldContext& voxelWorld,
                                          int sectionTier,
@@ -60,10 +60,13 @@
                                          int leafPrototypeID,
                                          int waterPrototypeID,
                                          const FoliageSpec& spec,
+                                         int maxColumnsPerPass,
+                                         int& nextTierX,
+                                         int& nextTierZ,
                                          bool& unresolvedDependencies,
                                          bool& modified) {
             (void)unresolvedDependencies;
-            if (!spec.enabled) return;
+            if (!spec.enabled) return true;
             const bool hasAnyGrassPrototype =
                 (grassPrototypeID >= 0 || shortGrassPrototypeID >= 0
                     || grassPrototypeBiome1ID >= 0 || shortGrassPrototypeBiome1ID >= 0
@@ -125,7 +128,7 @@
             const bool hasLilypadPrototype = (lilypadPatchPrototypeX >= 0 || lilypadPatchPrototypeZ >= 0);
             if ((!spec.grassEnabled || !hasAnyGrassOrCoverPrototype)
                 && (!spec.flowerEnabled || !hasAnyFlowerPrototype)
-                && (!spec.lilypadPatchEnabled || !hasLilypadPrototype)) return;
+                && (!spec.lilypadPatchEnabled || !hasLilypadPrototype)) return true;
 
             const int minX = sectionCoord.x * sectionSize;
             const int minZ = sectionCoord.z * sectionSize;
@@ -162,8 +165,23 @@
                 return false;
             };
 
-            for (int tierZ = minZ; tierZ <= maxZ; ++tierZ) {
-                for (int tierX = minX; tierX <= maxX; ++tierX) {
+            int startZ = nextTierZ;
+            int startX = nextTierX;
+            if (startZ < minZ || startZ > maxZ || startX < minX || startX > maxX) {
+                startZ = minZ;
+                startX = minX;
+            }
+
+            int columnsProcessed = 0;
+            for (int tierZ = startZ; tierZ <= maxZ; ++tierZ) {
+                const int rowStartX = (tierZ == startZ) ? startX : minX;
+                for (int tierX = rowStartX; tierX <= maxX; ++tierX) {
+                    if (maxColumnsPerPass > 0 && columnsProcessed >= maxColumnsPerPass) {
+                        nextTierX = tierX;
+                        nextTierZ = tierZ;
+                        return false;
+                    }
+                    columnsProcessed += 1;
                     const int worldX = tierX * sectionScale;
                     const int worldZ = tierZ * sectionScale;
                     const bool islandQuadrants =
@@ -753,6 +771,9 @@
                     }
                 }
             }
+            nextTierX = minX;
+            nextTierZ = minZ;
+            return true;
         }
         void writeDesertCactusToSection(const std::vector<Entity>& prototypes,
                                         const WorldContext& worldCtx,

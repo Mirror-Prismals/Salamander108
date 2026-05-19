@@ -42,6 +42,7 @@ struct VSIn {
     @location(7) ao: vec4<f32>,
     @location(8) scale: vec2<f32>,
     @location(9) uvScale: vec2<f32>,
+    @location(10) instanceFaceType: i32,
 };
 
 struct VSOut {
@@ -58,6 +59,7 @@ struct VSOut {
     @location(9) screenUv: vec2<f32>,
     @location(10) localRectUv: vec2<f32>,
     @location(11) instanceScale: vec2<f32>,
+    @location(12) @interpolate(flat) faceType: i32,
 };
 
 fn rotateY(v: vec3<f32>, r: f32) -> vec3<f32> {
@@ -168,7 +170,10 @@ fn applyProjectionWarp(clip: vec4<f32>) -> vec4<f32> {
 fn vs_main(input: VSIn) -> VSOut {
     var out: VSOut;
 
-    let faceType = u.intParams1.x;
+    var faceType = u.intParams1.x;
+    if (input.instanceFaceType >= 0) {
+        faceType = input.instanceFaceType;
+    }
     let sectionTier = u.intParams1.y;
     let waterCascadeBrightnessEnabled = u.intParams4.y;
     let foliageWindEnabled = u.intParams6.z != 0;
@@ -516,5 +521,6 @@ fn vs_main(input: VSIn) -> VSOut {
     out.aoCorners = input.ao;
     out.localRectUv = baseTex;
     out.instanceScale = input.scale;
+    out.faceType = faceType;
     return out;
 }

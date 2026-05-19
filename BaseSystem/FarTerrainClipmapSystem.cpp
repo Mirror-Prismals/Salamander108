@@ -908,6 +908,7 @@ namespace {
         ctx.visibleRingCount = 0;
         ctx.lodCellCounts.fill(0);
         ctx.lodFaceCounts.fill(0);
+        ctx.lodTriangleCounts.fill(0);
     }
 
     int farTerrainCellTopYForBounds(const FarTerrainCachedCell& cell) {
@@ -3236,16 +3237,33 @@ namespace FarTerrainClipmapSystemLogic {
         FarTerrainClipmapContext& ctx = *baseSystem.farTerrain;
         WorldContext& world = *baseSystem.world;
         const auto updateStart = std::chrono::steady_clock::now();
-        const bool enabled = true;
+        const bool enabled = farTerrainGetRegistryBool(baseSystem, "FarTerrainEnabled", true);
         if (!enabled || !world.expanse.loaded) {
-            if (ctx.enabled || ctx.visibleFaceCount > 0 || ctx.handoffRenderBuffersValid || ctx.bodyRenderBuffersValid) {
+            if (ctx.enabled
+                || ctx.visibleFaceCount > 0
+                || ctx.handoffRenderBuffersValid
+                || ctx.bodyRenderBuffersValid
+                || !ctx.handoffRenderClusters.empty()
+                || !ctx.bodyRenderClusters.empty()
+                || !ctx.handoffCells.empty()
+                || !ctx.bodyCells.empty()) {
                 farTerrainClearAllFaces(ctx);
                 ctx.handoffCells.clear();
+                ctx.bodyCells.clear();
                 ctx.resolvedCellCache.clear();
                 farTerrainDestroyRenderBuffers(baseSystem, ctx);
             }
             ctx.enabled = false;
+            ctx.initialized = false;
             ctx.lastBuildSkipped = true;
+            ctx.sectorRingTests = 0;
+            ctx.sectorRingRejected = 0;
+            ctx.sectorCellTests = 0;
+            ctx.sectorCellRejected = 0;
+            ctx.frustumRingTests = 0;
+            ctx.frustumRingRejected = 0;
+            ctx.frustumCellTests = 0;
+            ctx.frustumCellRejected = 0;
             ctx.lastSetupMs = std::chrono::duration<float, std::milli>(
                 std::chrono::steady_clock::now() - updateStart
             ).count();

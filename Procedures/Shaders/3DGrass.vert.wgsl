@@ -70,20 +70,22 @@ fn applyProjectionWarp(clip: vec4<f32>) -> vec4<f32> {
 struct ProjectedBounds {
     ndcMin: vec2<f32>,
     ndcMax: vec2<f32>,
+    depthMin: f32,
+    valid: bool,
 };
 
 fn includeProjectedCorner(p: vec3<f32>, bounds: ProjectedBounds) -> ProjectedBounds {
     var b = bounds;
     let clip = applyProjectionWarp(u.projection * u.view * vec4<f32>(p, 1.0));
     if (clip.w <= 0.05) {
-        b.ndcMin = vec2<f32>(-1.0);
-        b.ndcMax = vec2<f32>(1.0);
         return b;
     }
 
-    let ndc = clip.xy / clip.w;
-    b.ndcMin = min(b.ndcMin, ndc);
-    b.ndcMax = max(b.ndcMax, ndc);
+    let ndc = clip.xyz / clip.w;
+    b.ndcMin = min(b.ndcMin, ndc.xy);
+    b.ndcMax = max(b.ndcMax, ndc.xy);
+    b.depthMin = min(b.depthMin, ndc.z);
+    b.valid = true;
     return b;
 }
 
@@ -105,6 +107,8 @@ fn vs_main(input: VSIn) -> VSOut {
     var bounds: ProjectedBounds;
     bounds.ndcMin = vec2<f32>(100000.0);
     bounds.ndcMax = vec2<f32>(-100000.0);
+    bounds.depthMin = 1.0;
+    bounds.valid = false;
     bounds = includeProjectedCorner(vec3<f32>(bmin.x, bmin.y, bmin.z), bounds);
     bounds = includeProjectedCorner(vec3<f32>(bmax.x, bmin.y, bmin.z), bounds);
     bounds = includeProjectedCorner(vec3<f32>(bmin.x, bmax.y, bmin.z), bounds);
@@ -115,12 +119,19 @@ fn vs_main(input: VSIn) -> VSOut {
     bounds = includeProjectedCorner(vec3<f32>(bmax.x, bmax.y, bmax.z), bounds);
 
     let pad = vec2<f32>(0.015);
+    if (!bounds.valid || bounds.ndcMax.x < -1.15 || bounds.ndcMin.x > 1.15 || bounds.ndcMax.y < -1.15 || bounds.ndcMin.y > 1.15) {
+        out.position = vec4<f32>(2.0, 2.0, 1.0, 1.0);
+        out.screenUv = vec2<f32>(0.0);
+        out.blockCell = input.cell;
+        return out;
+    }
+
     let ndcMin = clamp(bounds.ndcMin - pad, vec2<f32>(-1.15), vec2<f32>(1.15));
     let ndcMax = clamp(bounds.ndcMax + pad, vec2<f32>(-1.15), vec2<f32>(1.15));
     let corner = input.position.xy * 0.5 + vec2<f32>(0.5);
     let ndc = mix(ndcMin, ndcMax, corner);
 
-    out.position = vec4<f32>(ndc, 0.0, 1.0);
+    out.position = vec4<f32>(ndc, clamp(bounds.depthMin, 0.0, 1.0), 1.0);
     out.screenUv = ndc * 0.5 + vec2<f32>(0.5);
     out.blockCell = input.cell;
     return out;

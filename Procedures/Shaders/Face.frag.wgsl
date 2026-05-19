@@ -77,6 +77,7 @@ struct FSIn {
     @location(9) screenUv: vec2<f32>,
     @location(10) localRectUv: vec2<f32>,
     @location(11) instanceScale: vec2<f32>,
+    @location(12) @interpolate(flat) instanceFaceType: i32,
     @builtin(front_facing) frontFacing: bool,
 };
 
@@ -668,7 +669,10 @@ fn fs_main(input: FSIn) -> @location(0) vec4<f32> {
     let blockDamageEnabled = u.intParams0.z;
     let blockDamageCount = clamp(u.intParams0.w, 0, 64);
 
-    let faceType = u.intParams1.x;
+    var faceType = u.intParams1.x;
+    if (input.instanceFaceType >= 0) {
+        faceType = input.instanceFaceType;
+    }
     let sectionTier = u.intParams1.y;
     let atlasEnabled = u.intParams1.z;
     let tilesPerRow = u.intParams1.w;

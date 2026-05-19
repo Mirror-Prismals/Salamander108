@@ -33,14 +33,9 @@ struct VSIn {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) texCoord: vec2<f32>,
-    @location(3) offset: vec3<f32>,
-    @location(4) color: vec3<f32>,
-    @location(5) tileIndex: i32,
-    @location(6) alpha: f32,
-    @location(7) ao: vec4<f32>,
-    @location(8) scale: vec2<f32>,
-    @location(9) uvScale: vec2<f32>,
-    @location(10) instanceFaceType: i32,
+    @location(3) posScale: vec4<i32>,
+    @location(4) scaleTileFaceAo: vec4<i32>,
+    @location(5) colorRgbPacked: i32,
 };
 
 struct VSOut {
@@ -72,13 +67,20 @@ fn rotateX(v: vec3<f32>, r: f32) -> vec3<f32> {
 fn vs_main(input: VSIn) -> VSOut {
     var out: VSOut;
 
-    var faceType = u.intParams1.x;
-    if (input.instanceFaceType >= 0) {
-        faceType = input.instanceFaceType;
-    }
+    let faceType = input.scaleTileFaceAo.z;
+    let offset = vec3<f32>(
+        f32(input.posScale.x) * 0.5,
+        f32(input.posScale.y) * 0.5,
+        f32(input.posScale.z) * 0.5
+    );
+    let scale = vec2<f32>(
+        f32(max(input.posScale.w, 1)),
+        f32(max(input.scaleTileFaceAo.x, 1))
+    );
+
     var pos = input.position;
-    pos.x = pos.x * input.scale.x;
-    pos.y = pos.y * input.scale.y;
+    pos.x = pos.x * scale.x;
+    pos.y = pos.y * scale.y;
 
     if (faceType == 0) {
         pos = rotateY(pos, 1.57079632679);
@@ -99,7 +101,7 @@ fn vs_main(input: VSIn) -> VSOut {
         pos.x = -pos.x;
     }
 
-    let worldPos = input.offset + pos;
+    let worldPos = offset + pos;
     out.position = u.mvp * vec4<f32>(worldPos, 1.0);
     out.localRectUv = input.texCoord;
     return out;

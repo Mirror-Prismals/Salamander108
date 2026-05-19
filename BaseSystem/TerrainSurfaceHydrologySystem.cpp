@@ -239,7 +239,7 @@ namespace TerrainSystemLogic {
                 192,
                 static_cast<int>(std::ceil(cfg.waterSurface + cfg.islandMaxHeight + (cfg.islandNoiseAmp * 2.0f)))
             );
-            ensureCaveField(cfg, caveMinY, caveMaxY);
+            ensureCaveField(baseSystem, cfg, caveMinY, caveMaxY);
 
             glm::vec3 grassColor = GetColorLocal(worldCtx, cfg.colorGrass, glm::vec3(0.2f, 0.8f, 0.2f));
             glm::vec3 sandColor = GetColorLocal(worldCtx, cfg.colorSand, glm::vec3(0.9f, 0.8f, 0.4f));

@@ -82,7 +82,18 @@ private:
 };
 struct SkyColorKey { float time; glm::vec3 top; glm::vec3 bottom; };
 struct FaceTextureSet { int all = -1; int top = -1; int bottom = -1; int side = -1; };
-struct FaceInstanceRenderData { glm::vec3 position; glm::vec3 color; int tileIndex = -1; float alpha = 1.0f; glm::vec4 ao = glm::vec4(1.0f); glm::vec2 scale = glm::vec2(1.0f); glm::vec2 uvScale = glm::vec2(1.0f); };
+struct FaceInstanceRenderData { glm::vec3 position; glm::vec3 color; int tileIndex = -1; float alpha = 1.0f; glm::vec4 ao = glm::vec4(1.0f); glm::vec2 scale = glm::vec2(1.0f); glm::vec2 uvScale = glm::vec2(1.0f); int faceType = -1; };
+struct PackedTerrainFaceInstanceRenderData {
+    int32_t posX2 = 0;
+    int32_t posY2 = 0;
+    int32_t posZ2 = 0;
+    int32_t scaleX = 1;
+    int32_t scaleY = 1;
+    int32_t tileIndex = -1;
+    int32_t faceType = -1;
+    int32_t aoPacked = 0;
+    int32_t colorRgbPacked = 0x00ffffff;
+};
 struct WaterFaceInstanceRenderData {
     glm::vec3 position = glm::vec3(0.0f);
     float waveClass = 2.0f;
@@ -273,6 +284,18 @@ struct ChunkKeyHash {
     }
 };
 struct VoxelFaceRenderBuffers {
+    RenderHandle packedClippedOpaqueVao = 0;
+    RenderHandle packedClippedOpaqueVBO = 0;
+    int packedClippedOpaqueCount = 0;
+    RenderHandle mergedOpaqueVao = 0;
+    RenderHandle mergedOpaqueVBO = 0;
+    int mergedOpaqueCount = 0;
+    RenderHandle mergedClippedOpaqueVao = 0;
+    RenderHandle mergedClippedOpaqueVBO = 0;
+    int mergedClippedOpaqueCount = 0;
+    RenderHandle mergedAlphaVao = 0;
+    RenderHandle mergedAlphaVBO = 0;
+    int mergedAlphaCount = 0;
     std::array<RenderHandle, 6> opaqueVaos{};
     std::array<RenderHandle, 6> opaqueVBOs{};
     std::array<int, 6> opaqueCounts{};
@@ -616,7 +639,9 @@ struct MiniVoxelParticle {
 struct RendererContext {
     std::unique_ptr<Shader> blockShader, skyboxShader, sunMoonShader, starShader, selectionShader, hudShader, crosshairShader, colorEmotionShader;
     std::unique_ptr<Shader> faceShader;
+    std::unique_ptr<Shader> packedTerrainFaceShader;
     std::unique_ptr<Shader> occlusionFaceShader;
+    std::unique_ptr<Shader> packedTerrainOcclusionFaceShader;
     std::unique_ptr<Shader> waterShader;
     std::unique_ptr<Shader> waterCompositeShader;
     std::unique_ptr<Shader> grass3DShader;

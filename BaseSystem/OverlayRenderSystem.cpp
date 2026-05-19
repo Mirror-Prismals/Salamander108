@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cmath>
+#include <string>
 #include <unordered_set>
 #include <vector>
 
@@ -19,6 +20,7 @@ namespace GemChiselSystemLogic {
     void RenderGemChisel(BaseSystem& baseSystem, std::vector<Entity>& prototypes, float dt, PlatformWindowHandle win);
 }
 namespace BlockChargeSystemLogic { void RenderBlockDamage(BaseSystem& baseSystem, std::vector<Entity>& prototypes, float dt, PlatformWindowHandle win); }
+namespace RenderInitSystemLogic { bool getRegistryBool(const BaseSystem& baseSystem, const std::string& key, bool fallback); }
 
 namespace OverlayRenderSystemLogic {
     namespace {
@@ -163,7 +165,11 @@ namespace OverlayRenderSystemLogic {
         }
 
         uint64_t computeFarWireframeSignature(const BaseSystem& baseSystem) {
-            if (!baseSystem.farTerrain || !baseSystem.farTerrain->enabled) return 0;
+            if (!RenderInitSystemLogic::getRegistryBool(baseSystem, "FarTerrainEnabled", true)
+                || !baseSystem.farTerrain
+                || !baseSystem.farTerrain->enabled) {
+                return 0;
+            }
             const FarTerrainClipmapContext& far = *baseSystem.farTerrain;
             uint64_t h = 1469598103934665603ull;
             h = hashMixU64(h, far.rebuildCount);
@@ -246,7 +252,9 @@ namespace OverlayRenderSystemLogic {
                     }
                 }
 
-                if (baseSystem.farTerrain && baseSystem.farTerrain->enabled) {
+                if (RenderInitSystemLogic::getRegistryBool(baseSystem, "FarTerrainEnabled", true)
+                    && baseSystem.farTerrain
+                    && baseSystem.farTerrain->enabled) {
                     const auto appendFarSet = [&](const std::array<std::vector<FaceInstanceRenderData>, 6>& faces) {
                         for (int faceType = 0; faceType < 6; ++faceType) {
                             for (const FaceInstanceRenderData& face : faces[static_cast<size_t>(faceType)]) {

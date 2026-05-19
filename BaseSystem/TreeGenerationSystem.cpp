@@ -46,6 +46,17 @@ namespace TerrainSystemLogic {
                                     float& featureMs,
                                     float& surfaceMs,
                                     float& caveFieldMs,
+                                    int& schedulerPressure,
+                                    int& desiredBudget,
+                                    int& baseBudget,
+                                    int& featureBudget,
+                                    int& surfaceBudget,
+                                    float& baseBudgetMs,
+                                    float& featureBudgetMs,
+                                    float& surfaceBudgetMs,
+                                    size_t& downstreamDirty,
+                                    size_t& downstreamPrepared,
+                                    size_t& downstreamUpload,
                                     uint64_t& caveFieldCellsBuilt,
                                     uint64_t& caveSamples);
 }
@@ -130,6 +141,8 @@ namespace TreeGenerationSystemLogic {
         static std::unordered_set<VoxelSectionKey, VoxelSectionKeyHash> g_treeForceCompleteSections;
         struct TreeSectionProgress {
             int phase = 0;
+            int surfaceScanTierX = std::numeric_limits<int>::min();
+            int surfaceScanTierZ = std::numeric_limits<int>::min();
             int scanTierX = std::numeric_limits<int>::min();
             int scanTierZ = std::numeric_limits<int>::min();
             bool unresolvedDependencies = false;
@@ -1770,11 +1783,22 @@ namespace TreeGenerationSystemLogic {
             float terrainGenMs = 0.0f;
             float terrainDesiredMs = 0.0f;
             float terrainBaseMs = 0.0f;
-            float terrainFeatureMs = 0.0f;
-            float terrainSurfaceMs = 0.0f;
-            float terrainCaveFieldMs = 0.0f;
-            uint64_t terrainCaveFieldCellsBuilt = 0;
-            uint64_t terrainCaveSamples = 0;
+	            float terrainFeatureMs = 0.0f;
+	            float terrainSurfaceMs = 0.0f;
+	            float terrainCaveFieldMs = 0.0f;
+                int terrainSchedulerPressure = 0;
+                int terrainDesiredBudget = 0;
+                int terrainBaseBudget = 0;
+                int terrainFeatureBudget = 0;
+                int terrainSurfaceBudget = 0;
+                float terrainBaseBudgetMs = 0.0f;
+                float terrainFeatureBudgetMs = 0.0f;
+                float terrainSurfaceBudgetMs = 0.0f;
+                size_t terrainDownstreamDirty = 0;
+                size_t terrainDownstreamPrepared = 0;
+                size_t terrainDownstreamUpload = 0;
+	            uint64_t terrainCaveFieldCellsBuilt = 0;
+	            uint64_t terrainCaveSamples = 0;
             TerrainSystemLogic::GetVoxelStreamingPerfStats(
                 terrainPending,
                 terrainDesired,
@@ -1793,12 +1817,23 @@ namespace TreeGenerationSystemLogic {
                 terrainGenMs,
                 terrainDesiredMs,
                 terrainBaseMs,
-                terrainFeatureMs,
-                terrainSurfaceMs,
-                terrainCaveFieldMs,
-                terrainCaveFieldCellsBuilt,
-                terrainCaveSamples
-            );
+	                terrainFeatureMs,
+	                terrainSurfaceMs,
+	                terrainCaveFieldMs,
+                    terrainSchedulerPressure,
+                    terrainDesiredBudget,
+                    terrainBaseBudget,
+                    terrainFeatureBudget,
+                    terrainSurfaceBudget,
+                    terrainBaseBudgetMs,
+                    terrainFeatureBudgetMs,
+                    terrainSurfaceBudgetMs,
+                    terrainDownstreamDirty,
+                    terrainDownstreamPrepared,
+                    terrainDownstreamUpload,
+	                terrainCaveFieldCellsBuilt,
+	                terrainCaveSamples
+	            );
             (void)terrainDesired;
             (void)terrainGenerated;
             (void)terrainStepped;
@@ -1814,10 +1849,21 @@ namespace TreeGenerationSystemLogic {
             (void)terrainGenMs;
             (void)terrainDesiredMs;
             (void)terrainBaseMs;
-            (void)terrainFeatureMs;
-            (void)terrainSurfaceMs;
-            (void)terrainCaveFieldMs;
-            (void)terrainCaveFieldCellsBuilt;
+	            (void)terrainFeatureMs;
+	            (void)terrainSurfaceMs;
+	            (void)terrainCaveFieldMs;
+                (void)terrainSchedulerPressure;
+                (void)terrainDesiredBudget;
+                (void)terrainBaseBudget;
+                (void)terrainFeatureBudget;
+                (void)terrainSurfaceBudget;
+                (void)terrainBaseBudgetMs;
+                (void)terrainFeatureBudgetMs;
+                (void)terrainSurfaceBudgetMs;
+                (void)terrainDownstreamDirty;
+                (void)terrainDownstreamPrepared;
+                (void)terrainDownstreamUpload;
+	            (void)terrainCaveFieldCellsBuilt;
             (void)terrainCaveSamples;
             const bool throttleByTerrainBacklog = getRegistryBool(baseSystem, "TreeFoliageThrottleByTerrainBacklog", true);
             const int terrainPendingThreshold = std::max(0, getRegistryInt(baseSystem, "TreeFoliageTerrainPendingThreshold", 4096));
@@ -2090,8 +2136,15 @@ namespace TreeGenerationSystemLogic {
 
         const float foliageTimeBudgetMs = std::max(0.0f, getRegistryFloat(baseSystem, "TreeFoliageMaxMsPerFrame", 0.0f));
         const float foliageSectionBudgetMs = std::max(0.0f, getRegistryFloat(baseSystem, "TreeFoliageMaxMsPerSection", 1.25f));
-        const int foliageMinSectionsBeforeTimeCap = std::max(0, getRegistryInt(baseSystem, "TreeFoliageMinSectionsPerFrame", 1));
-        const int foliageImmediateExemptSections = immediateForcedCount;
+        const int foliageMinSectionsBeforeTimeCap = std::max(0, getRegistryInt(baseSystem, "TreeFoliageMinSectionsPerFrame", 0));
+        const bool foliageImmediateExemptFromTimeBudget = getRegistryBool(
+            baseSystem,
+            "TreeFoliageImmediateExemptFromTimeBudget",
+            false
+        );
+        const int foliageImmediateExemptSections = foliageImmediateExemptFromTimeBudget
+            ? immediateForcedCount
+            : 0;
         std::unordered_set<VoxelSectionKey, VoxelSectionKeyHash> immediateSectionSet;
         immediateSectionSet.reserve(immediateSections.size());
         for (const auto& immediateKey : immediateSections) {
@@ -2211,13 +2264,29 @@ namespace TreeGenerationSystemLogic {
             const int scanMinZ = minZ - treeScanMargin;
             const int scanMaxX = maxX + treeScanMargin;
             const int scanMaxZ = maxZ + treeScanMargin;
-            // Trees and surface foliage must complete atomically for a selected section, otherwise
-            // chunks appear first and trees/grass trail behind over multiple frames.
+            // Keep the scan resumable so one tree-heavy section cannot monopolize the frame.
             const long long scanSpanX = static_cast<long long>(scanMaxX) - static_cast<long long>(scanMinX) + 1ll;
             const long long scanSpanZ = static_cast<long long>(scanMaxZ) - static_cast<long long>(scanMinZ) + 1ll;
             const long long fullColumns = std::max(1ll, scanSpanX * scanSpanZ);
             const long long maxInt = static_cast<long long>(std::numeric_limits<int>::max());
-            int treeColumnsPerSlice = static_cast<int>(std::min(fullColumns, maxInt));
+            const int configuredTreeColumnsPerSlice = getRegistryInt(
+                baseSystem,
+                "TreeFoliageTreeColumnsPerSlice",
+                static_cast<int>(std::min(fullColumns, maxInt))
+            );
+            int treeColumnsPerSlice = std::max(1, configuredTreeColumnsPerSlice);
+            if (forceCompleteSection) {
+                treeColumnsPerSlice = std::max(
+                    treeColumnsPerSlice,
+                    getRegistryInt(baseSystem, "TreeFoliageForceCompleteTreeColumnsPerSlice", treeColumnsPerSlice)
+                );
+            }
+            treeColumnsPerSlice = static_cast<int>(std::min<long long>(treeColumnsPerSlice, fullColumns));
+            const long long surfaceColumns = static_cast<long long>(sectionSize) * static_cast<long long>(sectionSize);
+            const int groundFoliageColumnsPerSlice = static_cast<int>(std::min<long long>(
+                std::max(1, getRegistryInt(baseSystem, "TreeFoliageGroundColumnsPerSlice", 32)),
+                std::max(1ll, surfaceColumns)
+            ));
 
             auto commitTouchedSections = [&]() {
                 if (!modified) return;
@@ -2242,7 +2311,6 @@ namespace TreeGenerationSystemLogic {
             const auto sectionStart = std::chrono::steady_clock::now();
             auto sectionTimeExceeded = [&]() -> bool {
                 if (forceCompleteSection) return false;
-                if (progress.phase <= 3) return false;
                 if (foliageSectionBudgetMs <= 0.0f) return false;
                 const float elapsedMs = std::chrono::duration<float, std::milli>(
                     std::chrono::steady_clock::now() - sectionStart
@@ -2267,8 +2335,8 @@ namespace TreeGenerationSystemLogic {
                 }
                 updateSurfaceFoliageLifecycle(key, true);
             };
-            auto runGroundFoliagePass = [&]() {
-                writeGroundFoliageToSection(
+            auto runGroundFoliagePass = [&]() -> bool {
+                const bool complete = writeGroundFoliageToSection(
                     prototypes,
                     worldCtx,
                     voxelWorld,
@@ -2331,11 +2399,19 @@ namespace TreeGenerationSystemLogic {
                     leafProto ? leafProto->prototypeID : -1,
                     waterPrototypeID,
                     foliageSpec,
+                    groundFoliageColumnsPerSlice,
+                    progress.surfaceScanTierX,
+                    progress.surfaceScanTierZ,
                     unresolvedDependencies,
                     modified
                 );
                 commitTouchedSections();
-                progress.surfaceFoliageSeeded = true;
+                if (complete) {
+                    progress.surfaceFoliageSeeded = true;
+                    progress.surfaceScanTierX = std::numeric_limits<int>::min();
+                    progress.surfaceScanTierZ = std::numeric_limits<int>::min();
+                }
+                return complete;
             };
 
             const bool caveDecorFeatureEnabled = foliageSpec.caveSlopeEnabled
@@ -2350,7 +2426,11 @@ namespace TreeGenerationSystemLogic {
             bool finishedSection = false;
             while (!finishedSection) {
                 if (!progress.surfaceFoliageSeeded) {
-                    runGroundFoliagePass();
+                    if (!runGroundFoliagePass()) {
+                        deferSection();
+                        finishedSection = true;
+                        continue;
+                    }
                     if (sectionTimeExceeded()) {
                         deferSection();
                         finishedSection = true;
@@ -2711,7 +2791,11 @@ namespace TreeGenerationSystemLogic {
                 }
                 if (progress.phase <= 2) {
                     if (!progress.surfaceFoliageSeeded) {
-                        runGroundFoliagePass();
+                        if (!runGroundFoliagePass()) {
+                            deferSection();
+                            finishedSection = true;
+                            continue;
+                        }
                     }
                     progress.phase = 3;
                     if (sectionTimeExceeded()) {

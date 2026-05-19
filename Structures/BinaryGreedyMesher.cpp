@@ -2,6 +2,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
+
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
 
 namespace SalamanderBinaryGreedyMesher {
 namespace {
@@ -14,48 +19,69 @@ inline int maskIndex(int u, int v) {
     return v * kChunkSize + u;
 }
 
-struct FaceBuildConfig {
-    Face face;
-    int renderFaceIndex;
+inline int trailingZeroCount(uint32_t bits) {
+#if defined(_MSC_VER)
+    unsigned long index = 0;
+    _BitScanForward(&index, bits);
+    return static_cast<int>(index);
+#else
+    return __builtin_ctz(bits);
+#endif
+}
+
+struct SliceFaceMask {
+    std::array<uint32_t, kChunkSize> occupiedRows{};
+    std::array<uint8_t, kChunkArea> types{};
+
+    void clear() {
+        occupiedRows.fill(0);
+        types.fill(0);
+    }
 };
 
-void emitFaceQuads(const std::array<uint8_t, kChunkArea>& mask,
+void emitFaceQuads(SliceFaceMask& mask,
                    Face face,
                    int fixed,
                    std::vector<Quad>& outQuads,
                    int& faceBegin,
                    int& faceLength) {
-    std::array<uint8_t, kChunkArea> scratch = mask;
     faceBegin = static_cast<int>(outQuads.size());
 
     for (int v = 0; v < kChunkSize; ++v) {
-        for (int u = 0; u < kChunkSize; ++u) {
-            const int startIndex = maskIndex(u, v);
-            const uint8_t type = scratch[static_cast<size_t>(startIndex)];
-            if (type == 0) continue;
+        while (mask.occupiedRows[static_cast<size_t>(v)] != 0) {
+            const int u = trailingZeroCount(mask.occupiedRows[static_cast<size_t>(v)]);
+            const uint8_t type = mask.types[static_cast<size_t>(maskIndex(u, v))];
+            if (type == 0) {
+                mask.occupiedRows[static_cast<size_t>(v)] &= ~(uint32_t{1} << u);
+                continue;
+            }
 
             int width = 1;
             while (u + width < kChunkSize
-                   && scratch[static_cast<size_t>(maskIndex(u + width, v))] == type) {
+                   && (mask.occupiedRows[static_cast<size_t>(v)] & (uint32_t{1} << (u + width))) != 0
+                   && mask.types[static_cast<size_t>(maskIndex(u + width, v))] == type) {
                 ++width;
             }
 
+            const uint32_t runMask = ((uint32_t{1} << width) - 1u) << u;
             int height = 1;
-            bool canGrow = true;
-            while (v + height < kChunkSize && canGrow) {
+            while (v + height < kChunkSize) {
+                const int rowV = v + height;
+                if ((mask.occupiedRows[static_cast<size_t>(rowV)] & runMask) != runMask) break;
+                bool rowMatches = true;
                 for (int rowU = 0; rowU < width; ++rowU) {
-                    if (scratch[static_cast<size_t>(maskIndex(u + rowU, v + height))] != type) {
-                        canGrow = false;
+                    if (mask.types[static_cast<size_t>(maskIndex(u + rowU, rowV))] != type) {
+                        rowMatches = false;
                         break;
                     }
                 }
-                if (canGrow) ++height;
+                if (!rowMatches) break;
+                ++height;
             }
 
             for (int clearV = 0; clearV < height; ++clearV) {
-                for (int clearU = 0; clearU < width; ++clearU) {
-                    scratch[static_cast<size_t>(maskIndex(u + clearU, v + clearV))] = 0;
-                }
+                const size_t row = static_cast<size_t>(v + clearV);
+                mask.occupiedRows[row] &= ~runMask;
             }
 
             Quad quad;
@@ -95,8 +121,8 @@ void emitFaceQuads(const std::array<uint8_t, kChunkArea>& mask,
 void buildFaceMask(const uint8_t* voxels,
                    Face face,
                    int fixed,
-                   std::array<uint8_t, kChunkArea>& outMask) {
-    outMask.fill(0);
+                   SliceFaceMask& outMask) {
+    outMask.clear();
 
     for (int v = 0; v < kChunkSize; ++v) {
         for (int u = 0; u < kChunkSize; ++u) {
@@ -164,7 +190,9 @@ void buildFaceMask(const uint8_t* voxels,
             const uint8_t neighbor = voxels[static_cast<size_t>(voxelIndex(nx + 1, ny + 1, nz + 1))];
             if (neighbor != 0) continue;
 
-            outMask[static_cast<size_t>(maskIndex(u, v))] = type;
+            const uint32_t bit = uint32_t{1} << u;
+            outMask.occupiedRows[static_cast<size_t>(v)] |= bit;
+            outMask.types[static_cast<size_t>(maskIndex(u, v))] = type;
         }
     }
 }
@@ -181,7 +209,7 @@ void mesh(const uint8_t* voxels, MeshData& meshData) {
         meshData.faceQuadLength[i] = 0;
     }
 
-    std::array<uint8_t, kChunkArea> mask{};
+    SliceFaceMask mask{};
     constexpr std::array<Face, 6> kFaces = {
         Face::PosX,
         Face::NegX,

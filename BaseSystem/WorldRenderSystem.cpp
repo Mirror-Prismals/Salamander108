@@ -1,4 +1,27 @@
 namespace {
+    struct VoxelRenderCollectStats {
+        size_t tested = 0;
+        size_t visible = 0;
+        size_t frustumRejected = 0;
+        size_t occlusionRejected = 0;
+        size_t trimmed = 0;
+    };
+
+    struct VoxelRenderSubmitStats {
+        size_t terrainBinds = 0;
+        size_t terrainDraws = 0;
+        size_t clippedOpaqueDraws = 0;
+        size_t opaqueDraws = 0;
+        size_t alphaDraws = 0;
+        size_t legacyVoxelDraws = 0;
+        size_t terrainInstances = 0;
+        size_t clippedOpaqueInstances = 0;
+        size_t opaqueInstances = 0;
+        size_t alphaInstances = 0;
+        size_t reflectionTerrainDraws = 0;
+        size_t reflectionTerrainInstances = 0;
+    };
+
     enum class DebugSlopeDir {
         PosX,
         NegX,
@@ -201,6 +224,7 @@ namespace WorldRenderSystemLogic {
             24.0f
         );
         bool useVoxelRendering = baseSystem.voxelWorld && baseSystem.voxelWorld->enabled && baseSystem.voxelRender;
+        const bool farTerrainEnabled = RenderInitSystemLogic::getRegistryBool(baseSystem, "FarTerrainEnabled", true);
         const bool columnStorageMode = false;
         const bool renderChunkablesViaVoxel = useVoxelRendering;
         const bool hideHeadVisualizer = RenderInitSystemLogic::getRegistryBool(baseSystem, "PlayerHeadAudioVisualizerHidden", true);
@@ -219,6 +243,9 @@ namespace WorldRenderSystemLogic {
         };
         std::vector<VisibleVoxelRenderSection> visibleVoxelRenderSections;
         std::vector<VisibleVoxelRenderSection> visibleFarRenderSections;
+        VoxelRenderCollectStats mainVoxelCollectStats{};
+        VoxelRenderCollectStats reflectionVoxelCollectStats{};
+        VoxelRenderSubmitStats voxelSubmitStats{};
         const int voxelRenderMaxVisibleSections = std::max(
             0,
             RenderInitSystemLogic::getRegistryInt(baseSystem, "voxelRenderMaxVisibleSections", 512)
@@ -240,12 +267,20 @@ namespace WorldRenderSystemLogic {
             (voxelSectionSizeBlocks + voxelClusterSizeBlocks - 1) / voxelClusterSizeBlocks
         );
         const int voxelClustersPerSection = voxelClustersPerAxis * voxelClustersPerAxis * voxelClustersPerAxis;
+        const int configuredMaxVisibleClusters = RenderInitSystemLogic::getRegistryInt(
+            baseSystem,
+            "voxelRenderMaxVisibleClusters",
+            -1
+        );
         const int voxelRenderMaxVisibleClusters =
-            (voxelRenderMaxVisibleSections > 0)
-                ? voxelRenderMaxVisibleSections * voxelClustersPerSection
-                : 0;
+            (configuredMaxVisibleClusters > 0)
+                ? configuredMaxVisibleClusters
+                : ((voxelRenderMaxVisibleSections > 0)
+                    ? voxelRenderMaxVisibleSections * voxelClustersPerSection
+                    : 0);
         auto collectVisibleVoxelRenderSections = [&](const glm::vec3& cameraPos,
-                                                     std::vector<VisibleVoxelRenderSection>& outSections) {
+                                                     std::vector<VisibleVoxelRenderSection>& outSections,
+                                                     VoxelRenderCollectStats* stats) {
             outSections.clear();
             if (!useVoxelRendering || !baseSystem.voxelWorld || !baseSystem.voxelRender) return;
             VoxelWorldContext& voxelWorld = *baseSystem.voxelWorld;
@@ -257,22 +292,27 @@ namespace WorldRenderSystemLogic {
                 auto secIt = voxelWorld.sections.find(sectionKey);
                 if (secIt == voxelWorld.sections.end()) continue;
                 for (const VoxelRenderCluster& cluster : clusters) {
+                    if (stats) ++stats->tested;
                     if (!mapViewActive
                         && !FrustumCullingSystemLogic::ShouldRenderWorldAabb(baseSystem, cluster.minBounds, cluster.maxBounds)) {
+                        if (stats) ++stats->frustumRejected;
                         continue;
                     }
                     if (!mapViewActive
                         && occlusionCullFarTerrain
                         && OcclusionCullingSystemLogic::IsWorldAabbOccluded(baseSystem, cluster.minBounds, cluster.maxBounds)) {
+                        if (stats) ++stats->occlusionRejected;
                         continue;
                     }
                     const glm::vec3 center = 0.5f * (cluster.minBounds + cluster.maxBounds);
                     const glm::vec3 delta = center - cameraPos;
                     outSections.push_back({&cluster.buffers, cluster.minBounds, cluster.maxBounds, glm::dot(delta, delta)});
+                    if (stats) ++stats->visible;
                 }
             }
             if (voxelRenderMaxVisibleClusters > 0
                 && static_cast<int>(outSections.size()) > voxelRenderMaxVisibleClusters) {
+                const size_t beforeTrim = outSections.size();
                 std::sort(
                     outSections.begin(),
                     outSections.end(),
@@ -281,12 +321,16 @@ namespace WorldRenderSystemLogic {
                     }
                 );
                 outSections.resize(static_cast<size_t>(voxelRenderMaxVisibleClusters));
+                if (stats) {
+                    stats->trimmed += beforeTrim - outSections.size();
+                    stats->visible = outSections.size();
+                }
             }
         };
         auto collectVisibleFarRenderSections = [&](const glm::vec3& cameraPos,
                                                    std::vector<VisibleVoxelRenderSection>& outSections) {
             outSections.clear();
-            if (!baseSystem.farTerrain || !baseSystem.farTerrain->enabled) return;
+            if (!farTerrainEnabled || !baseSystem.farTerrain || !baseSystem.farTerrain->enabled) return;
             auto appendVisibleClusters = [&](const std::vector<VoxelRenderCluster>& clusters) {
                 for (const VoxelRenderCluster& cluster : clusters) {
                     if (!mapViewActive
@@ -465,9 +509,9 @@ namespace WorldRenderSystemLogic {
         setBlendModeAlpha();
 
         if (useVoxelRendering) {
-            collectVisibleVoxelRenderSections(playerPos, visibleVoxelRenderSections);
+            collectVisibleVoxelRenderSections(playerPos, visibleVoxelRenderSections, &mainVoxelCollectStats);
         }
-        if (baseSystem.farTerrain && baseSystem.farTerrain->enabled) {
+        if (farTerrainEnabled && baseSystem.farTerrain && baseSystem.farTerrain->enabled) {
             collectVisibleFarRenderSections(playerPos, visibleFarRenderSections);
         }
 
@@ -487,6 +531,10 @@ namespace WorldRenderSystemLogic {
                     renderer.blockShader->setInt("behaviorType", i);
                     if (section.buffers->vaos[i] == 0) continue;
                     renderBackend.bindVertexArray(section.buffers->vaos[i]);
+                    ++voxelSubmitStats.terrainBinds;
+                    ++voxelSubmitStats.terrainDraws;
+                    ++voxelSubmitStats.legacyVoxelDraws;
+                    voxelSubmitStats.terrainInstances += static_cast<size_t>(count);
                     renderBackend.drawArraysTrianglesInstanced(0, 36, count);
                 }
                 renderer.blockShader->setFloat("instanceScale", 1.0f);
@@ -664,6 +712,55 @@ namespace WorldRenderSystemLogic {
             bindTextureUnit2D(0, renderer.atlasTexture);
         };
 
+        auto bindPackedTerrainFaceShader = [&](Shader& shader,
+                                               const glm::mat4& shaderView,
+                                               const glm::vec3& shaderCameraPos,
+                                               int sectionTier,
+                                               int maskedFoliagePassMode,
+                                               bool allowPlanarReflection = true) {
+            shader.use();
+            shader.setMat4("view", shaderView);
+            shader.setMat4("projection", projection);
+            PaniniProjectionSystemLogic::ApplyProjectionWarpUniforms(player, shader);
+            shader.setMat4("model", glm::mat4(1.0f));
+            shader.setVec3("cameraPos", shaderCameraPos);
+            shader.setFloat("time", time);
+            shader.setVec3("lightDir", lightDir);
+            shader.setVec3("ambientLight", ambientLightColor);
+            shader.setVec3("diffuseLight", diffuseLightColor);
+            shader.setInt("faceType", 0);
+            shader.setInt("sectionTier", sectionTier);
+            shader.setInt("leafOpaqueOutsideTier0", leafOpaqueOutsideTier0 ? 1 : 0);
+            shader.setInt("leafBackfacesWhenInside", 0);
+            shader.setInt("foliageWindEnabled", foliageWindAnimationEnabled ? 1 : 0);
+            shader.setInt("waterCascadeBrightnessEnabled", waterCascadeBrightnessEnabled ? 1 : 0);
+            shader.setInt("maskedFoliagePassMode", maskedFoliagePassMode);
+            shader.setInt("wireframeDebug", 0);
+            shader.setFloat("waterCascadeBrightnessStrength", waterCascadeBrightnessStrength);
+            shader.setFloat("waterCascadeBrightnessSpeed", waterCascadeBrightnessSpeed);
+            shader.setFloat("waterCascadeBrightnessScale", waterCascadeBrightnessScale);
+            bindFaceTextureUniforms(shader, allowPlanarReflection);
+            BlockChargeSystemLogic::ApplyBlockDamageMaskUniforms(baseSystem, prototypes, shader, true);
+        };
+
+        auto drawPackedTerrainClippedOpaque = [&](const VoxelFaceRenderBuffers& faceBuffers,
+                                                  bool reflectionPass) -> bool {
+            const int count = faceBuffers.packedClippedOpaqueCount;
+            if (count <= 0 || faceBuffers.packedClippedOpaqueVao == 0) return false;
+            renderBackend.bindVertexArray(faceBuffers.packedClippedOpaqueVao);
+            ++voxelSubmitStats.terrainBinds;
+            ++voxelSubmitStats.terrainDraws;
+            ++voxelSubmitStats.clippedOpaqueDraws;
+            voxelSubmitStats.terrainInstances += static_cast<size_t>(count);
+            voxelSubmitStats.clippedOpaqueInstances += static_cast<size_t>(count);
+            if (reflectionPass) {
+                ++voxelSubmitStats.reflectionTerrainDraws;
+                voxelSubmitStats.reflectionTerrainInstances += static_cast<size_t>(count);
+            }
+            renderBackend.drawArraysTrianglesInstanced(0, 3, count);
+            return true;
+        };
+
         auto drawFaceBatches = [&](const std::array<std::vector<FaceInstanceRenderData>, 6>& batches, bool depthWrite){
             if (!renderer.faceShader || !renderer.faceVAO) return;
             if (!depthWrite) setDepthWriteEnabled(false);
@@ -741,7 +838,7 @@ namespace WorldRenderSystemLogic {
             glm::vec3 reflectionCameraPos = playerPos;
             reflectionCameraPos.y = 2.0f * waterReflectionPlaneY - playerPos.y;
             std::vector<VisibleVoxelRenderSection> visibleVoxelReflectionSections;
-            collectVisibleVoxelRenderSections(reflectionCameraPos, visibleVoxelReflectionSections);
+            collectVisibleVoxelRenderSections(reflectionCameraPos, visibleVoxelReflectionSections, &reflectionVoxelCollectStats);
 
             renderBackend.beginOffscreenColorPass(
                 renderer.waterReflectionFBO,
@@ -790,6 +887,12 @@ namespace WorldRenderSystemLogic {
                         renderer.blockShader->setInt("behaviorType", i);
                         if (section.buffers->vaos[i] == 0) continue;
                         renderBackend.bindVertexArray(section.buffers->vaos[i]);
+                        ++voxelSubmitStats.terrainBinds;
+                        ++voxelSubmitStats.terrainDraws;
+                        ++voxelSubmitStats.legacyVoxelDraws;
+                        voxelSubmitStats.terrainInstances += static_cast<size_t>(count);
+                        ++voxelSubmitStats.reflectionTerrainDraws;
+                        voxelSubmitStats.reflectionTerrainInstances += static_cast<size_t>(count);
                         renderBackend.drawArraysTrianglesInstanced(0, 36, count);
                     }
                     renderer.blockShader->setFloat("instanceScale", 1.0f);
@@ -908,21 +1011,75 @@ namespace WorldRenderSystemLogic {
                 } else {
                     setCullBackFaceCCWEnabled(true);
                 }
+                if (renderer.packedTerrainFaceShader) {
+                    bindPackedTerrainFaceShader(
+                        *renderer.packedTerrainFaceShader,
+                        reflectionView,
+                        reflectionCameraPos,
+                        0,
+                        1,
+                        false
+                    );
+                    for (const auto& section : visibleVoxelReflectionSections) {
+                        if (!section.buffers->usesTexturedFaceBuffers) continue;
+                        drawPackedTerrainClippedOpaque(section.buffers->faceBuffers, true);
+                    }
+                    renderer.faceShader->use();
+                }
                 for (const auto& section : visibleVoxelReflectionSections) {
                     if (!section.buffers->usesTexturedFaceBuffers) continue;
                     renderer.faceShader->setInt("sectionTier", 0);
-                    for (int faceType = 0; faceType < 6; ++faceType) {
-                        int clippedCount = section.buffers->faceBuffers.clippedOpaqueCounts[faceType];
-                        if (clippedCount > 0 && section.buffers->faceBuffers.clippedOpaqueVaos[faceType] != 0) {
-                            renderer.faceShader->setInt("faceType", faceType);
-                            renderBackend.bindVertexArray(section.buffers->faceBuffers.clippedOpaqueVaos[faceType]);
-                            renderBackend.drawArraysTrianglesInstanced(0, 3, clippedCount);
-                        }
-                        int count = section.buffers->faceBuffers.opaqueCounts[faceType];
-                        if (count > 0 && section.buffers->faceBuffers.opaqueVaos[faceType] != 0) {
-                            renderer.faceShader->setInt("faceType", faceType);
-                            renderBackend.bindVertexArray(section.buffers->faceBuffers.opaqueVaos[faceType]);
-                            renderBackend.drawArraysTrianglesInstanced(0, 6, count);
+                    const VoxelFaceRenderBuffers& faceBuffers = section.buffers->faceBuffers;
+                    if (faceBuffers.mergedClippedOpaqueCount > 0 && faceBuffers.mergedClippedOpaqueVao != 0) {
+                        renderBackend.bindVertexArray(faceBuffers.mergedClippedOpaqueVao);
+                        ++voxelSubmitStats.terrainBinds;
+                        ++voxelSubmitStats.terrainDraws;
+                        ++voxelSubmitStats.clippedOpaqueDraws;
+                        voxelSubmitStats.terrainInstances += static_cast<size_t>(faceBuffers.mergedClippedOpaqueCount);
+                        voxelSubmitStats.clippedOpaqueInstances += static_cast<size_t>(faceBuffers.mergedClippedOpaqueCount);
+                        ++voxelSubmitStats.reflectionTerrainDraws;
+                        voxelSubmitStats.reflectionTerrainInstances += static_cast<size_t>(faceBuffers.mergedClippedOpaqueCount);
+                        renderBackend.drawArraysTrianglesInstanced(0, 3, faceBuffers.mergedClippedOpaqueCount);
+                    }
+                    if (faceBuffers.mergedOpaqueCount > 0 && faceBuffers.mergedOpaqueVao != 0) {
+                        renderBackend.bindVertexArray(faceBuffers.mergedOpaqueVao);
+                        ++voxelSubmitStats.terrainBinds;
+                        ++voxelSubmitStats.terrainDraws;
+                        ++voxelSubmitStats.opaqueDraws;
+                        voxelSubmitStats.terrainInstances += static_cast<size_t>(faceBuffers.mergedOpaqueCount);
+                        voxelSubmitStats.opaqueInstances += static_cast<size_t>(faceBuffers.mergedOpaqueCount);
+                        ++voxelSubmitStats.reflectionTerrainDraws;
+                        voxelSubmitStats.reflectionTerrainInstances += static_cast<size_t>(faceBuffers.mergedOpaqueCount);
+                        renderBackend.drawArraysTrianglesInstanced(0, 6, faceBuffers.mergedOpaqueCount);
+                    }
+                    if (faceBuffers.mergedClippedOpaqueCount == 0 && faceBuffers.mergedOpaqueCount == 0) {
+                        for (int faceType = 0; faceType < 6; ++faceType) {
+                            int clippedCount = faceBuffers.clippedOpaqueCounts[faceType];
+                            if (clippedCount > 0 && faceBuffers.clippedOpaqueVaos[faceType] != 0) {
+                                renderer.faceShader->setInt("faceType", faceType);
+                                renderBackend.bindVertexArray(faceBuffers.clippedOpaqueVaos[faceType]);
+                                ++voxelSubmitStats.terrainBinds;
+                                ++voxelSubmitStats.terrainDraws;
+                                ++voxelSubmitStats.clippedOpaqueDraws;
+                                voxelSubmitStats.terrainInstances += static_cast<size_t>(clippedCount);
+                                voxelSubmitStats.clippedOpaqueInstances += static_cast<size_t>(clippedCount);
+                                ++voxelSubmitStats.reflectionTerrainDraws;
+                                voxelSubmitStats.reflectionTerrainInstances += static_cast<size_t>(clippedCount);
+                                renderBackend.drawArraysTrianglesInstanced(0, 3, clippedCount);
+                            }
+                            int count = faceBuffers.opaqueCounts[faceType];
+                            if (count > 0 && faceBuffers.opaqueVaos[faceType] != 0) {
+                                renderer.faceShader->setInt("faceType", faceType);
+                                renderBackend.bindVertexArray(faceBuffers.opaqueVaos[faceType]);
+                                ++voxelSubmitStats.terrainBinds;
+                                ++voxelSubmitStats.terrainDraws;
+                                ++voxelSubmitStats.opaqueDraws;
+                                voxelSubmitStats.terrainInstances += static_cast<size_t>(count);
+                                voxelSubmitStats.opaqueInstances += static_cast<size_t>(count);
+                                ++voxelSubmitStats.reflectionTerrainDraws;
+                                voxelSubmitStats.reflectionTerrainInstances += static_cast<size_t>(count);
+                                renderBackend.drawArraysTrianglesInstanced(0, 6, count);
+                            }
                         }
                     }
                 }
@@ -937,11 +1094,31 @@ namespace WorldRenderSystemLogic {
                 for (const auto& section : visibleVoxelReflectionSections) {
                     if (!section.buffers->usesTexturedFaceBuffers) continue;
                     renderer.faceShader->setInt("sectionTier", 0);
+                    const VoxelFaceRenderBuffers& faceBuffers = section.buffers->faceBuffers;
+                    if (faceBuffers.mergedAlphaCount > 0 && faceBuffers.mergedAlphaVao != 0) {
+                        renderBackend.bindVertexArray(faceBuffers.mergedAlphaVao);
+                        ++voxelSubmitStats.terrainBinds;
+                        ++voxelSubmitStats.terrainDraws;
+                        ++voxelSubmitStats.alphaDraws;
+                        voxelSubmitStats.terrainInstances += static_cast<size_t>(faceBuffers.mergedAlphaCount);
+                        voxelSubmitStats.alphaInstances += static_cast<size_t>(faceBuffers.mergedAlphaCount);
+                        ++voxelSubmitStats.reflectionTerrainDraws;
+                        voxelSubmitStats.reflectionTerrainInstances += static_cast<size_t>(faceBuffers.mergedAlphaCount);
+                        renderBackend.drawArraysTrianglesInstanced(0, 6, faceBuffers.mergedAlphaCount);
+                        continue;
+                    }
                     for (int faceType = 0; faceType < 6; ++faceType) {
-                        int count = section.buffers->faceBuffers.alphaCounts[faceType];
-                        if (count > 0 && section.buffers->faceBuffers.alphaVaos[faceType] != 0) {
+                        int count = faceBuffers.alphaCounts[faceType];
+                        if (count > 0 && faceBuffers.alphaVaos[faceType] != 0) {
                             renderer.faceShader->setInt("faceType", faceType);
-                            renderBackend.bindVertexArray(section.buffers->faceBuffers.alphaVaos[faceType]);
+                            renderBackend.bindVertexArray(faceBuffers.alphaVaos[faceType]);
+                            ++voxelSubmitStats.terrainBinds;
+                            ++voxelSubmitStats.terrainDraws;
+                            ++voxelSubmitStats.alphaDraws;
+                            voxelSubmitStats.terrainInstances += static_cast<size_t>(count);
+                            voxelSubmitStats.alphaInstances += static_cast<size_t>(count);
+                            ++voxelSubmitStats.reflectionTerrainDraws;
+                            voxelSubmitStats.reflectionTerrainInstances += static_cast<size_t>(count);
                             renderBackend.drawArraysTrianglesInstanced(0, 6, count);
                         }
                     }
@@ -984,6 +1161,7 @@ namespace WorldRenderSystemLogic {
         }
 
         const bool farTerrainRenderable = baseSystem.farTerrain
+            && farTerrainEnabled
             && baseSystem.farTerrain->enabled
             && !visibleFarRenderSections.empty();
         if (!sceneTriangleWireframeDebugEnabled
@@ -1023,18 +1201,44 @@ namespace WorldRenderSystemLogic {
             if (farTerrainRenderable) {
                 renderer.faceShader->setInt("sectionTier", 1);
                 const auto drawFarBuffers = [&](const ChunkRenderBuffers& farBuffers) {
-                    for (int faceType = 0; faceType < 6; ++faceType) {
-                        int clippedCount = farBuffers.faceBuffers.clippedOpaqueCounts[faceType];
-                        if (clippedCount > 0 && farBuffers.faceBuffers.clippedOpaqueVaos[faceType] != 0) {
-                            renderer.faceShader->setInt("faceType", faceType);
-                            renderBackend.bindVertexArray(farBuffers.faceBuffers.clippedOpaqueVaos[faceType]);
-                            renderBackend.drawArraysTrianglesInstanced(0, 3, clippedCount);
-                        }
-                        int count = farBuffers.faceBuffers.opaqueCounts[faceType];
-                        if (count > 0 && farBuffers.faceBuffers.opaqueVaos[faceType] != 0) {
-                            renderer.faceShader->setInt("faceType", faceType);
-                            renderBackend.bindVertexArray(farBuffers.faceBuffers.opaqueVaos[faceType]);
-                            renderBackend.drawArraysTrianglesInstanced(0, 6, count);
+                    const VoxelFaceRenderBuffers& faceBuffers = farBuffers.faceBuffers;
+                    if (renderer.packedTerrainFaceShader
+                        && faceBuffers.packedClippedOpaqueCount > 0
+                        && faceBuffers.packedClippedOpaqueVao != 0) {
+                        bindPackedTerrainFaceShader(
+                            *renderer.packedTerrainFaceShader,
+                            view,
+                            playerPos,
+                            1,
+                            1
+                        );
+                        renderBackend.bindVertexArray(faceBuffers.packedClippedOpaqueVao);
+                        renderBackend.drawArraysTrianglesInstanced(0, 3, faceBuffers.packedClippedOpaqueCount);
+                        renderer.faceShader->use();
+                        renderer.faceShader->setInt("sectionTier", 1);
+                    }
+                    if (faceBuffers.mergedClippedOpaqueCount > 0 && faceBuffers.mergedClippedOpaqueVao != 0) {
+                        renderBackend.bindVertexArray(faceBuffers.mergedClippedOpaqueVao);
+                        renderBackend.drawArraysTrianglesInstanced(0, 3, faceBuffers.mergedClippedOpaqueCount);
+                    }
+                    if (faceBuffers.mergedOpaqueCount > 0 && faceBuffers.mergedOpaqueVao != 0) {
+                        renderBackend.bindVertexArray(faceBuffers.mergedOpaqueVao);
+                        renderBackend.drawArraysTrianglesInstanced(0, 6, faceBuffers.mergedOpaqueCount);
+                    }
+                    if (faceBuffers.mergedClippedOpaqueCount == 0 && faceBuffers.mergedOpaqueCount == 0) {
+                        for (int faceType = 0; faceType < 6; ++faceType) {
+                            int clippedCount = faceBuffers.clippedOpaqueCounts[faceType];
+                            if (clippedCount > 0 && faceBuffers.clippedOpaqueVaos[faceType] != 0) {
+                                renderer.faceShader->setInt("faceType", faceType);
+                                renderBackend.bindVertexArray(faceBuffers.clippedOpaqueVaos[faceType]);
+                                renderBackend.drawArraysTrianglesInstanced(0, 3, clippedCount);
+                            }
+                            int count = faceBuffers.opaqueCounts[faceType];
+                            if (count > 0 && faceBuffers.opaqueVaos[faceType] != 0) {
+                                renderer.faceShader->setInt("faceType", faceType);
+                                renderBackend.bindVertexArray(faceBuffers.opaqueVaos[faceType]);
+                                renderBackend.drawArraysTrianglesInstanced(0, 6, count);
+                            }
                         }
                     }
                 };
@@ -1042,21 +1246,66 @@ namespace WorldRenderSystemLogic {
                     drawFarBuffers(*cluster.buffers);
                 }
             }
+            if (renderer.packedTerrainFaceShader) {
+                bindPackedTerrainFaceShader(
+                    *renderer.packedTerrainFaceShader,
+                    view,
+                    playerPos,
+                    0,
+                    1
+                );
+                for (const auto& section : visibleVoxelRenderSections) {
+                    if (!section.buffers->usesTexturedFaceBuffers) continue;
+                    drawPackedTerrainClippedOpaque(section.buffers->faceBuffers, false);
+                }
+                renderer.faceShader->use();
+            }
             for (const auto& section : visibleVoxelRenderSections) {
                 if (!section.buffers->usesTexturedFaceBuffers) continue;
                 renderer.faceShader->setInt("sectionTier", 0);
-                for (int faceType = 0; faceType < 6; ++faceType) {
-                    int clippedCount = section.buffers->faceBuffers.clippedOpaqueCounts[faceType];
-                    if (clippedCount > 0 && section.buffers->faceBuffers.clippedOpaqueVaos[faceType] != 0) {
-                        renderer.faceShader->setInt("faceType", faceType);
-                        renderBackend.bindVertexArray(section.buffers->faceBuffers.clippedOpaqueVaos[faceType]);
-                        renderBackend.drawArraysTrianglesInstanced(0, 3, clippedCount);
-                    }
-                    int count = section.buffers->faceBuffers.opaqueCounts[faceType];
-                    if (count > 0 && section.buffers->faceBuffers.opaqueVaos[faceType] != 0) {
-                        renderer.faceShader->setInt("faceType", faceType);
-                        renderBackend.bindVertexArray(section.buffers->faceBuffers.opaqueVaos[faceType]);
-                        renderBackend.drawArraysTrianglesInstanced(0, 6, count);
+                const VoxelFaceRenderBuffers& faceBuffers = section.buffers->faceBuffers;
+                if (faceBuffers.mergedClippedOpaqueCount > 0 && faceBuffers.mergedClippedOpaqueVao != 0) {
+                    renderBackend.bindVertexArray(faceBuffers.mergedClippedOpaqueVao);
+                    ++voxelSubmitStats.terrainBinds;
+                    ++voxelSubmitStats.terrainDraws;
+                    ++voxelSubmitStats.clippedOpaqueDraws;
+                    voxelSubmitStats.terrainInstances += static_cast<size_t>(faceBuffers.mergedClippedOpaqueCount);
+                    voxelSubmitStats.clippedOpaqueInstances += static_cast<size_t>(faceBuffers.mergedClippedOpaqueCount);
+                    renderBackend.drawArraysTrianglesInstanced(0, 3, faceBuffers.mergedClippedOpaqueCount);
+                }
+                if (faceBuffers.mergedOpaqueCount > 0 && faceBuffers.mergedOpaqueVao != 0) {
+                    renderBackend.bindVertexArray(faceBuffers.mergedOpaqueVao);
+                    ++voxelSubmitStats.terrainBinds;
+                    ++voxelSubmitStats.terrainDraws;
+                    ++voxelSubmitStats.opaqueDraws;
+                    voxelSubmitStats.terrainInstances += static_cast<size_t>(faceBuffers.mergedOpaqueCount);
+                    voxelSubmitStats.opaqueInstances += static_cast<size_t>(faceBuffers.mergedOpaqueCount);
+                    renderBackend.drawArraysTrianglesInstanced(0, 6, faceBuffers.mergedOpaqueCount);
+                }
+                if (faceBuffers.mergedClippedOpaqueCount == 0 && faceBuffers.mergedOpaqueCount == 0) {
+                    for (int faceType = 0; faceType < 6; ++faceType) {
+                        int clippedCount = faceBuffers.clippedOpaqueCounts[faceType];
+                        if (clippedCount > 0 && faceBuffers.clippedOpaqueVaos[faceType] != 0) {
+                            renderer.faceShader->setInt("faceType", faceType);
+                            renderBackend.bindVertexArray(faceBuffers.clippedOpaqueVaos[faceType]);
+                            ++voxelSubmitStats.terrainBinds;
+                            ++voxelSubmitStats.terrainDraws;
+                            ++voxelSubmitStats.clippedOpaqueDraws;
+                            voxelSubmitStats.terrainInstances += static_cast<size_t>(clippedCount);
+                            voxelSubmitStats.clippedOpaqueInstances += static_cast<size_t>(clippedCount);
+                            renderBackend.drawArraysTrianglesInstanced(0, 3, clippedCount);
+                        }
+                        int count = faceBuffers.opaqueCounts[faceType];
+                        if (count > 0 && faceBuffers.opaqueVaos[faceType] != 0) {
+                            renderer.faceShader->setInt("faceType", faceType);
+                            renderBackend.bindVertexArray(faceBuffers.opaqueVaos[faceType]);
+                            ++voxelSubmitStats.terrainBinds;
+                            ++voxelSubmitStats.terrainDraws;
+                            ++voxelSubmitStats.opaqueDraws;
+                            voxelSubmitStats.terrainInstances += static_cast<size_t>(count);
+                            voxelSubmitStats.opaqueInstances += static_cast<size_t>(count);
+                            renderBackend.drawArraysTrianglesInstanced(0, 6, count);
+                        }
                     }
                 }
             }
@@ -1072,17 +1321,74 @@ namespace WorldRenderSystemLogic {
                 const auto& section = *it;
                 if (!section.buffers->usesTexturedFaceBuffers) continue;
                 renderer.faceShader->setInt("sectionTier", 0);
+                const VoxelFaceRenderBuffers& faceBuffers = section.buffers->faceBuffers;
+                if (faceBuffers.mergedAlphaCount > 0 && faceBuffers.mergedAlphaVao != 0) {
+                    renderBackend.bindVertexArray(faceBuffers.mergedAlphaVao);
+                    ++voxelSubmitStats.terrainBinds;
+                    ++voxelSubmitStats.terrainDraws;
+                    ++voxelSubmitStats.alphaDraws;
+                    voxelSubmitStats.terrainInstances += static_cast<size_t>(faceBuffers.mergedAlphaCount);
+                    voxelSubmitStats.alphaInstances += static_cast<size_t>(faceBuffers.mergedAlphaCount);
+                    renderBackend.drawArraysTrianglesInstanced(0, 6, faceBuffers.mergedAlphaCount);
+                    continue;
+                }
                 for (int faceType = 0; faceType < 6; ++faceType) {
-                    int count = section.buffers->faceBuffers.alphaCounts[faceType];
-                    if (count > 0 && section.buffers->faceBuffers.alphaVaos[faceType] != 0) {
+                    int count = faceBuffers.alphaCounts[faceType];
+                    if (count > 0 && faceBuffers.alphaVaos[faceType] != 0) {
                         renderer.faceShader->setInt("faceType", faceType);
-                        renderBackend.bindVertexArray(section.buffers->faceBuffers.alphaVaos[faceType]);
+                        renderBackend.bindVertexArray(faceBuffers.alphaVaos[faceType]);
+                        ++voxelSubmitStats.terrainBinds;
+                        ++voxelSubmitStats.terrainDraws;
+                        ++voxelSubmitStats.alphaDraws;
+                        voxelSubmitStats.terrainInstances += static_cast<size_t>(count);
+                        voxelSubmitStats.alphaInstances += static_cast<size_t>(count);
                         renderBackend.drawArraysTrianglesInstanced(0, 6, count);
                     }
                 }
             }
             setDepthWriteEnabled(true);
             setCullEnabled(false);
+        }
+
+        if ((RenderInitSystemLogic::getRegistryBool(baseSystem, "DebugVoxelMeshingPerf", false)
+                || RenderInitSystemLogic::getRegistryBool(baseSystem, "DebugVoxelRender", false))
+            && useVoxelRendering) {
+            static auto lastVoxelRenderPerfLog = std::chrono::steady_clock::now();
+            const auto perfNow = std::chrono::steady_clock::now();
+            if (perfNow - lastVoxelRenderPerfLog >= std::chrono::seconds(1)) {
+                size_t totalPublishedClusters = 0;
+                if (baseSystem.voxelRender) {
+                    for (const auto& [_, clusters] : baseSystem.voxelRender->renderClusters) {
+                        totalPublishedClusters += clusters.size();
+                    }
+                }
+                std::cout << "[VoxelRenderPerf]"
+                          << " clusters=" << totalPublishedClusters
+                          << " main=" << mainVoxelCollectStats.tested
+                          << "/" << mainVoxelCollectStats.visible
+                          << "/" << mainVoxelCollectStats.frustumRejected
+                          << "/" << mainVoxelCollectStats.occlusionRejected
+                          << "/" << mainVoxelCollectStats.trimmed
+                          << " refl=" << reflectionVoxelCollectStats.tested
+                          << "/" << reflectionVoxelCollectStats.visible
+                          << "/" << reflectionVoxelCollectStats.frustumRejected
+                          << "/" << reflectionVoxelCollectStats.occlusionRejected
+                          << "/" << reflectionVoxelCollectStats.trimmed
+                          << " draws=" << voxelSubmitStats.terrainDraws
+                          << " binds=" << voxelSubmitStats.terrainBinds
+                          << " drawKinds=" << voxelSubmitStats.clippedOpaqueDraws
+                          << "/" << voxelSubmitStats.opaqueDraws
+                          << "/" << voxelSubmitStats.alphaDraws
+                          << "/" << voxelSubmitStats.legacyVoxelDraws
+                          << " instances=" << voxelSubmitStats.terrainInstances
+                          << " instanceKinds=" << voxelSubmitStats.clippedOpaqueInstances
+                          << "/" << voxelSubmitStats.opaqueInstances
+                          << "/" << voxelSubmitStats.alphaInstances
+                          << " reflectionDraws=" << voxelSubmitStats.reflectionTerrainDraws
+                          << " reflectionInstances=" << voxelSubmitStats.reflectionTerrainInstances
+                          << std::endl;
+                lastVoxelRenderPerfLog = perfNow;
+            }
         }
 
         // Ensure block-damage masking does not leak into unrelated face/block draws

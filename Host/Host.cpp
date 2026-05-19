@@ -191,10 +191,12 @@ namespace {
             const char* vertexKey = nullptr;
             const char* fragmentKey = nullptr;
         };
-        const std::array<ShaderBinding, 21> bindings = {{
+        const std::array<ShaderBinding, 23> bindings = {{
             {"blockShader", &renderer.blockShader, "BLOCK_VERTEX_SHADER", "BLOCK_FRAGMENT_SHADER"},
             {"faceShader", &renderer.faceShader, "FACE_VERTEX_SHADER", "FACE_FRAGMENT_SHADER"},
+            {"packedTerrainFaceShader", &renderer.packedTerrainFaceShader, "PACKED_TERRAIN_FACE_VERTEX_SHADER", "FACE_FRAGMENT_SHADER"},
             {"occlusionFaceShader", &renderer.occlusionFaceShader, "OCCLUSION_FACE_VERTEX_SHADER", "OCCLUSION_FACE_FRAGMENT_SHADER"},
+            {"packedTerrainOcclusionFaceShader", &renderer.packedTerrainOcclusionFaceShader, "PACKED_TERRAIN_OCCLUSION_FACE_VERTEX_SHADER", "OCCLUSION_FACE_FRAGMENT_SHADER"},
             {"waterShader", &renderer.waterShader, "WATER_VERTEX_SHADER", "WATER_FRAGMENT_SHADER"},
             {"waterCompositeShader", &renderer.waterCompositeShader, "WATER_COMPOSITE_VERTEX_SHADER", "WATER_COMPOSITE_FRAGMENT_SHADER"},
             {"grass3DShader", &renderer.grass3DShader, "GRASS3D_VERTEX_SHADER", "GRASS3D_FRAGMENT_SHADER"},

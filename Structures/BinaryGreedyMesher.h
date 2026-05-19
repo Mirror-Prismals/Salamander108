@@ -6,7 +6,9 @@
 
 namespace SalamanderBinaryGreedyMesher {
 
-constexpr int kChunkSize = 62;
+// Cardinal near terrain sections are 16^3. The reference binary-greedy demo
+// supports larger 62^3 chunks, but this local mesher is invoked per section.
+constexpr int kChunkSize = 16;
 constexpr int kPaddedChunkSize = kChunkSize + 2;
 constexpr int kChunkArea = kChunkSize * kChunkSize;
 constexpr int kPaddedChunkArea = kPaddedChunkSize * kPaddedChunkSize;

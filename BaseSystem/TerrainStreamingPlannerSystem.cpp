@@ -28,81 +28,38 @@ namespace TreeGenerationSystemLogic {
 
 namespace TerrainSystemLogic {
 
-    class PerlinNoise3DLocal {
-    public:
-        explicit PerlinNoise3DLocal(int seed) {
-            std::iota(permutation.begin(), permutation.begin() + 256, 0);
-            std::mt19937 rng(seed);
-            std::shuffle(permutation.begin(), permutation.begin() + 256, rng);
-            for (int i = 0; i < 256; ++i) permutation[256 + i] = permutation[i];
+    constexpr int kBinaryCaveTileBits = 64;
+    using BinaryCaveTile = std::array<uint64_t, kBinaryCaveTileBits>;
+
+    struct BinaryCaveTileKey {
+        int plane = 0;
+        int x = 0;
+        int y = 0;
+
+        bool operator==(const BinaryCaveTileKey& other) const noexcept {
+            return plane == other.plane && x == other.x && y == other.y;
         }
+    };
 
-        float noise(float x, float y, float z) const {
-            int X = static_cast<int>(std::floor(x)) & 255;
-            int Y = static_cast<int>(std::floor(y)) & 255;
-            int Z = static_cast<int>(std::floor(z)) & 255;
-
-            x -= std::floor(x);
-            y -= std::floor(y);
-            z -= std::floor(z);
-
-            float u = fade(x);
-            float v = fade(y);
-            float w = fade(z);
-
-            int A = permutation[X] + Y;
-            int AA = permutation[A] + Z;
-            int AB = permutation[A + 1] + Z;
-            int B = permutation[X + 1] + Y;
-            int BA = permutation[B] + Z;
-            int BB = permutation[B + 1] + Z;
-
-            float res = lerp(w,
-                lerp(v,
-                    lerp(u, grad(permutation[AA], x, y, z),
-                            grad(permutation[BA], x - 1, y, z)),
-                    lerp(u, grad(permutation[AB], x, y - 1, z),
-                            grad(permutation[BB], x - 1, y - 1, z))),
-                lerp(v,
-                    lerp(u, grad(permutation[AA + 1], x, y, z - 1),
-                            grad(permutation[BA + 1], x - 1, y, z - 1)),
-                    lerp(u, grad(permutation[AB + 1], x, y - 1, z - 1),
-                            grad(permutation[BB + 1], x - 1, y - 1, z - 1))));
-
-            return res;
-        }
-
-    private:
-        std::array<int, 512> permutation{};
-
-        static float fade(float t) { return t * t * t * (t * (t * 6 - 15) + 10); }
-        static float lerp(float t, float a, float b) { return a + t * (b - a); }
-        static float grad(int hash, float x, float y, float z) {
-            int h = hash & 15;
-            float u = h < 8 ? x : y;
-            float v = h < 4 ? y : (h == 12 || h == 14 ? x : z);
-            float res = ((h & 1) ? -u : u) + ((h & 2) ? -v : v);
-            return res;
+    struct BinaryCaveTileKeyHash {
+        std::size_t operator()(const BinaryCaveTileKey& key) const noexcept {
+            std::size_t h = std::hash<int>()(key.plane);
+            h ^= std::hash<int>()(key.x + 0x9e3779b9) + (h << 6) + (h >> 2);
+            h ^= std::hash<int>()(key.y - 0x7f4a7c15) + (h << 6) + (h >> 2);
+            return h;
         }
     };
 
     struct CaveFieldLocal {
         bool ready = false;
-        bool building = false;
-        glm::vec3 origin{0.0f};
-        int step = 4;
-        int dimX = 0;
-        int dimY = 0;
-        int dimZ = 0;
+        bool enabled = true;
         int seedA = 0;
         int seedB = 0;
-        size_t buildCursor = 0;
-        size_t totalCount = 0;
-        uint64_t lastBuildFrame = std::numeric_limits<uint64_t>::max();
-        std::unique_ptr<PerlinNoise3DLocal> noiseA;
-        std::unique_ptr<PerlinNoise3DLocal> noiseB;
-        std::vector<uint8_t> a;
-        std::vector<uint8_t> b;
+        int iterations = 3;
+        int fillPercent = 50;
+        int openThreshold = 5;
+        size_t maxCachedTiles = 512;
+        std::unordered_map<BinaryCaveTileKey, BinaryCaveTile, BinaryCaveTileKeyHash> tiles;
     };
 
     namespace {
@@ -180,6 +137,17 @@ namespace TerrainSystemLogic {
             float featureMs = 0.0f;
             float surfaceMs = 0.0f;
             float caveFieldMs = 0.0f;
+            int schedulerPressure = 0;
+            int desiredBudget = 0;
+            int baseBudget = 0;
+            int featureBudget = 0;
+            int surfaceBudget = 0;
+            float baseBudgetMs = 0.0f;
+            float featureBudgetMs = 0.0f;
+            float surfaceBudgetMs = 0.0f;
+            size_t downstreamDirty = 0;
+            size_t downstreamPrepared = 0;
+            size_t downstreamUpload = 0;
             uint64_t caveFieldCellsBuilt = 0;
             uint64_t caveSamples = 0;
         };
@@ -219,131 +187,264 @@ namespace TerrainSystemLogic {
         static uint64_t g_caveFieldFrameSampleCount = 0;
         
 
-        inline uint8_t quantizeNoise01(float v) {
-            return static_cast<uint8_t>(std::clamp(v, 0.0f, 1.0f) * 255.0f);
+        int getRegistryInt(const BaseSystem& baseSystem, const std::string& key, int fallback);
+        bool getRegistryBool(const BaseSystem& baseSystem, const std::string& key, bool fallback);
+
+        inline uint64_t mixCaveHash(uint64_t v) {
+            v += 0x9e3779b97f4a7c15ULL;
+            v = (v ^ (v >> 30)) * 0xbf58476d1ce4e5b9ULL;
+            v = (v ^ (v >> 27)) * 0x94d049bb133111ebULL;
+            return v ^ (v >> 31);
         }
 
-        inline bool sampleCaveNoiseDirect(float worldX, float worldY, float worldZ, float& outA, float& outB) {
-            if (!g_caveField.noiseA || !g_caveField.noiseB) return false;
-            const float v1 = (g_caveField.noiseA->noise(worldX / 64.0f, worldY / 48.0f, worldZ / 64.0f) + 1.0f) * 0.5f;
-            const float v2 = (g_caveField.noiseB->noise(worldX / 128.0f, worldY / 128.0f, worldZ / 128.0f) + 1.0f) * 0.5f;
-            const uint8_t q1 = quantizeNoise01(v1);
-            const uint8_t q2 = quantizeNoise01(v2);
-            outA = static_cast<float>(q1) / 255.0f;
-            outB = static_cast<float>(q2) / 255.0f;
-            return true;
+        inline uint64_t caveCoordWord(int v) {
+            return static_cast<uint64_t>(static_cast<int64_t>(v));
         }
 
-        void ensureCaveField(const ExpanseConfig& cfg, int requestedMinY, int requestedMaxY) {
-            const int step = 4;
-            const int targetMinY = std::min(requestedMinY, requestedMaxY);
-            const int targetMaxY = std::max(requestedMinY, requestedMaxY);
-            const int sizeXZ = 2304;
-            const int halfXZ = sizeXZ / 2;
-            const int minY = targetMinY - step;
-            const int maxY = targetMaxY + step;
-            const int heightY = std::max(step, maxY - minY);
-            const int dimX = sizeXZ / step + 1;
-            const int dimZ = sizeXZ / step + 1;
-            const int dimY = heightY / step + 1;
+        inline uint64_t binaryCaveColumnHash(int plane, int tileX, int tileY, int localX) {
+            const int seed = (plane == 0) ? g_caveField.seedA : g_caveField.seedB;
+            const int worldX = tileX * kBinaryCaveTileBits + localX;
+            uint64_t h = caveCoordWord(worldX);
+            h ^= caveCoordWord(tileY * kBinaryCaveTileBits) + 0x517cc1b727220a95ULL + (h << 6) + (h >> 2);
+            h ^= static_cast<uint64_t>(seed) * 0x9e3779b185ebca87ULL;
+            h ^= static_cast<uint64_t>(plane + 1) * 0x94d049bb133111ebULL;
+            return mixCaveHash(h);
+        }
+
+        uint64_t makeInitialBinaryCaveColumn(int plane, int tileX, int tileY, int localX) {
+            const uint64_t baseHash = binaryCaveColumnHash(plane, tileX, tileY, localX);
+            if (g_caveField.fillPercent == 50) {
+                return baseHash;
+            }
+
+            const uint64_t threshold = static_cast<uint64_t>(
+                std::clamp(g_caveField.fillPercent, 1, 99) * 255 / 100
+            );
+            uint64_t column = 0;
+            for (int y = 0; y < kBinaryCaveTileBits; ++y) {
+                const uint64_t h = mixCaveHash(baseHash ^ (static_cast<uint64_t>(y) * 0xd2b74407b1ce6e93ULL));
+                if ((h & 0xffULL) < threshold) {
+                    column |= (1ULL << y);
+                }
+            }
+            return column;
+        }
+
+        uint64_t caveCountAtLeastMask(const uint64_t count[4], int threshold) {
+            const uint64_t b0 = count[0];
+            const uint64_t b1 = count[1];
+            const uint64_t b2 = count[2];
+            const uint64_t b3 = count[3];
+            switch (std::clamp(threshold, 1, 9)) {
+                case 1: return b0 | b1 | b2 | b3;
+                case 2: return b1 | b2 | b3;
+                case 3: return b3 | b2 | (b1 & b0);
+                case 4: return b2 | b3;
+                case 5: return b3 | (b2 & (b1 | b0));
+                case 6: return b3 | (b2 & b1);
+                case 7: return b3 | (b2 & b1 & b0);
+                case 8: return b3;
+                case 9: return b3 & b0;
+                default: return b3 | (b2 & (b1 | b0));
+            }
+        }
+
+        size_t binaryCaveGridIndex(int x, int y) {
+            return static_cast<size_t>(x + y * 3);
+        }
+
+        void smoothBinaryCaveGrid(std::array<BinaryCaveTile, 9>& grid) {
+            std::array<BinaryCaveTile, 9> next{};
+            for (int gy = 0; gy < 3; ++gy) {
+                for (int gx = 0; gx < 3; ++gx) {
+                    const size_t idx = binaryCaveGridIndex(gx, gy);
+                    const BinaryCaveTile& tile = grid[idx];
+                    BinaryCaveTile& outTile = next[idx];
+                    const bool hasLeft = gx > 0;
+                    const bool hasRight = gx < 2;
+                    const bool hasAbove = gy > 0;
+                    const bool hasBelow = gy < 2;
+                    const BinaryCaveTile* leftTile = hasLeft ? &grid[binaryCaveGridIndex(gx - 1, gy)] : nullptr;
+                    const BinaryCaveTile* rightTile = hasRight ? &grid[binaryCaveGridIndex(gx + 1, gy)] : nullptr;
+                    const BinaryCaveTile* aboveTile = hasAbove ? &grid[binaryCaveGridIndex(gx, gy - 1)] : nullptr;
+                    const BinaryCaveTile* belowTile = hasBelow ? &grid[binaryCaveGridIndex(gx, gy + 1)] : nullptr;
+
+                    for (int x = 0; x < kBinaryCaveTileBits; ++x) {
+                        const uint64_t left = (x > 0)
+                            ? tile[static_cast<size_t>(x - 1)]
+                            : (leftTile ? (*leftTile)[kBinaryCaveTileBits - 1] : ~0ULL);
+                        const uint64_t center = tile[static_cast<size_t>(x)];
+                        const uint64_t right = (x < kBinaryCaveTileBits - 1)
+                            ? tile[static_cast<size_t>(x + 1)]
+                            : (rightTile ? (*rightTile)[0] : ~0ULL);
+
+                        const uint64_t aboveL = aboveTile
+                            ? ((x > 0) ? (*aboveTile)[static_cast<size_t>(x - 1)] : (leftTile ? grid[binaryCaveGridIndex(gx - 1, gy - 1)][kBinaryCaveTileBits - 1] : 0ULL))
+                            : 0ULL;
+                        const uint64_t aboveC = aboveTile ? (*aboveTile)[static_cast<size_t>(x)] : 0ULL;
+                        const uint64_t aboveR = aboveTile
+                            ? ((x < kBinaryCaveTileBits - 1) ? (*aboveTile)[static_cast<size_t>(x + 1)] : (rightTile ? grid[binaryCaveGridIndex(gx + 1, gy - 1)][0] : 0ULL))
+                            : 0ULL;
+                        const uint64_t belowL = belowTile
+                            ? ((x > 0) ? (*belowTile)[static_cast<size_t>(x - 1)] : (leftTile ? grid[binaryCaveGridIndex(gx - 1, gy + 1)][kBinaryCaveTileBits - 1] : 0ULL))
+                            : 0ULL;
+                        const uint64_t belowC = belowTile ? (*belowTile)[static_cast<size_t>(x)] : 0ULL;
+                        const uint64_t belowR = belowTile
+                            ? ((x < kBinaryCaveTileBits - 1) ? (*belowTile)[static_cast<size_t>(x + 1)] : (rightTile ? grid[binaryCaveGridIndex(gx + 1, gy + 1)][0] : 0ULL))
+                            : 0ULL;
+
+                        const uint64_t upperInjectL = aboveTile ? (aboveL >> 63) : 1ULL;
+                        const uint64_t upperInjectC = aboveTile ? (aboveC >> 63) : 1ULL;
+                        const uint64_t upperInjectR = aboveTile ? (aboveR >> 63) : 1ULL;
+                        const uint64_t lowerInjectL = belowTile ? ((belowL & 1ULL) << 63) : (1ULL << 63);
+                        const uint64_t lowerInjectC = belowTile ? ((belowC & 1ULL) << 63) : (1ULL << 63);
+                        const uint64_t lowerInjectR = belowTile ? ((belowR & 1ULL) << 63) : (1ULL << 63);
+
+                        const uint64_t neighbors[9] = {
+                            (left << 1) | upperInjectL,
+                            (center << 1) | upperInjectC,
+                            (right << 1) | upperInjectR,
+                            left,
+                            center,
+                            right,
+                            (left >> 1) | lowerInjectL,
+                            (center >> 1) | lowerInjectC,
+                            (right >> 1) | lowerInjectR
+                        };
+                        uint64_t count[4] = {0, 0, 0, 0};
+                        for (uint64_t neighbor : neighbors) {
+                            uint64_t carry = neighbor;
+                            for (int bit = 0; bit < 4; ++bit) {
+                                const uint64_t sum = count[bit] ^ carry;
+                                carry = count[bit] & carry;
+                                count[bit] = sum;
+                                if (carry == 0ULL) break;
+                            }
+                        }
+                        outTile[static_cast<size_t>(x)] = caveCountAtLeastMask(count, g_caveField.openThreshold);
+                    }
+                }
+            }
+            grid = next;
+        }
+
+        const BinaryCaveTile& getBinaryCaveTile(int plane, int tileX, int tileY) {
+            const BinaryCaveTileKey key{plane, tileX, tileY};
+            auto found = g_caveField.tiles.find(key);
+            if (found != g_caveField.tiles.end()) return found->second;
+
+            const auto start = std::chrono::steady_clock::now();
+            std::array<BinaryCaveTile, 9> grid{};
+            for (int gy = 0; gy < 3; ++gy) {
+                for (int gx = 0; gx < 3; ++gx) {
+                    BinaryCaveTile& tile = grid[binaryCaveGridIndex(gx, gy)];
+                    const int sourceTileX = tileX + gx - 1;
+                    const int sourceTileY = tileY + gy - 1;
+                    for (int x = 0; x < kBinaryCaveTileBits; ++x) {
+                        tile[static_cast<size_t>(x)] = makeInitialBinaryCaveColumn(
+                            plane,
+                            sourceTileX,
+                            sourceTileY,
+                            x
+                        );
+                    }
+                }
+            }
+            for (int i = 0; i < g_caveField.iterations; ++i) {
+                smoothBinaryCaveGrid(grid);
+            }
+
+            if (g_caveField.tiles.size() >= g_caveField.maxCachedTiles) {
+                g_caveField.tiles.clear();
+            }
+            auto inserted = g_caveField.tiles.emplace(key, grid[binaryCaveGridIndex(1, 1)]);
+            g_caveFieldFrameMs += std::chrono::duration<float, std::milli>(
+                std::chrono::steady_clock::now() - start
+            ).count();
+            g_caveFieldFrameCellsBuilt += static_cast<uint64_t>(
+                kBinaryCaveTileBits * kBinaryCaveTileBits
+            );
+            return inserted.first->second;
+        }
+
+        void ensureCaveField(const BaseSystem& baseSystem,
+                             const ExpanseConfig& cfg,
+                             int requestedMinY,
+                             int requestedMaxY) {
+            (void)requestedMinY;
+            (void)requestedMaxY;
+            const bool enabled = getRegistryBool(baseSystem, "BinaryCaveEnabled", true);
             const int desiredSeedA = cfg.elevationSeed + 1337;
             const int desiredSeedB = cfg.ridgeSeed + 7331;
-            const size_t count = static_cast<size_t>(dimX)
-                * static_cast<size_t>(dimY)
-                * static_cast<size_t>(dimZ);
+            const int iterations = std::clamp(
+                getRegistryInt(baseSystem, "BinaryCaveIterations", 3),
+                0,
+                8
+            );
+            const int fillPercent = std::clamp(
+                getRegistryInt(baseSystem, "BinaryCaveFillPercent", 50),
+                1,
+                99
+            );
+            const int openThreshold = std::clamp(
+                getRegistryInt(baseSystem, "BinaryCaveOpenThreshold", 5),
+                1,
+                9
+            );
+            const size_t maxCachedTiles = static_cast<size_t>(std::max(
+                16,
+                getRegistryInt(baseSystem, "BinaryCaveMaxCachedTiles", 512)
+            ));
 
-            const bool hasField = (g_caveField.ready || g_caveField.building);
-            const bool sameBounds = hasField
-                && g_caveField.step == step
-                && static_cast<int>(std::floor(g_caveField.origin.x)) == -halfXZ
-                && static_cast<int>(std::floor(g_caveField.origin.y)) == minY
-                && static_cast<int>(std::floor(g_caveField.origin.z)) == -halfXZ
-                && g_caveField.dimX == dimX
-                && g_caveField.dimY == dimY
-                && g_caveField.dimZ == dimZ;
-            const bool sameSeeds = g_caveField.seedA == desiredSeedA
-                && g_caveField.seedB == desiredSeedB
-                && g_caveField.noiseA
-                && g_caveField.noiseB;
-            const bool needsRebuild = !sameBounds || !sameSeeds;
+            const bool changed = g_caveField.ready != enabled
+                || g_caveField.enabled != enabled
+                || g_caveField.seedA != desiredSeedA
+                || g_caveField.seedB != desiredSeedB
+                || g_caveField.iterations != iterations
+                || g_caveField.fillPercent != fillPercent
+                || g_caveField.openThreshold != openThreshold
+                || g_caveField.maxCachedTiles != maxCachedTiles;
+            if (!changed) return;
 
-            if (needsRebuild) {
-                g_caveField.ready = false;
-                g_caveField.building = true;
-                g_caveField.step = step;
-                g_caveField.origin = glm::vec3(-halfXZ, minY, -halfXZ);
-                g_caveField.dimX = dimX;
-                g_caveField.dimY = dimY;
-                g_caveField.dimZ = dimZ;
-                g_caveField.seedA = desiredSeedA;
-                g_caveField.seedB = desiredSeedB;
-                g_caveField.buildCursor = 0;
-                g_caveField.totalCount = count;
-                g_caveField.lastBuildFrame = std::numeric_limits<uint64_t>::max();
-                g_caveField.noiseA = std::make_unique<PerlinNoise3DLocal>(desiredSeedA);
-                g_caveField.noiseB = std::make_unique<PerlinNoise3DLocal>(desiredSeedB);
-                g_caveField.a.assign(count, 0);
-                g_caveField.b.assign(count, 0);
-                std::cout << "TerrainGeneration: started cave field precompute "
-                          << g_caveField.dimX << "x" << g_caveField.dimY << "x" << g_caveField.dimZ
-                          << " step=" << step << std::endl;
+            g_caveField.ready = enabled;
+            g_caveField.enabled = enabled;
+            g_caveField.seedA = desiredSeedA;
+            g_caveField.seedB = desiredSeedB;
+            g_caveField.iterations = iterations;
+            g_caveField.fillPercent = fillPercent;
+            g_caveField.openThreshold = openThreshold;
+            g_caveField.maxCachedTiles = maxCachedTiles;
+            g_caveField.tiles.clear();
+            if (enabled) {
+                std::cout << "TerrainGeneration: binary cave CA enabled "
+                          << "tile=" << kBinaryCaveTileBits
+                          << " iterations=" << iterations
+                          << " fill=" << fillPercent
+                          << " threshold=" << openThreshold
+                          << std::endl;
             }
+        }
 
-            if (g_caveField.ready || !g_caveField.building) return;
-
-            if (g_caveField.lastBuildFrame == g_voxelStreaming.frameCounter) return;
-            g_caveField.lastBuildFrame = g_voxelStreaming.frameCounter;
-
-            // Keep cave-field bootstrap incremental enough that initial world entry
-            // does not monopolize a whole frame before nearby sections can start progressing.
-            constexpr size_t kCaveFieldCellsPerFrame = 8192;
-            const size_t start = g_caveField.buildCursor;
-            const size_t end = std::min(g_caveField.totalCount, start + kCaveFieldCellsPerFrame);
-            const auto buildStart = std::chrono::steady_clock::now();
-            for (size_t linear = start; linear < end; ++linear) {
-                size_t t = linear;
-                const int z = static_cast<int>(t % static_cast<size_t>(g_caveField.dimZ));
-                t /= static_cast<size_t>(g_caveField.dimZ);
-                const int y = static_cast<int>(t % static_cast<size_t>(g_caveField.dimY));
-                const int x = static_cast<int>(t / static_cast<size_t>(g_caveField.dimY));
-                const float wx = g_caveField.origin.x + static_cast<float>(x * step);
-                const float wy = g_caveField.origin.y + static_cast<float>(y * step);
-                const float wz = g_caveField.origin.z + static_cast<float>(z * step);
-                if (!g_caveField.noiseA || !g_caveField.noiseB) break;
-                const float v1 = (g_caveField.noiseA->noise(wx / 64.0f, wy / 48.0f, wz / 64.0f) + 1.0f) * 0.5f;
-                const float v2 = (g_caveField.noiseB->noise(wx / 128.0f, wy / 128.0f, wz / 128.0f) + 1.0f) * 0.5f;
-                g_caveField.a[linear] = quantizeNoise01(v1);
-                g_caveField.b[linear] = quantizeNoise01(v2);
-            }
-            g_caveFieldFrameMs += std::chrono::duration<float, std::milli>(
-                std::chrono::steady_clock::now() - buildStart
-            ).count();
-            g_caveFieldFrameCellsBuilt += static_cast<uint64_t>(end - start);
-            g_caveField.buildCursor = end;
-            if (g_caveField.buildCursor >= g_caveField.totalCount) {
-                g_caveField.ready = true;
-                g_caveField.building = false;
-                std::cout << "TerrainGeneration: precomputed cave field "
-                          << g_caveField.dimX << "x" << g_caveField.dimY << "x" << g_caveField.dimZ
-                          << " step=" << step << std::endl;
-            }
+        bool sampleBinaryCavePlane(int plane, int worldA, int worldY) {
+            const int tileA = floorDivInt(worldA, kBinaryCaveTileBits);
+            const int tileY = floorDivInt(worldY, kBinaryCaveTileBits);
+            const int localA = worldA - tileA * kBinaryCaveTileBits;
+            const int localY = worldY - tileY * kBinaryCaveTileBits;
+            const BinaryCaveTile& tile = getBinaryCaveTile(plane, tileA, tileY);
+            return ((tile[static_cast<size_t>(localA)] >> localY) & 1ULL) != 0ULL;
         }
 
         inline bool sampleCaveField(float worldX, float worldY, float worldZ, float& outA, float& outB) {
-            if (!g_caveField.ready) return false;
+            if (!g_caveField.ready || !g_caveField.enabled) return false;
             g_caveFieldFrameSampleCount += 1;
-            float fx = (worldX - g_caveField.origin.x) / static_cast<float>(g_caveField.step);
-            float fy = (worldY - g_caveField.origin.y) / static_cast<float>(g_caveField.step);
-            float fz = (worldZ - g_caveField.origin.z) / static_cast<float>(g_caveField.step);
-            int ix = static_cast<int>(std::round(fx));
-            int iy = static_cast<int>(std::round(fy));
-            int iz = static_cast<int>(std::round(fz));
-            if (ix < 0 || iy < 0 || iz < 0 || ix >= g_caveField.dimX || iy >= g_caveField.dimY || iz >= g_caveField.dimZ) {
-                return false;
-            }
-            size_t idx = (static_cast<size_t>(ix) * g_caveField.dimY + static_cast<size_t>(iy)) * g_caveField.dimZ + static_cast<size_t>(iz);
-            outA = static_cast<float>(g_caveField.a[idx]) / 255.0f;
-            outB = static_cast<float>(g_caveField.b[idx]) / 255.0f;
+            const int x = static_cast<int>(std::floor(worldX));
+            const int y = static_cast<int>(std::floor(worldY));
+            const int z = static_cast<int>(std::floor(worldZ));
+            const bool xyOpen = sampleBinaryCavePlane(0, x, y);
+            const bool zyOpen = sampleBinaryCavePlane(1, z, y);
+            const bool open = xyOpen && zyOpen;
+            outA = open ? 1.0f : 0.0f;
+            outB = 0.0f;
             return true;
         }
 
@@ -1088,6 +1189,67 @@ namespace TerrainSystemLogic {
                 16,
                 getRegistryInt(baseSystem, "voxelDesiredRebuildColumnsPerFrame", 64)
             );
+            const bool schedulerBackpressureEnabled = getRegistryBool(
+                baseSystem,
+                "voxelSchedulerBackpressureEnabled",
+                true
+            );
+            const size_t schedulerDirtyBacklog = voxelWorld.dirtySections.size();
+            const size_t schedulerPreparedBacklog = baseSystem.voxelRender
+                ? baseSystem.voxelRender->preparedMeshes.size()
+                : 0u;
+            const size_t schedulerUploadBacklog = baseSystem.voxelRender
+                ? baseSystem.voxelRender->renderBuffersDirty.size()
+                : 0u;
+            const size_t schedulerDirtySoft = static_cast<size_t>(std::max(
+                1,
+                getRegistryInt(baseSystem, "voxelSchedulerDirtyBacklogSoft", 24)
+            ));
+            const size_t schedulerDirtyHard = static_cast<size_t>(std::max(
+                static_cast<int>(schedulerDirtySoft),
+                getRegistryInt(baseSystem, "voxelSchedulerDirtyBacklogHard", 64)
+            ));
+            const size_t schedulerPreparedSoft = static_cast<size_t>(std::max(
+                1,
+                getRegistryInt(baseSystem, "voxelSchedulerPreparedBacklogSoft", 2)
+            ));
+            const size_t schedulerPreparedHard = static_cast<size_t>(std::max(
+                static_cast<int>(schedulerPreparedSoft),
+                getRegistryInt(baseSystem, "voxelSchedulerPreparedBacklogHard", 8)
+            ));
+            const size_t schedulerUploadSoft = static_cast<size_t>(std::max(
+                1,
+                getRegistryInt(baseSystem, "voxelSchedulerUploadBacklogSoft", 2)
+            ));
+            const size_t schedulerUploadHard = static_cast<size_t>(std::max(
+                static_cast<int>(schedulerUploadSoft),
+                getRegistryInt(baseSystem, "voxelSchedulerUploadBacklogHard", 8)
+            ));
+            int schedulerPressure = 0;
+            if (schedulerBackpressureEnabled) {
+                const bool hardPressure = schedulerDirtyBacklog >= schedulerDirtyHard
+                    || schedulerPreparedBacklog >= schedulerPreparedHard
+                    || schedulerUploadBacklog >= schedulerUploadHard;
+                const bool softPressure = schedulerDirtyBacklog >= schedulerDirtySoft
+                    || schedulerPreparedBacklog >= schedulerPreparedSoft
+                    || schedulerUploadBacklog >= schedulerUploadSoft;
+                schedulerPressure = hardPressure ? 2 : (softPressure ? 1 : 0);
+            }
+            const int schedulerBudgetDivisor = schedulerPressure >= 2
+                ? 4
+                : (schedulerPressure == 1 ? 2 : 1);
+            auto throttleIntBudget = [&](int budget, int floorBudget) {
+                if (!schedulerBackpressureEnabled || schedulerPressure <= 0 || budget <= 0) {
+                    return budget;
+                }
+                return std::max(floorBudget, budget / schedulerBudgetDivisor);
+            };
+            auto throttleMsBudget = [&](float budgetMs, float floorBudgetMs) {
+                if (!schedulerBackpressureEnabled || schedulerPressure <= 0 || budgetMs <= 0.0f) {
+                    return budgetMs;
+                }
+                return std::max(floorBudgetMs, budgetMs / static_cast<float>(schedulerBudgetDivisor));
+            };
             bool rebuildDesired = false;
             std::vector<VoxelSectionKey> committedDesiredOrder;
             if ((g_voxelStreaming.pendingDesiredRebuild || g_voxelStreaming.desired.empty())
@@ -1115,7 +1277,8 @@ namespace TerrainSystemLogic {
                 g_voxelDesiredRebuild.desiredOrder.push_back(key);
             };
 
-            int desiredColumnsBudget = desiredRebuildColumnsPerFrame;
+            const int desiredColumnsFrameBudget = throttleIntBudget(desiredRebuildColumnsPerFrame, 8);
+            int desiredColumnsBudget = desiredColumnsFrameBudget;
             bool desiredRebuildFinished = false;
             while (g_voxelDesiredRebuild.active && desiredColumnsBudget > 0) {
                 if (!g_voxelDesiredRebuild.tierPrepared) {
@@ -1872,10 +2035,35 @@ namespace TerrainSystemLogic {
             constexpr int kGenerationStepsPerFrame = 16;
             constexpr int kMinSectionsBeforeTimeCap = 2;
             constexpr float kGenerationTimeBudgetMs = 8.0f;
-            const int generationBudget = kGenerationStepsPerFrame;
-            const int minSectionsBeforeTimeCap = kMinSectionsBeforeTimeCap;
-            const float generationTimeBudgetMs = kGenerationTimeBudgetMs;
-            const int sectionColumnsPerStep = sectionSizeForSection(voxelWorld) * sectionSizeForSection(voxelWorld);
+            const int generationBudget = throttleIntBudget(
+                std::max(1, getRegistryInt(baseSystem, "voxelGenerationStepsPerFrame", kGenerationStepsPerFrame)),
+                1
+            );
+            const int configuredMinSectionsBeforeTimeCap = std::max(
+                1,
+                getRegistryInt(baseSystem, "voxelGenerationMinSectionsBeforeTimeCap", kMinSectionsBeforeTimeCap)
+            );
+            const int minSectionsBeforeTimeCap = schedulerPressure > 0
+                ? 1
+                : configuredMinSectionsBeforeTimeCap;
+            const float generationTimeBudgetMs = throttleMsBudget(
+                std::max(0.1f, getRegistryFloat(baseSystem, "voxelGenerationMaxMsPerFrame", kGenerationTimeBudgetMs)),
+                1.5f
+            );
+            const int sectionSizeForGeneration = sectionSizeForSection(voxelWorld);
+            const int fullColumnsPerSection = sectionSizeForGeneration * sectionSizeForGeneration;
+            int sectionColumnsPerStep = std::clamp(
+                getRegistryInt(baseSystem, "voxelGenerationColumnsPerStep", fullColumnsPerSection),
+                1,
+                std::max(1, fullColumnsPerSection)
+            );
+            if (schedulerPressure > 0) {
+                const int pressureColumnsPerStep = std::max(
+                    16,
+                    fullColumnsPerSection / std::max(1, schedulerBudgetDivisor)
+                );
+                sectionColumnsPerStep = std::min(sectionColumnsPerStep, pressureColumnsPerStep);
+            }
             constexpr bool kResumeInProgressFirst = true;
             constexpr int kCompletionFocusFrontWindow = 4;
             constexpr int kCompletionFocusRepeats = 1;
@@ -2043,8 +2231,14 @@ namespace TerrainSystemLogic {
             // outside the base-generation queue so section generation can keep progressing.
             constexpr int kFeatureSectionsPerFrame = 16;
             constexpr float kFeatureTimeBudgetMs = 6.0f;
-            const int featureSectionsPerFrame = kFeatureSectionsPerFrame;
-            const float featureTimeBudgetMs = kFeatureTimeBudgetMs;
+            const int featureSectionsPerFrame = throttleIntBudget(
+                std::max(1, getRegistryInt(baseSystem, "voxelFeatureSectionsPerFrame", kFeatureSectionsPerFrame)),
+                1
+            );
+            const float featureTimeBudgetMs = throttleMsBudget(
+                std::max(0.1f, getRegistryFloat(baseSystem, "voxelFeatureMaxMsPerFrame", kFeatureTimeBudgetMs)),
+                0.75f
+            );
             const auto featureStageStart = std::chrono::steady_clock::now();
             int featureSectionsProcessed = 0;
             int featureDeferredByDeps = 0;
@@ -2202,8 +2396,14 @@ namespace TerrainSystemLogic {
 
             constexpr int kSurfaceSectionsPerFrame = 16;
             constexpr float kSurfaceTimeBudgetMs = 4.0f;
-            const int surfaceSectionsPerFrame = kSurfaceSectionsPerFrame;
-            const float surfaceTimeBudgetMs = kSurfaceTimeBudgetMs;
+            const int surfaceSectionsPerFrame = throttleIntBudget(
+                std::max(1, getRegistryInt(baseSystem, "voxelSurfaceSectionsPerFrame", kSurfaceSectionsPerFrame)),
+                1
+            );
+            const float surfaceTimeBudgetMs = throttleMsBudget(
+                std::max(0.1f, getRegistryFloat(baseSystem, "voxelSurfaceMaxMsPerFrame", kSurfaceTimeBudgetMs)),
+                0.5f
+            );
             const auto surfaceStageStart = std::chrono::steady_clock::now();
             if (surfaceSectionsPerFrame > 0 && !g_voxelStreaming.surfaceReady.empty()) {
                 const auto surfaceStart = std::chrono::steady_clock::now();
@@ -2279,6 +2479,17 @@ namespace TerrainSystemLogic {
             g_voxelStreamingPerfStats.featureMs = featureMs;
             g_voxelStreamingPerfStats.surfaceMs = surfaceMs;
             g_voxelStreamingPerfStats.caveFieldMs = g_caveFieldFrameMs;
+            g_voxelStreamingPerfStats.schedulerPressure = schedulerPressure;
+            g_voxelStreamingPerfStats.desiredBudget = desiredColumnsFrameBudget;
+            g_voxelStreamingPerfStats.baseBudget = generationBudget;
+            g_voxelStreamingPerfStats.featureBudget = featureSectionsPerFrame;
+            g_voxelStreamingPerfStats.surfaceBudget = surfaceSectionsPerFrame;
+            g_voxelStreamingPerfStats.baseBudgetMs = generationTimeBudgetMs;
+            g_voxelStreamingPerfStats.featureBudgetMs = featureTimeBudgetMs;
+            g_voxelStreamingPerfStats.surfaceBudgetMs = surfaceTimeBudgetMs;
+            g_voxelStreamingPerfStats.downstreamDirty = schedulerDirtyBacklog;
+            g_voxelStreamingPerfStats.downstreamPrepared = schedulerPreparedBacklog;
+            g_voxelStreamingPerfStats.downstreamUpload = schedulerUploadBacklog;
             g_voxelStreamingPerfStats.caveFieldCellsBuilt = g_caveFieldFrameCellsBuilt;
             g_voxelStreamingPerfStats.caveSamples = g_caveFieldFrameSampleCount;
 
@@ -2411,6 +2622,17 @@ namespace TerrainSystemLogic {
                                     float& featureMs,
                                     float& surfaceMs,
                                     float& caveFieldMs,
+                                    int& schedulerPressure,
+                                    int& desiredBudget,
+                                    int& baseBudget,
+                                    int& featureBudget,
+                                    int& surfaceBudget,
+                                    float& baseBudgetMs,
+                                    float& featureBudgetMs,
+                                    float& surfaceBudgetMs,
+                                    size_t& downstreamDirty,
+                                    size_t& downstreamPrepared,
+                                    size_t& downstreamUpload,
                                     uint64_t& caveFieldCellsBuilt,
                                     uint64_t& caveSamples) {
         pending = g_voxelStreamingPerfStats.pending;
@@ -2433,6 +2655,17 @@ namespace TerrainSystemLogic {
         featureMs = g_voxelStreamingPerfStats.featureMs;
         surfaceMs = g_voxelStreamingPerfStats.surfaceMs;
         caveFieldMs = g_voxelStreamingPerfStats.caveFieldMs;
+        schedulerPressure = g_voxelStreamingPerfStats.schedulerPressure;
+        desiredBudget = g_voxelStreamingPerfStats.desiredBudget;
+        baseBudget = g_voxelStreamingPerfStats.baseBudget;
+        featureBudget = g_voxelStreamingPerfStats.featureBudget;
+        surfaceBudget = g_voxelStreamingPerfStats.surfaceBudget;
+        baseBudgetMs = g_voxelStreamingPerfStats.baseBudgetMs;
+        featureBudgetMs = g_voxelStreamingPerfStats.featureBudgetMs;
+        surfaceBudgetMs = g_voxelStreamingPerfStats.surfaceBudgetMs;
+        downstreamDirty = g_voxelStreamingPerfStats.downstreamDirty;
+        downstreamPrepared = g_voxelStreamingPerfStats.downstreamPrepared;
+        downstreamUpload = g_voxelStreamingPerfStats.downstreamUpload;
         caveFieldCellsBuilt = g_voxelStreamingPerfStats.caveFieldCellsBuilt;
         caveSamples = g_voxelStreamingPerfStats.caveSamples;
     }
@@ -2534,16 +2767,14 @@ namespace TerrainSystemLogic {
             g_voxelDesiredRebuild.desired.clear();
             g_voxelDesiredRebuild.desiredOrder.clear();
             g_caveField.ready = false;
-            g_caveField.building = false;
+            g_caveField.enabled = true;
             g_caveField.seedA = 0;
             g_caveField.seedB = 0;
-            g_caveField.buildCursor = 0;
-            g_caveField.totalCount = 0;
-            g_caveField.lastBuildFrame = std::numeric_limits<uint64_t>::max();
-            g_caveField.noiseA.reset();
-            g_caveField.noiseB.reset();
-            g_caveField.a.clear();
-            g_caveField.b.clear();
+            g_caveField.iterations = 3;
+            g_caveField.fillPercent = 50;
+            g_caveField.openThreshold = 5;
+            g_caveField.maxCachedTiles = 512;
+            g_caveField.tiles.clear();
             g_lastVoxelPerf = std::chrono::steady_clock::now();
             g_lastTerrainSnapshot = std::chrono::steady_clock::now();
             g_voxelStreamingTotalStepped = 0;

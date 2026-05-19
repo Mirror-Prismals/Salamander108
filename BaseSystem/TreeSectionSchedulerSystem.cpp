@@ -67,7 +67,7 @@ namespace TreeSectionSchedulerSystemLogic {
         const int syncSectionsPerFrame = std::max(0, readRegistryInt(baseSystem, "TreeSchedulerSyncSectionsPerFrame", 2));
         const int forceCompleteSectionsPerFrame = std::max(
             0,
-            readRegistryInt(baseSystem, "TreeSchedulerForceCompleteSectionsPerFrame", 1)
+            readRegistryInt(baseSystem, "TreeSchedulerForceCompleteSectionsPerFrame", 0)
         );
         const int syncPassesPerSection = std::max(1, readRegistryInt(baseSystem, "TreeSchedulerSyncPassesPerSection", 1));
         (void)syncPassesPerSection;

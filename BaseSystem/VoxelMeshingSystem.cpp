@@ -20,6 +20,7 @@ namespace VoxelMeshInitSystemLogic {
     int SectionSizeForSection(const VoxelWorldContext& voxelWorld);
 }
 namespace RenderInitSystemLogic {
+    int getRegistryInt(const BaseSystem& baseSystem, const std::string& key, int fallback);
     bool getRegistryBool(const BaseSystem& baseSystem, const std::string& key, bool fallback);
     float getRegistryFloat(const BaseSystem& baseSystem, const std::string& key, float fallback);
 }
@@ -74,6 +75,10 @@ namespace VoxelMeshingSystemLogic {
             size_t completedAccepted = 0;
             size_t completedDropped = 0;
             size_t outstandingBlocked = 0;
+            size_t snapshotCap = 0;
+            int schedulerPressure = 0;
+            size_t preparedBacklog = 0;
+            size_t uploadBacklog = 0;
             float frameSnapshotMs = 0.0f;
             float lastSnapshotMs = 0.0f;
             int lastSnapshotY = 0;
@@ -342,6 +347,10 @@ namespace VoxelMeshingSystemLogic {
                                          size_t& completedAccepted,
                                          size_t& completedDropped,
                                          size_t& outstandingBlocked,
+                                         size_t& snapshotCap,
+                                         int& schedulerPressure,
+                                         size_t& preparedBacklog,
+                                         size_t& uploadBacklog,
                                          float& frameSnapshotMs,
                                          float& lastSnapshotMs,
                                          int& lastSnapshotY,
@@ -365,6 +374,10 @@ namespace VoxelMeshingSystemLogic {
         completedAccepted = stats.completedAccepted;
         completedDropped = stats.completedDropped;
         outstandingBlocked = stats.outstandingBlocked;
+        snapshotCap = stats.snapshotCap;
+        schedulerPressure = stats.schedulerPressure;
+        preparedBacklog = stats.preparedBacklog;
+        uploadBacklog = stats.uploadBacklog;
         frameSnapshotMs = stats.frameSnapshotMs;
         lastSnapshotMs = stats.lastSnapshotMs;
         lastSnapshotY = stats.lastSnapshotY;
@@ -548,6 +561,49 @@ namespace VoxelMeshingSystemLogic {
             return a.key.coord.z < b.key.coord.z;
         });
 
+        int snapshotCapThisFrame = std::max(
+            0,
+            ::RenderInitSystemLogic::getRegistryInt(
+                baseSystem,
+                "voxelMeshingMaxNewSnapshotsPerFrame",
+                static_cast<int>(kMaxNewSnapshotsPerFrame)
+            )
+        );
+        const bool meshingBackpressureEnabled = ::RenderInitSystemLogic::getRegistryBool(
+            baseSystem,
+            "voxelMeshingBackpressureEnabled",
+            true
+        );
+        const size_t preparedBacklog = voxelRender.preparedMeshes.size();
+        const size_t uploadBacklog = voxelRender.renderBuffersDirty.size();
+        const size_t preparedSoft = static_cast<size_t>(std::max(
+            1,
+            ::RenderInitSystemLogic::getRegistryInt(baseSystem, "voxelMeshingPreparedBacklogSoft", 2)
+        ));
+        const size_t preparedHard = static_cast<size_t>(std::max(
+            static_cast<int>(preparedSoft),
+            ::RenderInitSystemLogic::getRegistryInt(baseSystem, "voxelMeshingPreparedBacklogHard", 8)
+        ));
+        const size_t uploadSoft = static_cast<size_t>(std::max(
+            1,
+            ::RenderInitSystemLogic::getRegistryInt(baseSystem, "voxelMeshingUploadBacklogSoft", 2)
+        ));
+        const size_t uploadHard = static_cast<size_t>(std::max(
+            static_cast<int>(uploadSoft),
+            ::RenderInitSystemLogic::getRegistryInt(baseSystem, "voxelMeshingUploadBacklogHard", 8)
+        ));
+        int meshingPressure = 0;
+        if (meshingBackpressureEnabled) {
+            const bool hardPressure = preparedBacklog >= preparedHard || uploadBacklog >= uploadHard;
+            const bool softPressure = preparedBacklog >= preparedSoft || uploadBacklog >= uploadSoft;
+            meshingPressure = hardPressure ? 2 : (softPressure ? 1 : 0);
+            if (meshingPressure >= 2) {
+                snapshotCapThisFrame = 0;
+            } else if (meshingPressure == 1) {
+                snapshotCapThisFrame = std::min(snapshotCapThisFrame, 1);
+            }
+        }
+
         size_t enqueuedThisFrame = 0;
         size_t snapshotsThisFrame = 0;
         size_t outstandingBlockedThisFrame = 0;
@@ -556,7 +612,7 @@ namespace VoxelMeshingSystemLogic {
         int lastSnapshotY = 0;
         int lastSnapshotNonAir = 0;
         for (const Candidate& candidate : candidates) {
-            if (enqueuedThisFrame >= kMaxNewSnapshotsPerFrame) break;
+            if (enqueuedThisFrame >= static_cast<size_t>(snapshotCapThisFrame)) break;
 
             auto sectionIt = voxelWorld.sections.find(candidate.key);
             if (sectionIt == voxelWorld.sections.end() || sectionIt->second.nonAirCount <= 0) {
@@ -628,6 +684,10 @@ namespace VoxelMeshingSystemLogic {
         stats.completedAccepted = completedAcceptedThisFrame;
         stats.completedDropped = completedDroppedThisFrame;
         stats.outstandingBlocked = outstandingBlockedThisFrame;
+        stats.snapshotCap = static_cast<size_t>(snapshotCapThisFrame);
+        stats.schedulerPressure = meshingPressure;
+        stats.preparedBacklog = preparedBacklog;
+        stats.uploadBacklog = uploadBacklog;
         stats.frameSnapshotMs = frameSnapshotMs;
         stats.lastSnapshotMs = lastSnapshotMs;
         stats.lastSnapshotY = lastSnapshotY;

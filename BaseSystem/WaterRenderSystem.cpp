@@ -1,3 +1,7 @@
+#include <string>
+
+namespace RenderInitSystemLogic { bool getRegistryBool(const BaseSystem& baseSystem, const std::string& key, bool fallback); }
+
 namespace {
     struct VisibleWaterSection {
         const ChunkRenderBuffers* buffers = nullptr;
@@ -22,7 +26,8 @@ namespace {
         if (baseSystem.voxelRender) {
             for (const auto& [_, clusters] : baseSystem.voxelRender->renderClusters) clusterCapacity += clusters.size();
         }
-        if (baseSystem.farTerrain && baseSystem.farTerrain->enabled) {
+        const bool farTerrainEnabled = RenderInitSystemLogic::getRegistryBool(baseSystem, "FarTerrainEnabled", true);
+        if (farTerrainEnabled && baseSystem.farTerrain && baseSystem.farTerrain->enabled) {
             clusterCapacity += baseSystem.farTerrain->bodyRenderClusters.size();
             clusterCapacity += baseSystem.farTerrain->handoffRenderClusters.size();
         }
@@ -53,7 +58,7 @@ namespace {
             }
         }
 
-        if (baseSystem.farTerrain && baseSystem.farTerrain->enabled) {
+        if (farTerrainEnabled && baseSystem.farTerrain && baseSystem.farTerrain->enabled) {
             auto appendFarClusters = [&](const std::vector<VoxelRenderCluster>& clusters) {
                 for (const VoxelRenderCluster& cluster : clusters) {
                     appendCluster(cluster);

@@ -26,6 +26,10 @@ namespace VoxelMeshingSystemLogic {
                                          size_t& completedAccepted,
                                          size_t& completedDropped,
                                          size_t& outstandingBlocked,
+                                         size_t& snapshotCap,
+                                         int& schedulerPressure,
+                                         size_t& preparedBacklog,
+                                         size_t& uploadBacklog,
                                          float& frameSnapshotMs,
                                          float& lastSnapshotMs,
                                          int& lastSnapshotY,
@@ -65,9 +69,21 @@ namespace VoxelMeshUploadSystemLogic {
                                      size_t& lastPendingAfter,
                                      size_t& lastCandidates,
                                      size_t& lastUploadedClusters,
+                                     size_t& lastUploadedFaces,
+                                     size_t& lastUploadedBytes,
+                                     size_t& lastUploadedBuffers,
+                                     size_t& lastPackedTerrainFaces,
+                                     size_t& lastPackedTerrainBytes,
                                      int& lastCapSections,
                                      float& lastBudgetMs,
+                                     float& lastClusterSplitMs,
+                                     float& lastBufferStageMs,
+                                     float& lastPublishMs,
                                      bool& lastBootstrapActive,
+                                     bool& lastHardSectionCapApplied,
+                                     bool& lastBudgetOverrun,
+                                     bool& lastClusterSplitEnabled,
+                                     float& lastBudgetOverrunMs,
                                      uint64_t& totalUploadedSections,
                                      uint64_t& totalUploadedClusters);
 }
@@ -92,6 +108,17 @@ namespace TerrainSystemLogic {
                                     float& featureMs,
                                     float& surfaceMs,
                                     float& caveFieldMs,
+                                    int& schedulerPressure,
+                                    int& desiredBudget,
+                                    int& baseBudget,
+                                    int& featureBudget,
+                                    int& surfaceBudget,
+                                    float& baseBudgetMs,
+                                    float& featureBudgetMs,
+                                    float& surfaceBudgetMs,
+                                    size_t& downstreamDirty,
+                                    size_t& downstreamPrepared,
+                                    size_t& downstreamUpload,
                                     uint64_t& caveFieldCellsBuilt,
                                     uint64_t& caveSamples);
 }
@@ -137,6 +164,17 @@ namespace VoxelMeshDebugSystemLogic {
             float terrainFeatureMs = 0.0f;
             float terrainSurfaceMs = 0.0f;
             float terrainCaveFieldMs = 0.0f;
+            int terrainSchedulerPressure = 0;
+            int terrainDesiredBudget = 0;
+            int terrainBaseBudget = 0;
+            int terrainFeatureBudget = 0;
+            int terrainSurfaceBudget = 0;
+            float terrainBaseBudgetMs = 0.0f;
+            float terrainFeatureBudgetMs = 0.0f;
+            float terrainSurfaceBudgetMs = 0.0f;
+            size_t terrainDownstreamDirty = 0;
+            size_t terrainDownstreamPrepared = 0;
+            size_t terrainDownstreamUpload = 0;
             uint64_t terrainCaveFieldCellsBuilt = 0;
             uint64_t terrainCaveSamples = 0;
             TerrainSystemLogic::GetVoxelStreamingPerfStats(
@@ -160,6 +198,17 @@ namespace VoxelMeshDebugSystemLogic {
                 terrainFeatureMs,
                 terrainSurfaceMs,
                 terrainCaveFieldMs,
+                terrainSchedulerPressure,
+                terrainDesiredBudget,
+                terrainBaseBudget,
+                terrainFeatureBudget,
+                terrainSurfaceBudget,
+                terrainBaseBudgetMs,
+                terrainFeatureBudgetMs,
+                terrainSurfaceBudgetMs,
+                terrainDownstreamDirty,
+                terrainDownstreamPrepared,
+                terrainDownstreamUpload,
                 terrainCaveFieldCellsBuilt,
                 terrainCaveSamples
             );
@@ -235,6 +284,8 @@ namespace VoxelMeshDebugSystemLogic {
             size_t meshDirtySections = 0, meshCandidates = 0, meshMissingSections = 0, meshQueued = 0;
             size_t meshSnapshots = 0, meshCompletedPopped = 0, meshCompletedAccepted = 0;
             size_t meshCompletedDropped = 0, meshOutstandingBlocked = 0;
+            size_t meshSnapshotCap = 0, meshPreparedBacklog = 0, meshUploadBacklog = 0;
+            int meshSchedulerPressure = 0;
             float meshFrameSnapshotMs = 0.0f, meshLastSnapshotMs = 0.0f;
             int meshLastSnapshotY = 0, meshLastSnapshotNonAir = 0;
             uint64_t meshTotalQueued = 0, meshTotalCompleted = 0, meshTotalDropped = 0;
@@ -253,6 +304,10 @@ namespace VoxelMeshDebugSystemLogic {
                 meshCompletedAccepted,
                 meshCompletedDropped,
                 meshOutstandingBlocked,
+                meshSnapshotCap,
+                meshSchedulerPressure,
+                meshPreparedBacklog,
+                meshUploadBacklog,
                 meshFrameSnapshotMs,
                 meshLastSnapshotMs,
                 meshLastSnapshotY,
@@ -299,10 +354,17 @@ namespace VoxelMeshDebugSystemLogic {
             );
 
             float meshUploadLastMs = 0.0f, meshUploadBudgetMs = 0.0f;
+            float meshUploadSplitMs = 0.0f, meshUploadStageMs = 0.0f, meshUploadPublishMs = 0.0f;
             size_t meshUploadLastSections = 0, meshUploadPendingBefore = 0, meshUploadPendingAfter = 0;
             size_t meshUploadCandidates = 0, meshUploadClusters = 0;
+            size_t meshUploadFaces = 0, meshUploadBytes = 0, meshUploadBuffers = 0;
+            size_t meshUploadPackedFaces = 0, meshUploadPackedBytes = 0;
             int meshUploadCapSections = 0;
             bool meshUploadBootstrapActive = false;
+            bool meshUploadHardCapApplied = false;
+            bool meshUploadBudgetOverrun = false;
+            bool meshUploadClusterSplitEnabled = true;
+            float meshUploadBudgetOverrunMs = 0.0f;
             uint64_t meshUploadTotalSections = 0, meshUploadTotalClusters = 0;
             VoxelMeshUploadSystemLogic::GetVoxelMeshUploadPerfStats(
                 meshUploadLastMs,
@@ -311,9 +373,21 @@ namespace VoxelMeshDebugSystemLogic {
                 meshUploadPendingAfter,
                 meshUploadCandidates,
                 meshUploadClusters,
+                meshUploadFaces,
+                meshUploadBytes,
+                meshUploadBuffers,
+                meshUploadPackedFaces,
+                meshUploadPackedBytes,
                 meshUploadCapSections,
                 meshUploadBudgetMs,
+                meshUploadSplitMs,
+                meshUploadStageMs,
+                meshUploadPublishMs,
                 meshUploadBootstrapActive,
+                meshUploadHardCapApplied,
+                meshUploadBudgetOverrun,
+                meshUploadClusterSplitEnabled,
+                meshUploadBudgetOverrunMs,
                 meshUploadTotalSections,
                 meshUploadTotalClusters
             );
@@ -395,6 +469,17 @@ namespace VoxelMeshDebugSystemLogic {
                       << " terrainCaveFieldMs=" << terrainCaveFieldMs
                       << " terrainCaveFieldCells=" << terrainCaveFieldCellsBuilt
                       << " terrainCaveSamples=" << terrainCaveSamples
+                      << " terrainSched=pressure:" << terrainSchedulerPressure
+                      << ",bud:" << terrainDesiredBudget
+                      << "/" << terrainBaseBudget
+                      << "/" << terrainFeatureBudget
+                      << "/" << terrainSurfaceBudget
+                      << ",ms:" << terrainBaseBudgetMs
+                      << "/" << terrainFeatureBudgetMs
+                      << "/" << terrainSurfaceBudgetMs
+                      << ",down:" << terrainDownstreamDirty
+                      << "/" << terrainDownstreamPrepared
+                      << "/" << terrainDownstreamUpload
                       << " treePending=" << treePending
                       << " treePendingDeps=" << treePendingDeps
                       << " treeVisited=" << treeVisited
@@ -432,8 +517,12 @@ namespace VoxelMeshDebugSystemLogic {
                       << ",cand:" << meshCandidates
                       << ",missing:" << meshMissingSections
                       << ",queued:" << meshQueued
-                      << ",snap:" << meshSnapshots
-                      << ",popped:" << meshCompletedPopped
+	                      << ",snap:" << meshSnapshots
+                          << ",cap:" << meshSnapshotCap
+                          << ",pressure:" << meshSchedulerPressure
+                          << ",backlog:" << meshPreparedBacklog
+                          << "/" << meshUploadBacklog
+	                      << ",popped:" << meshCompletedPopped
                       << ",accepted:" << meshCompletedAccepted
                       << ",dropped:" << meshCompletedDropped
                       << ",blocked:" << meshOutstandingBlocked
@@ -469,11 +558,22 @@ namespace VoxelMeshDebugSystemLogic {
                       << ",cand:" << meshUploadCandidates
                       << ",clusters:" << meshUploadClusters
                       << ",ms:" << meshUploadLastMs
-                      << ",cap:" << meshUploadCapSections
-                      << ",budget:" << meshUploadBudgetMs
-                      << ",bootstrap:" << (meshUploadBootstrapActive ? 1 : 0)
-                      << ",total:" << meshUploadTotalSections
-                      << "/" << meshUploadTotalClusters;
+	                      << ",cap:" << meshUploadCapSections
+	                      << ",budget:" << meshUploadBudgetMs
+	                      << ",bootstrap:" << (meshUploadBootstrapActive ? 1 : 0)
+	                          << ",hardCap:" << (meshUploadHardCapApplied ? 1 : 0)
+	                          << ",overrun:" << (meshUploadBudgetOverrun ? meshUploadBudgetOverrunMs : 0.0f)
+                              << ",clusterSplit:" << (meshUploadClusterSplitEnabled ? 1 : 0)
+                              << ",detailMs:" << meshUploadSplitMs
+                              << "/" << meshUploadStageMs
+                              << "/" << meshUploadPublishMs
+                              << ",detailWork:" << meshUploadFaces
+                              << "/" << meshUploadBuffers
+                              << "/" << meshUploadBytes
+                              << ",detailPacked:" << meshUploadPackedFaces
+                              << "/" << meshUploadPackedBytes
+		                      << ",total:" << meshUploadTotalSections
+	                      << "/" << meshUploadTotalClusters;
 	            if (baseSystem.farTerrain) {
                 const FarTerrainClipmapContext& far = *baseSystem.farTerrain;
                 std::cout << " farEnabled=" << far.enabled

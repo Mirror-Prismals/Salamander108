@@ -53,6 +53,10 @@ namespace OcclusionCullingSystemLogic {
         }
 
         bool clusterHasOccluderGeometry(const VoxelRenderCluster& cluster) {
+            if (cluster.buffers.faceBuffers.mergedClippedOpaqueCount > 0
+                || cluster.buffers.faceBuffers.mergedOpaqueCount > 0) {
+                return true;
+            }
             for (int faceType = 0; faceType < 6; ++faceType) {
                 if (cluster.buffers.faceBuffers.clippedOpaqueCounts[faceType] > 0
                     || cluster.buffers.faceBuffers.opaqueCounts[faceType] > 0) {
@@ -394,22 +398,49 @@ namespace OcclusionCullingSystemLogic {
             renderer.occlusionFaceShader->setMat4("mvp", viewProj);
             renderer.occlusionFaceShader->setInt("faceType", 0);
 
+            if (renderer.packedTerrainOcclusionFaceShader) {
+                renderer.packedTerrainOcclusionFaceShader->use();
+                renderer.packedTerrainOcclusionFaceShader->setMat4("model", glm::mat4(1.0f));
+                renderer.packedTerrainOcclusionFaceShader->setMat4("mvp", viewProj);
+                renderer.packedTerrainOcclusionFaceShader->setInt("faceType", 0);
+                for (const VoxelRenderCluster* cluster : occluders) {
+                    if (!cluster) continue;
+                    const VoxelFaceRenderBuffers& faceBuffers = cluster->buffers.faceBuffers;
+                    if (faceBuffers.packedClippedOpaqueCount > 0 && faceBuffers.packedClippedOpaqueVao != 0) {
+                        renderBackend.bindVertexArray(faceBuffers.packedClippedOpaqueVao);
+                        renderBackend.drawArraysTrianglesInstanced(0, 3, faceBuffers.packedClippedOpaqueCount);
+                    }
+                }
+                renderer.occlusionFaceShader->use();
+            }
+
             for (const VoxelRenderCluster* cluster : occluders) {
                 if (!cluster) continue;
-                for (int faceType = 0; faceType < 6; ++faceType) {
-                    const int clippedCount = cluster->buffers.faceBuffers.clippedOpaqueCounts[faceType];
-                    const RenderHandle clippedVao = cluster->buffers.faceBuffers.clippedOpaqueVaos[faceType];
-                    if (clippedCount > 0 && clippedVao != 0) {
-                        renderer.occlusionFaceShader->setInt("faceType", faceType);
-                        renderBackend.bindVertexArray(clippedVao);
-                        renderBackend.drawArraysTrianglesInstanced(0, 3, clippedCount);
-                    }
-                    const int opaqueCount = cluster->buffers.faceBuffers.opaqueCounts[faceType];
-                    const RenderHandle opaqueVao = cluster->buffers.faceBuffers.opaqueVaos[faceType];
-                    if (opaqueCount > 0 && opaqueVao != 0) {
-                        renderer.occlusionFaceShader->setInt("faceType", faceType);
-                        renderBackend.bindVertexArray(opaqueVao);
-                        renderBackend.drawArraysTrianglesInstanced(0, 6, opaqueCount);
+                const VoxelFaceRenderBuffers& faceBuffers = cluster->buffers.faceBuffers;
+                if (faceBuffers.mergedClippedOpaqueCount > 0 && faceBuffers.mergedClippedOpaqueVao != 0) {
+                    renderBackend.bindVertexArray(faceBuffers.mergedClippedOpaqueVao);
+                    renderBackend.drawArraysTrianglesInstanced(0, 3, faceBuffers.mergedClippedOpaqueCount);
+                }
+                if (faceBuffers.mergedOpaqueCount > 0 && faceBuffers.mergedOpaqueVao != 0) {
+                    renderBackend.bindVertexArray(faceBuffers.mergedOpaqueVao);
+                    renderBackend.drawArraysTrianglesInstanced(0, 6, faceBuffers.mergedOpaqueCount);
+                }
+                if (faceBuffers.mergedClippedOpaqueCount == 0 && faceBuffers.mergedOpaqueCount == 0) {
+                    for (int faceType = 0; faceType < 6; ++faceType) {
+                        const int clippedCount = faceBuffers.clippedOpaqueCounts[faceType];
+                        const RenderHandle clippedVao = faceBuffers.clippedOpaqueVaos[faceType];
+                        if (clippedCount > 0 && clippedVao != 0) {
+                            renderer.occlusionFaceShader->setInt("faceType", faceType);
+                            renderBackend.bindVertexArray(clippedVao);
+                            renderBackend.drawArraysTrianglesInstanced(0, 3, clippedCount);
+                        }
+                        const int opaqueCount = faceBuffers.opaqueCounts[faceType];
+                        const RenderHandle opaqueVao = faceBuffers.opaqueVaos[faceType];
+                        if (opaqueCount > 0 && opaqueVao != 0) {
+                            renderer.occlusionFaceShader->setInt("faceType", faceType);
+                            renderBackend.bindVertexArray(opaqueVao);
+                            renderBackend.drawArraysTrianglesInstanced(0, 6, opaqueCount);
+                        }
                     }
                 }
             }
@@ -488,7 +519,9 @@ namespace OcclusionCullingSystemLogic {
         occlusion.azimuthHorizon.fill(-std::numeric_limits<float>::infinity());
 
         const bool nearTerrainEnabled = baseSystem.voxelWorld->enabled && !voxelRender.renderClusters.empty();
+        const bool farTerrainFeatureEnabled = getRegistryBool(baseSystem, "FarTerrainEnabled", true);
         const bool farTerrainEnabled = baseSystem.farTerrain
+            && farTerrainFeatureEnabled
             && baseSystem.farTerrain->enabled
             && (!baseSystem.farTerrain->bodyRenderClusters.empty()
                 || !baseSystem.farTerrain->handoffRenderClusters.empty());

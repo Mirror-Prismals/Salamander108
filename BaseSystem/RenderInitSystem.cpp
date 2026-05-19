@@ -24,6 +24,18 @@ namespace RenderInitSystemLogic {
     }
 
     void DestroyVoxelFaceRenderBuffers(VoxelFaceRenderBuffers& buffers, IRenderBackend& renderBackend) {
+        renderBackend.destroyVertexArray(buffers.packedClippedOpaqueVao);
+        renderBackend.destroyArrayBuffer(buffers.packedClippedOpaqueVBO);
+        buffers.packedClippedOpaqueCount = 0;
+        renderBackend.destroyVertexArray(buffers.mergedOpaqueVao);
+        renderBackend.destroyArrayBuffer(buffers.mergedOpaqueVBO);
+        buffers.mergedOpaqueCount = 0;
+        renderBackend.destroyVertexArray(buffers.mergedClippedOpaqueVao);
+        renderBackend.destroyArrayBuffer(buffers.mergedClippedOpaqueVBO);
+        buffers.mergedClippedOpaqueCount = 0;
+        renderBackend.destroyVertexArray(buffers.mergedAlphaVao);
+        renderBackend.destroyArrayBuffer(buffers.mergedAlphaVBO);
+        buffers.mergedAlphaCount = 0;
         for (size_t i = 0; i < buffers.opaqueVaos.size(); ++i) {
             renderBackend.destroyVertexArray(buffers.opaqueVaos[i]);
             renderBackend.destroyArrayBuffer(buffers.opaqueVBOs[i]);
@@ -286,7 +298,9 @@ namespace RenderInitSystemLogic {
 
         ensureShader(renderer.blockShader, "BLOCK_VERTEX_SHADER", "BLOCK_FRAGMENT_SHADER", "blockShader");
         ensureShader(renderer.faceShader, "FACE_VERTEX_SHADER", "FACE_FRAGMENT_SHADER", "faceShader");
+        ensureShader(renderer.packedTerrainFaceShader, "PACKED_TERRAIN_FACE_VERTEX_SHADER", "FACE_FRAGMENT_SHADER", "packedTerrainFaceShader");
         ensureShader(renderer.occlusionFaceShader, "OCCLUSION_FACE_VERTEX_SHADER", "OCCLUSION_FACE_FRAGMENT_SHADER", "occlusionFaceShader");
+        ensureShader(renderer.packedTerrainOcclusionFaceShader, "PACKED_TERRAIN_OCCLUSION_FACE_VERTEX_SHADER", "OCCLUSION_FACE_FRAGMENT_SHADER", "packedTerrainOcclusionFaceShader");
         ensureShader(renderer.waterShader, "WATER_VERTEX_SHADER", "WATER_FRAGMENT_SHADER", "waterShader");
         ensureShader(renderer.waterCompositeShader,
                      "WATER_COMPOSITE_VERTEX_SHADER",
@@ -320,6 +334,7 @@ namespace RenderInitSystemLogic {
             {7u, 4, VertexAttribType::Float, false, static_cast<unsigned int>(sizeof(FaceInstanceRenderData)), offsetof(FaceInstanceRenderData, ao), 1u},
             {8u, 2, VertexAttribType::Float, false, static_cast<unsigned int>(sizeof(FaceInstanceRenderData)), offsetof(FaceInstanceRenderData, scale), 1u},
             {9u, 2, VertexAttribType::Float, false, static_cast<unsigned int>(sizeof(FaceInstanceRenderData)), offsetof(FaceInstanceRenderData, uvScale), 1u},
+            {10u, 1, VertexAttribType::Int, false, static_cast<unsigned int>(sizeof(FaceInstanceRenderData)), offsetof(FaceInstanceRenderData, faceType), 1u},
         };
         const std::vector<VertexAttribLayout> kPos2Layout = {
             {0u, 2, VertexAttribType::Float, false, static_cast<unsigned int>(2 * sizeof(float)), 0u, 0u},
@@ -686,7 +701,9 @@ namespace RenderInitSystemLogic {
         renderer.crosshairShader.reset();
         renderer.colorEmotionShader.reset();
         renderer.faceShader.reset();
+        renderer.packedTerrainFaceShader.reset();
         renderer.occlusionFaceShader.reset();
+        renderer.packedTerrainOcclusionFaceShader.reset();
         renderer.waterShader.reset();
         renderer.waterCompositeShader.reset();
         renderer.grass3DShader.reset();

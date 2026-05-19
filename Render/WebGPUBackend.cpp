@@ -306,6 +306,17 @@ namespace {
         return cached == 1;
     }
 
+    struct WebGpuFrameUploadStats {
+        uint64_t bufferCreates = 0;
+        uint64_t bufferWrites = 0;
+        uint64_t createBytes = 0;
+        uint64_t writeBytes = 0;
+        double createMs = 0.0;
+        double writeMs = 0.0;
+    };
+
+    WebGpuFrameUploadStats g_webgpuFrameUploadStats;
+
     bool shouldTrackUniformIntKey(const std::string& lower) {
         return lower == "behaviortype"
             || lower == "ready"
@@ -1538,6 +1549,7 @@ fn fs_main() -> @location(0) vec4<f32> {
                                WebGPUBackend::BackendState::BufferResource& buffer) {
         if (!state.device || !state.queue || buffer.cpuBytes.empty()) return false;
         const uint64_t requiredSize = static_cast<uint64_t>(buffer.cpuBytes.size());
+        const bool statsEnabled = webgpuPassStatsEnabled();
         if (!buffer.gpuBuffer || buffer.gpuSize < requiredSize) {
             if (buffer.gpuBuffer) {
                 wgpuBufferRelease(buffer.gpuBuffer);
@@ -1549,17 +1561,33 @@ fn fs_main() -> @location(0) vec4<f32> {
             bufferDesc.usage = WGPUBufferUsage_Vertex | WGPUBufferUsage_CopyDst;
             bufferDesc.size = requiredSize;
             bufferDesc.mappedAtCreation = false;
+            const auto createStart = statsEnabled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
             buffer.gpuBuffer = wgpuDeviceCreateBuffer(state.device, &bufferDesc);
+            if (statsEnabled) {
+                g_webgpuFrameUploadStats.createMs += std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - createStart
+                ).count();
+                ++g_webgpuFrameUploadStats.bufferCreates;
+                g_webgpuFrameUploadStats.createBytes += requiredSize;
+            }
             if (!buffer.gpuBuffer) return false;
             buffer.gpuSize = static_cast<size_t>(requiredSize);
             buffer.dirty = true;
         }
         if (buffer.dirty) {
+            const auto writeStart = statsEnabled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
             wgpuQueueWriteBuffer(state.queue,
                                  buffer.gpuBuffer,
                                  0,
                                  buffer.cpuBytes.data(),
                                  buffer.cpuBytes.size());
+            if (statsEnabled) {
+                g_webgpuFrameUploadStats.writeMs += std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - writeStart
+                ).count();
+                ++g_webgpuFrameUploadStats.bufferWrites;
+                g_webgpuFrameUploadStats.writeBytes += static_cast<uint64_t>(buffer.cpuBytes.size());
+            }
             buffer.dirty = false;
         }
         return true;
@@ -2822,9 +2850,16 @@ void WebGPUBackend::endFrame(PlatformWindowHandle window) {
         uint64_t clearedOffscreenPasses = 0;
         uint64_t boundsAdjustedDraws = 0;
         uint64_t boundsDroppedDraws = 0;
+        uint64_t bufferCreates = 0;
+        uint64_t bufferWrites = 0;
+        uint64_t bufferCreateBytes = 0;
+        uint64_t bufferWriteBytes = 0;
+        double bufferCreateMs = 0.0;
+        double bufferWriteMs = 0.0;
     };
     PassStats frameStats{};
     if (passStatsEnabled) {
+        g_webgpuFrameUploadStats = {};
         frameStats.frames = 1;
         frameStats.queuedDrawCommands = static_cast<uint64_t>(state->drawCommands.size());
     }
@@ -3338,6 +3373,13 @@ void WebGPUBackend::endFrame(PlatformWindowHandle window) {
         static PassStats totals{};
         static auto lastReportAt = std::chrono::steady_clock::now();
 
+        frameStats.bufferCreates = g_webgpuFrameUploadStats.bufferCreates;
+        frameStats.bufferWrites = g_webgpuFrameUploadStats.bufferWrites;
+        frameStats.bufferCreateBytes = g_webgpuFrameUploadStats.createBytes;
+        frameStats.bufferWriteBytes = g_webgpuFrameUploadStats.writeBytes;
+        frameStats.bufferCreateMs = g_webgpuFrameUploadStats.createMs;
+        frameStats.bufferWriteMs = g_webgpuFrameUploadStats.writeMs;
+
         totals.frames += frameStats.frames;
         totals.queuedDrawCommands += frameStats.queuedDrawCommands;
         totals.submittedDrawCalls += frameStats.submittedDrawCalls;
@@ -3351,6 +3393,12 @@ void WebGPUBackend::endFrame(PlatformWindowHandle window) {
         totals.clearedOffscreenPasses += frameStats.clearedOffscreenPasses;
         totals.boundsAdjustedDraws += frameStats.boundsAdjustedDraws;
         totals.boundsDroppedDraws += frameStats.boundsDroppedDraws;
+        totals.bufferCreates += frameStats.bufferCreates;
+        totals.bufferWrites += frameStats.bufferWrites;
+        totals.bufferCreateBytes += frameStats.bufferCreateBytes;
+        totals.bufferWriteBytes += frameStats.bufferWriteBytes;
+        totals.bufferCreateMs += frameStats.bufferCreateMs;
+        totals.bufferWriteMs += frameStats.bufferWriteMs;
 
         const auto now = std::chrono::steady_clock::now();
         if (now - lastReportAt >= std::chrono::seconds(1)) {
@@ -3367,6 +3415,9 @@ void WebGPUBackend::endFrame(PlatformWindowHandle window) {
                 << totals.clearedDefaultPasses << "/" << totals.clearedOffscreenPasses
                 << " bounds(adjusted/dropped)="
                 << totals.boundsAdjustedDraws << "/" << totals.boundsDroppedDraws
+                << " buffers(create/write)=" << totals.bufferCreates << "/" << totals.bufferWrites
+                << " bufferBytes(create/write)=" << totals.bufferCreateBytes << "/" << totals.bufferWriteBytes
+                << " bufferMs(create/write)=" << totals.bufferCreateMs << "/" << totals.bufferWriteMs
                 << " openScopes=" << state->offscreenScopes.size()
                 << std::endl;
             totals = {};
