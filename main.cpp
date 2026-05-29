@@ -148,6 +148,7 @@ namespace {
         std::unordered_set<std::string> categories;
         bool teeConsole = false;
         bool headless = false;
+        bool dontQuell = false;
         std::string presentModePreference;
     };
 
@@ -213,6 +214,7 @@ namespace {
             << "                                 Default: perf,frame,step,terrain,voxel,hitch\n"
             << "  --perf-headless                Skip renderer/window init; run terrain perf steps only.\n"
             << "  --perf-tee-console             Also keep matching captured logs in console output.\n"
+            << "  --dont-quell                   Show normal runtime logs in the console.\n"
             << "  --vsync <on|off>               Present mode shortcut (on=fifo, off=immediate/mailbox).\n"
             << "  --present-mode <mode>          WebGPU present mode: auto,fifo,mailbox,immediate.\n"
             << "  --help                         Show this help.\n";
@@ -336,6 +338,17 @@ namespace {
         std::string line;
     };
 
+    class NullStreamBuf : public std::streambuf {
+    public:
+        int overflow(int ch) override {
+            return traits_type::not_eof(ch);
+        }
+
+        std::streamsize xsputn(const char*, std::streamsize count) override {
+            return count;
+        }
+    };
+
     bool parsePerfCaptureArgs(int argc,
                               char** argv,
                               PerfCaptureCliOptions& outOptions,
@@ -355,6 +368,8 @@ namespace {
             } else if (arg == "--perf-headless") {
                 outOptions.enabled = true;
                 outOptions.headless = true;
+            } else if (arg == "--dont-quell") {
+                outOptions.dontQuell = true;
             } else if (arg == "--perf-seconds") {
                 if (i + 1 >= argc) {
                     std::cerr << "Missing value for --perf-seconds" << std::endl;
@@ -478,6 +493,25 @@ int main(int argc, char** argv) {
         std::cout.rdbuf(originalCout);
         std::cerr.rdbuf(originalCerr);
         std::cout << "Perf capture log saved to: " << sink.outputPath() << std::endl;
+        return 0;
+    }
+
+    if (!captureOptions.dontQuell) {
+        std::streambuf* originalCout = std::cout.rdbuf();
+        std::streambuf* originalCerr = std::cerr.rdbuf();
+        NullStreamBuf nullCoutBuf;
+        NullStreamBuf nullCerrBuf;
+
+        std::cout << "Runtime logs are being hidden. Rerun with --dont-quell to see them." << std::endl;
+        std::cout.rdbuf(&nullCoutBuf);
+        std::cerr.rdbuf(&nullCerrBuf);
+
+        cardinal.run();
+
+        std::cout.flush();
+        std::cerr.flush();
+        std::cout.rdbuf(originalCout);
+        std::cerr.rdbuf(originalCerr);
         return 0;
     }
 

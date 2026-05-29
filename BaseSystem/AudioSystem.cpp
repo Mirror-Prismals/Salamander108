@@ -1335,16 +1335,16 @@ int jack_process_callback(jack_nframes_t nframes, void* arg) {
             jack_default_audio_sample_t* outL = (totalOutputs > 0) ? outBuffers[0] : nullptr;
             jack_default_audio_sample_t* outR = (totalOutputs > 1) ? outBuffers[1] : nullptr;
             if (outL || outR) {
-                const float monoScale = 0.5f;
                 const float soundtrackGain = audioContext->soundtrackLevelGain.load(std::memory_order_relaxed);
                 const double step = (audioContext->headTrackSampleRate > 0)
                     ? static_cast<double>(audioContext->headTrackSampleRate) / static_cast<double>(audioContext->sampleRate)
                     : 1.0;
-                const size_t sampleCount = audioContext->headTrackBuffer.size();
+                const int trackChannels = std::max(1, audioContext->headTrackChannels);
+                const size_t frameCount = audioContext->headTrackBuffer.size() / static_cast<size_t>(trackChannels);
                 for (jack_nframes_t i = 0; i < nframes; ++i) {
-                    if (sampleCount == 0) break;
+                    if (frameCount == 0) break;
                     size_t idx = static_cast<size_t>(audioContext->headTrackPos);
-                    if (idx >= sampleCount) {
+                    if (idx >= frameCount) {
                         if (audioContext->headTrackLoop) {
                             audioContext->headTrackPos = 0.0;
                             idx = 0;
@@ -1353,16 +1353,24 @@ int jack_process_callback(jack_nframes_t nframes, void* arg) {
                             break;
                         }
                     }
-                    size_t idxNext = (idx + 1 < sampleCount) ? idx + 1 : idx;
+                    size_t idxNext = (idx + 1 < frameCount) ? idx + 1 : idx;
                     double frac = audioContext->headTrackPos - static_cast<double>(idx);
-                    float sample = static_cast<float>((1.0 - frac) * audioContext->headTrackBuffer[idx] +
-                                                       frac * audioContext->headTrackBuffer[idxNext]);
-                    sample *= audioContext->headTrackGain;
-                    sample *= soundtrackGain;
-                    float absSample = std::fabs(sample);
+                    const size_t base = idx * static_cast<size_t>(trackChannels);
+                    const size_t nextBase = idxNext * static_cast<size_t>(trackChannels);
+                    float sampleL = static_cast<float>((1.0 - frac) * audioContext->headTrackBuffer[base] +
+                                                       frac * audioContext->headTrackBuffer[nextBase]);
+                    float sampleR = sampleL;
+                    if (trackChannels > 1) {
+                        sampleR = static_cast<float>((1.0 - frac) * audioContext->headTrackBuffer[base + 1] +
+                                                     frac * audioContext->headTrackBuffer[nextBase + 1]);
+                    }
+                    const float gain = audioContext->headTrackGain * soundtrackGain;
+                    sampleL *= gain;
+                    sampleR *= gain;
+                    float absSample = std::max(std::fabs(sampleL), std::fabs(sampleR));
                     if (absSample > soundtrackPeak) soundtrackPeak = absSample;
-                    if (outL) outL[i] += sample * monoScale;
-                    if (outR) outR[i] += sample * monoScale;
+                    if (outL) outL[i] += sampleL;
+                    if (outR) outR[i] += sampleR;
                     audioContext->headTrackPos += step;
                 }
             }
@@ -2444,6 +2452,7 @@ namespace AudioSystemLogic {
         audio.rayTestActive = false;
         audio.rayTestLoop = true;
         audio.headTrackBuffer.clear();
+        audio.headTrackChannels = 1;
         audio.headTrackSampleRate = 0;
         audio.headTrackPos = 0.0;
         audio.headTrackGain = 1.0f;

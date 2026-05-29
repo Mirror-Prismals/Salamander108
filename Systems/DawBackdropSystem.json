@@ -5,6 +5,7 @@
                 "DawContext",
                 "UIContext",
                 "RendererContext",
+                "AudioContext",
                 "WorldContext"
             ]
         }

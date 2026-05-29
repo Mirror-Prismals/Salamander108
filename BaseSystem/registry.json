@@ -96,6 +96,7 @@
   "PanelRenderSystem": true,
   "GlyphSystem": true,
   "DebugHudSystem": true,
+  "SoundtrackDebugMeterEnabled": false,
   "ComputerCursorSystem": true,
   "ButtonSystem": true,
   "DawSfxSystem": true,

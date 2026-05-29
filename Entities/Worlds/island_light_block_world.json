@@ -1,0 +1,17 @@
+{
+  "name": "IslandLightBlockWorld",
+  "isWorld": true,
+  "isVolume": false,
+  "instances": [
+    {
+      "prototypeID": -1,
+      "name": "LanternBlockTex",
+      "position": [2.0, 99.0, 10.0]
+    },
+    {
+      "prototypeID": -1,
+      "name": "LanternBlockTex",
+      "position": [3.0, 99.0, 10.0]
+    }
+  ]
+}

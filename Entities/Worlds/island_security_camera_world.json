@@ -1,0 +1,19 @@
+{
+  "name": "IslandSecurityCameraWorld",
+  "isWorld": true,
+  "isVolume": false,
+  "instances": [
+    {
+      "prototypeID": -1,
+      "name": "SecurityCamera",
+      "position": [-4.0, 99.0, 10.0],
+      "rotation": 180.0
+    },
+    {
+      "prototypeID": -1,
+      "name": "SecurityCamera",
+      "position": [-2.0, 99.0, 10.0],
+      "rotation": 180.0
+    }
+  ]
+}

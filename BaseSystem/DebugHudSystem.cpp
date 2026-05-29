@@ -13,6 +13,7 @@ namespace DebugHudSystemLogic {
         bool showFps = true;
         bool showCoords = true;
         bool showFishTodayCoords = false;
+        bool showSoundtrackDebug = false;
         auto readRegistryToggle = [&](const std::string& key, bool fallback) {
             if (!baseSystem.registry) return fallback;
             auto it = baseSystem.registry->find(key);
@@ -50,6 +51,7 @@ namespace DebugHudSystemLogic {
                 showCoords = false;
             }
             showFishTodayCoords = readRegistryToggle("TodaysFishLocationMeterEnabled", false);
+            showSoundtrackDebug = readRegistryToggle("SoundtrackDebugMeterEnabled", false);
         }
 
         if (showFps) {
@@ -97,6 +99,28 @@ namespace DebugHudSystemLogic {
             font.variables["fish_today_coords"] = "FISH TODAY XYZ: unavailable";
         } else {
             font.variables.erase("fish_today_coords");
+        }
+
+        const char* soundtrackKeys[] = {
+            "SoundtrackDebugTimer",
+            "SoundtrackDebugState",
+            "SoundtrackDebugPool",
+            "SoundtrackDebugTracks",
+            "SoundtrackDebugCurrent"
+        };
+        if (showSoundtrackDebug && baseSystem.registry) {
+            for (const char* key : soundtrackKeys) {
+                auto it = baseSystem.registry->find(key);
+                if (it != baseSystem.registry->end() && std::holds_alternative<std::string>(it->second)) {
+                    font.variables[key] = std::get<std::string>(it->second);
+                } else {
+                    font.variables[key] = "";
+                }
+            }
+        } else {
+            for (const char* key : soundtrackKeys) {
+                font.variables.erase(key);
+            }
         }
     }
 }

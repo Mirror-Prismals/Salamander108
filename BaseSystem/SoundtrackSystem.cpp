@@ -3,15 +3,18 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <random>
-#include <regex>
+#include <sstream>
 #include <string>
-#include <unordered_map>
 #include <vector>
+
+#include <opus/opusfile.h>
 
 namespace SoundtrackSystemLogic {
 
@@ -23,6 +26,14 @@ namespace SoundtrackSystemLogic {
             uint16_t bitsPerSample = 0;
             uint32_t dataSize = 0;
             std::streampos dataPos = 0;
+        };
+
+        struct SoundtrackHeuristic {
+            std::string biome = "unknown";
+            bool day = true;
+            bool underground = false;
+            bool underwater = false;
+            std::vector<std::string> folders;
         };
 
         bool readChunkHeader(std::ifstream& file, char outId[4], uint32_t& outSize) {
@@ -115,13 +126,49 @@ namespace SoundtrackSystemLogic {
                         file.read(reinterpret_cast<char*>(&v), sizeof(int16_t));
                         sum += v;
                     }
-                    float sample = static_cast<float>(sum) / (static_cast<float>(info.numChannels) * 32768.0f);
-                    outSamples[i] = sample;
+                    outSamples[i] = static_cast<float>(sum) / (static_cast<float>(info.numChannels) * 32768.0f);
                 }
                 return true;
             }
 
             return false;
+        }
+
+        bool loadOpusStereo(const std::string& path, std::vector<float>& outSamples, uint32_t& outRate, int& outChannels) {
+            int error = 0;
+            OggOpusFile* file = op_open_file(path.c_str(), &error);
+            if (!file) return false;
+
+            const OpusHead* head = op_head(file, -1);
+            if (!head || head->channel_count <= 0) {
+                op_free(file);
+                return false;
+            }
+
+            constexpr int kOpusRate = 48000;
+            constexpr int kMaxFrames = 120 * kOpusRate / 1000;
+            constexpr int kChannels = 2;
+            std::vector<float> interleaved(static_cast<size_t>(kMaxFrames) * static_cast<size_t>(kChannels));
+            outSamples.clear();
+            outRate = kOpusRate;
+            outChannels = kChannels;
+
+            while (true) {
+                int frames = op_read_float_stereo(file, interleaved.data(), static_cast<int>(interleaved.size()));
+                if (frames == 0) break;
+                if (frames < 0) {
+                    op_free(file);
+                    outSamples.clear();
+                    outRate = 0;
+                    outChannels = 0;
+                    return false;
+                }
+                const size_t count = static_cast<size_t>(frames) * static_cast<size_t>(kChannels);
+                outSamples.insert(outSamples.end(), interleaved.begin(), interleaved.begin() + static_cast<std::ptrdiff_t>(count));
+            }
+
+            op_free(file);
+            return !outSamples.empty();
         }
 
         std::string toLower(std::string s) {
@@ -143,9 +190,7 @@ namespace SoundtrackSystemLogic {
             auto it = baseSystem.registry->find(key);
             if (it == baseSystem.registry->end()) return fallback;
             if (std::holds_alternative<bool>(it->second)) return std::get<bool>(it->second);
-            if (std::holds_alternative<std::string>(it->second)) {
-                return parseBool(std::get<std::string>(it->second), fallback);
-            }
+            if (std::holds_alternative<std::string>(it->second)) return parseBool(std::get<std::string>(it->second), fallback);
             return fallback;
         }
 
@@ -173,192 +218,166 @@ namespace SoundtrackSystemLogic {
             return fallback;
         }
 
-        bool hasWavExtension(const std::filesystem::path& path) {
-            return toLower(path.extension().string()) == ".wav";
-        }
-
-        bool hasCkExtension(const std::filesystem::path& path) {
-            return toLower(path.extension().string()) == ".ck";
-        }
-
-        bool isGeneratedSoundtrackWrapper(const std::filesystem::path& path) {
-            if (!hasCkExtension(path)) return false;
-            const std::string filename = path.filename().string();
-            return filename.rfind(".salamander_soundtrack_wrapped_", 0) == 0;
-        }
-
-        bool isSupportedSoundtrackFile(const std::filesystem::path& path) {
-            return hasWavExtension(path) || hasCkExtension(path);
-        }
-
-        void scanSoundtrackFolder(const std::string& folder,
-                                  std::vector<std::string>& outTracks,
-                                  std::string& lastScanError) {
-            outTracks.clear();
-            namespace fs = std::filesystem;
-            std::error_code ec;
-            fs::path root(folder);
-            if (!fs::exists(root, ec) || !fs::is_directory(root, ec)) {
-                std::string key = "missing:" + folder;
-                if (lastScanError != key) {
-                    std::cerr << "SoundtrackSystem: soundtrack folder missing '" << folder << "'." << std::endl;
-                    lastScanError = key;
-                }
-                return;
-            }
-
-            fs::directory_iterator it(root, ec);
-            fs::directory_iterator end;
-            for (; !ec && it != end; it.increment(ec)) {
-                const fs::directory_entry& entry = *it;
-                if (!entry.is_regular_file(ec)) continue;
-                if (!isSupportedSoundtrackFile(entry.path())) continue;
-                if (isGeneratedSoundtrackWrapper(entry.path())) continue;
-                outTracks.push_back(entry.path().string());
-            }
-
-            if (ec) {
-                std::string key = "scan:" + folder + ":" + ec.message();
-                if (lastScanError != key) {
-                    std::cerr << "SoundtrackSystem: failed scanning '" << folder
-                              << "' (" << ec.message() << ")." << std::endl;
-                    lastScanError = key;
-                }
-                outTracks.clear();
-                return;
-            }
-
-            std::sort(outTracks.begin(), outTracks.end());
-            lastScanError.clear();
-        }
-
-        bool prepareCkSoundtrackScript(const std::string& sourcePath,
-                                       int soundtrackChannel,
-                                       std::string& outScriptPath,
-                                       std::string& lastPrepError) {
-            namespace fs = std::filesystem;
-            if (isGeneratedSoundtrackWrapper(fs::path(sourcePath))) {
-                outScriptPath = sourcePath;
-                lastPrepError.clear();
-                return true;
-            }
-            std::ifstream in(sourcePath, std::ios::binary);
-            if (!in.is_open()) {
-                std::string key = "open:" + sourcePath;
-                if (lastPrepError != key) {
-                    std::cerr << "SoundtrackSystem: failed to open soundtrack script '"
-                              << sourcePath << "'." << std::endl;
-                    lastPrepError = key;
-                }
-                return false;
-            }
-
-            std::string scriptSource((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-            in.close();
-            if (scriptSource.empty()) {
-                std::string key = "empty:" + sourcePath;
-                if (lastPrepError != key) {
-                    std::cerr << "SoundtrackSystem: soundtrack script is empty '"
-                              << sourcePath << "'." << std::endl;
-                    lastPrepError = key;
-                }
-                return false;
-            }
-
-            const std::string routeTarget = "=> dac.chan(" + std::to_string(soundtrackChannel) + ")";
-            scriptSource = std::regex_replace(
-                scriptSource,
-                std::regex(R"(=>\s*dac\s*\.\s*chan\s*\(\s*[^)]+\s*\))"),
-                routeTarget
-            );
-            scriptSource = std::regex_replace(
-                scriptSource,
-                std::regex(R"(=>\s*dac\s*\.\s*(left|right)\b)"),
-                routeTarget
-            );
-            scriptSource = std::regex_replace(
-                scriptSource,
-                std::regex(R"(=>\s*dac(?!\s*\.\s*(chan\s*\(|left\b|right\b)))"),
-                routeTarget
-            );
-
-            std::error_code ec;
-            fs::path sourceAbs = fs::absolute(fs::path(sourcePath), ec);
-            if (ec || sourceAbs.empty()) {
-                ec.clear();
-                sourceAbs = fs::path(sourcePath);
-            }
-            fs::path generatedDir = sourceAbs.parent_path();
-            if (generatedDir.empty()) {
-                generatedDir = fs::path("Procedures") / "soundtrack";
-            }
-            fs::create_directories(generatedDir, ec);
-            if (ec) {
-                generatedDir = fs::temp_directory_path(ec) / "salamander_soundtrack_ck";
-                ec.clear();
-                fs::create_directories(generatedDir, ec);
-                if (ec) {
-                    std::string key = "mkdir:" + generatedDir.string() + ":" + ec.message();
-                    if (lastPrepError != key) {
-                        std::cerr << "SoundtrackSystem: failed creating generated soundtrack script folder ("
-                                  << ec.message() << ")." << std::endl;
-                        lastPrepError = key;
-                    }
-                    return false;
-                }
-            }
-
-            std::string mtimeToken = "0";
-            auto mtime = fs::last_write_time(sourcePath, ec);
-            if (!ec) {
-                const auto mtimeCount = static_cast<long long>(mtime.time_since_epoch().count());
-                mtimeToken = std::to_string(mtimeCount);
-            } else {
-                ec.clear();
-            }
-            const std::string hashKey = sourcePath + "|" + std::to_string(soundtrackChannel) + "|" + mtimeToken;
-            const size_t hashValue = std::hash<std::string>{}(hashKey);
-            const fs::path generatedPath = generatedDir / (".salamander_soundtrack_wrapped_" + std::to_string(hashValue) + ".ck");
-
-            bool shouldWrite = true;
-            std::ifstream existing(generatedPath, std::ios::binary);
-            if (existing.is_open()) {
-                std::string existingText((std::istreambuf_iterator<char>(existing)), std::istreambuf_iterator<char>());
-                if (existingText == scriptSource) {
-                    shouldWrite = false;
-                }
-            }
-            if (shouldWrite) {
-                std::ofstream out(generatedPath, std::ios::binary | std::ios::trunc);
-                if (!out.is_open()) {
-                    std::string key = "write:" + generatedPath.string();
-                    if (lastPrepError != key) {
-                        std::cerr << "SoundtrackSystem: failed writing generated soundtrack script '"
-                                  << generatedPath.string() << "'." << std::endl;
-                        lastPrepError = key;
-                    }
-                    return false;
-                }
-                out.write(scriptSource.data(), static_cast<std::streamsize>(scriptSource.size()));
-                out.close();
-            }
-
-            outScriptPath = generatedPath.string();
-            lastPrepError.clear();
-            return true;
-        }
-
         double randomRange(std::mt19937& rng, double minValue, double maxValue) {
             if (maxValue <= minValue) return minValue;
             std::uniform_real_distribution<double> dist(minValue, maxValue);
             return dist(rng);
         }
 
-        enum class PlaylistTrackKind {
-            None = 0,
-            Wav = 1,
-            Ck = 2
-        };
+        bool hasOpusExtension(const std::filesystem::path& path) {
+            return toLower(path.extension().string()) == ".opus";
+        }
+
+        std::string formatTimer(double seconds) {
+            if (!std::isfinite(seconds) || seconds < 0.0) seconds = 0.0;
+            int total = static_cast<int>(std::ceil(seconds));
+            int minutes = total / 60;
+            int secs = total % 60;
+            std::ostringstream ss;
+            ss << minutes << ":" << std::setw(2) << std::setfill('0') << secs;
+            return ss.str();
+        }
+
+        std::string joinStrings(const std::vector<std::string>& values, const std::string& sep) {
+            std::string out;
+            for (size_t i = 0; i < values.size(); ++i) {
+                if (i > 0) out += sep;
+                out += values[i];
+            }
+            return out;
+        }
+
+        bool isDayFromLocalClock() {
+            std::time_t now = std::time(nullptr);
+            std::tm lt{};
+#if defined(_WIN32)
+            localtime_s(&lt, &now);
+#else
+            localtime_r(&now, &lt);
+#endif
+            return lt.tm_hour >= 6 && lt.tm_hour < 18;
+        }
+
+        bool isDayFromRegistry(const BaseSystem& baseSystem) {
+            const std::string skyLevelText = getRegistryString(baseSystem, "VoxelLightingCurrentSkyLevel", "");
+            if (!skyLevelText.empty()) {
+                try {
+                    return std::stoi(skyLevelText) >= 8;
+                } catch (...) {
+                }
+            }
+            return isDayFromLocalClock();
+        }
+
+        std::string biomeNameFromId(int biomeId) {
+            switch (biomeId) {
+                case 0: return "conifer";
+                case 1: return "meadow";
+                case 2: return "desert";
+                case 3: return "jungle";
+                case 4: return "winter";
+                case 5: return "grass";
+                default: return "unknown";
+            }
+        }
+
+        SoundtrackHeuristic buildHeuristic(const BaseSystem& baseSystem) {
+            SoundtrackHeuristic h;
+            h.day = isDayFromRegistry(baseSystem);
+            const std::string phase = h.day ? "day" : "night";
+
+            if (baseSystem.player) {
+                const glm::vec3& p = baseSystem.player->cameraPosition;
+                h.underground = p.y <= 74.0f;
+                if (baseSystem.world && baseSystem.world->expanse.loaded) {
+                    h.biome = biomeNameFromId(ExpanseBiomeSystemLogic::ResolveBiome(*baseSystem.world, p.x, p.z));
+                    if (p.y <= baseSystem.world->expanse.waterSurface) {
+                        h.underwater = true;
+                    }
+                }
+            }
+
+            if (baseSystem.colorEmotion && baseSystem.colorEmotion->underwater) {
+                h.underwater = true;
+            }
+
+            h.folders.push_back("all_day_night");
+            h.folders.push_back(std::string("all_") + phase);
+            if (h.biome != "unknown") {
+                h.folders.push_back(h.biome + "_day_night");
+                h.folders.push_back(h.biome + "_" + phase);
+            }
+            if (h.underground) h.folders.push_back("underground");
+            if (h.underwater) h.folders.push_back("underwater");
+            return h;
+        }
+
+        void scanEligibleTracks(const std::filesystem::path& root,
+                                const std::vector<std::string>& folders,
+                                std::vector<std::string>& outTracks,
+                                std::string& lastScanError) {
+            outTracks.clear();
+            namespace fs = std::filesystem;
+            std::error_code ec;
+            if (!fs::exists(root, ec) || !fs::is_directory(root, ec)) {
+                const std::string key = "missing:" + root.string();
+                if (lastScanError != key) {
+                    std::cerr << "SoundtrackSystem: soundtrack folder missing '" << root.string() << "'." << std::endl;
+                    lastScanError = key;
+                }
+                return;
+            }
+
+            for (const std::string& folder : folders) {
+                const fs::path dir = root / folder;
+                ec.clear();
+                if (!fs::exists(dir, ec) || !fs::is_directory(dir, ec)) continue;
+                fs::directory_iterator it(dir, ec);
+                fs::directory_iterator end;
+                for (; !ec && it != end; it.increment(ec)) {
+                    const fs::directory_entry& entry = *it;
+                    if (!entry.is_regular_file(ec)) continue;
+                    if (hasOpusExtension(entry.path())) outTracks.push_back(entry.path().string());
+                }
+                if (ec) {
+                    const std::string key = "scan:" + dir.string() + ":" + ec.message();
+                    if (lastScanError != key) {
+                        std::cerr << "SoundtrackSystem: failed scanning '" << dir.string()
+                                  << "' (" << ec.message() << ")." << std::endl;
+                        lastScanError = key;
+                    }
+                    outTracks.clear();
+                    return;
+                }
+            }
+
+            std::sort(outTracks.begin(), outTracks.end());
+            outTracks.erase(std::unique(outTracks.begin(), outTracks.end()), outTracks.end());
+            lastScanError.clear();
+        }
+
+        void publishDebug(BaseSystem& baseSystem,
+                          const SoundtrackHeuristic& h,
+                          double silenceRemaining,
+                          bool playing,
+                          const std::string& currentTrack,
+                          const std::vector<std::string>& eligibleTracks,
+                          const std::vector<std::string>& activeFolders) {
+            if (!baseSystem.registry) return;
+            (*baseSystem.registry)["SoundtrackDebugState"] = std::string("CTX: ")
+                + (h.day ? "day" : "night")
+                + " biome=" + h.biome
+                + " underground=" + (h.underground ? "true" : "false")
+                + " underwater=" + (h.underwater ? "true" : "false");
+            (*baseSystem.registry)["SoundtrackDebugTimer"] = playing
+                ? "MUSIC: playing"
+                : "MUSIC: waiting " + formatTimer(silenceRemaining);
+            (*baseSystem.registry)["SoundtrackDebugPool"] = "POOL: " + joinStrings(activeFolders, ", ");
+            (*baseSystem.registry)["SoundtrackDebugTracks"] = "TRACKS: " + std::to_string(eligibleTracks.size());
+            (*baseSystem.registry)["SoundtrackDebugCurrent"] = currentTrack.empty()
+                ? "NOW: none"
+                : "NOW: " + std::filesystem::path(currentTrack).filename().string();
+        }
     }
 
     void UpdateSoundtracks(BaseSystem& baseSystem, std::vector<Entity>&, float dt, PlatformWindowHandle) {
@@ -368,32 +387,28 @@ namespace SoundtrackSystemLogic {
         static std::string lastHeadPath;
         static std::string lastRayError;
         static std::string lastHeadError;
-        static std::vector<std::string> playlistTracks;
-        static std::string playlistFolder;
-        static std::string playlistScanError;
-        static std::string playlistPrepError;
-        static size_t lastTrackIndex = std::numeric_limits<size_t>::max();
-        static double playlistRescanTimerSec = 0.0;
-        static PlaylistTrackKind activeTrackKind = PlaylistTrackKind::None;
-        static std::string activeTrackPath;
-        static double activeTrackElapsedSec = 0.0;
-        static double activeTrackTargetSec = 0.0;
-        static bool fadeOutActive = false;
-        static double fadeRemainingSec = 0.0;
+        static std::string lastScanError;
+        static std::string currentTrack;
+        static std::string lastTrackPath;
+        static std::vector<std::string> eligibleTracks;
+        static double scanTimerSec = 0.0;
+        static double silenceRemainingSec = -1.0;
+        static bool wasPlaying = false;
         static bool warnedNoTracks = false;
         static std::mt19937 rng(std::random_device{}());
+
         auto withAudioState = [&](auto&& fn) {
             std::lock_guard<std::mutex> lock(audio.audio_state_mutex);
             fn();
         };
 
-        auto loadTrack = [&](const std::string& path,
-                             std::vector<float>& buffer,
-                             uint32_t& sampleRate,
-                             double& pos,
-                             const char* label,
-                             std::string& lastPath,
-                             std::string& lastError) {
+        auto loadWavTrack = [&](const std::string& path,
+                                std::vector<float>& buffer,
+                                uint32_t& sampleRate,
+                                double& pos,
+                                const char* label,
+                                std::string& lastPath,
+                                std::string& lastError) {
             if (path.empty()) return;
             bool alreadyLoaded = false;
             withAudioState([&]() {
@@ -418,255 +433,137 @@ namespace SoundtrackSystemLogic {
             lastPath = path;
         };
 
-        loadTrack(audio.rayTestPath, audio.rayTestBuffer, audio.rayTestSampleRate, audio.rayTestPos,
-                  "ray track", lastRayPath, lastRayError);
+        loadWavTrack(audio.rayTestPath, audio.rayTestBuffer, audio.rayTestSampleRate, audio.rayTestPos,
+                     "ray track", lastRayPath, lastRayError);
 
-        bool playlistEnabled = getRegistryBool(baseSystem, "SoundtrackPlaylistEnabled", true);
-        double gapMinSec = getRegistryDouble(baseSystem, "SoundtrackGapMinSeconds", 120.0);
-        double gapMaxSec = getRegistryDouble(baseSystem, "SoundtrackGapMaxSeconds", 240.0);
-        double soundtrackGain = getRegistryDouble(baseSystem, "SoundtrackGain", 1.0);
-        double playlistTrackMinSec = getRegistryDouble(baseSystem, "SoundtrackTrackMinSeconds", 180.0);
-        double playlistTrackMaxSec = getRegistryDouble(baseSystem, "SoundtrackTrackMaxSeconds", 300.0);
-        double soundtrackFadeSeconds = getRegistryDouble(baseSystem, "SoundtrackFadeSeconds", 8.0);
-        bool skipRequested = getRegistryBool(baseSystem, "SoundtrackNextRequested", false);
+        const bool soundtrackEnabled = getRegistryBool(baseSystem, "SoundtrackPlaylistEnabled", true);
+        double gapMinSec = getRegistryDouble(baseSystem, "SoundtrackGapMinSeconds", 1200.0);
+        double gapMaxSec = getRegistryDouble(baseSystem, "SoundtrackGapMaxSeconds", 3600.0);
+        const double soundtrackGain = std::clamp(getRegistryDouble(baseSystem, "SoundtrackGain", 1.0), 0.0, 4.0);
+        const bool skipRequested = getRegistryBool(baseSystem, "SoundtrackNextRequested", false);
         if (skipRequested && baseSystem.registry) {
             (*baseSystem.registry)["SoundtrackNextRequested"] = false;
         }
         if (gapMinSec < 0.0) gapMinSec = 0.0;
         if (gapMaxSec < 0.0) gapMaxSec = 0.0;
         if (gapMaxSec < gapMinSec) std::swap(gapMinSec, gapMaxSec);
-        if (soundtrackGain < 0.0) soundtrackGain = 0.0;
-        if (soundtrackGain > 4.0) soundtrackGain = 4.0;
-        if (playlistTrackMinSec < 5.0) playlistTrackMinSec = 5.0;
-        if (playlistTrackMaxSec < playlistTrackMinSec) playlistTrackMaxSec = playlistTrackMinSec;
-        if (soundtrackFadeSeconds < 0.05) soundtrackFadeSeconds = 0.05;
-        if (soundtrackFadeSeconds > playlistTrackMinSec * 0.8) {
-            soundtrackFadeSeconds = std::max(0.05, playlistTrackMinSec * 0.8);
-        }
 
-        double dtSec = (std::isfinite(dt) && dt > 0.0f) ? static_cast<double>(dt) : 0.0;
+        const double dtSec = (std::isfinite(dt) && dt > 0.0f) ? static_cast<double>(dt) : 0.0;
+        SoundtrackHeuristic heuristic = buildHeuristic(baseSystem);
 
-        auto stopActiveTrack = [&]() {
+        bool playing = false;
+        withAudioState([&]() {
+            playing = audio.headTrackActive && !audio.headTrackBuffer.empty();
+            audio.soundtrackChuckStopRequested = true;
+            audio.soundtrackChuckStartRequested = false;
+            audio.soundtrackChuckActive = false;
+            audio.soundtrackChuckGain = 0.0f;
+        });
+
+        if (skipRequested) {
             withAudioState([&]() {
                 audio.headTrackActive = false;
                 audio.headTrackGain = 0.0f;
                 audio.headTrackPos = static_cast<double>(audio.headTrackBuffer.size());
-                audio.soundtrackChuckStopRequested = true;
-                audio.soundtrackChuckStartRequested = false;
-                audio.soundtrackChuckActive = false;
-                audio.soundtrackChuckGain = 0.0f;
             });
-            activeTrackKind = PlaylistTrackKind::None;
-            activeTrackPath.clear();
-            activeTrackElapsedSec = 0.0;
-            activeTrackTargetSec = 0.0;
-            fadeOutActive = false;
-            fadeRemainingSec = 0.0;
-        };
+            playing = false;
+            wasPlaying = false;
+            currentTrack.clear();
+            silenceRemainingSec = 0.0;
+            scanTimerSec = 0.0;
+        }
 
-        auto applyTrackGain = [&](double gain) {
-            const float clamped = static_cast<float>(std::clamp(gain, 0.0, 4.0));
+        if (!soundtrackEnabled) {
             withAudioState([&]() {
-                if (activeTrackKind == PlaylistTrackKind::Wav) {
-                    audio.headTrackGain = clamped;
-                } else if (activeTrackKind == PlaylistTrackKind::Ck) {
-                    audio.soundtrackChuckGain = clamped;
-                }
+                audio.headTrackActive = false;
+                audio.headTrackGain = 0.0f;
             });
-        };
-
-        auto beginTrackWindow = [&]() {
-            activeTrackElapsedSec = 0.0;
-            activeTrackTargetSec = randomRange(rng, playlistTrackMinSec, playlistTrackMaxSec);
-            fadeOutActive = false;
-            fadeRemainingSec = 0.0;
-        };
-
-        if (!playlistEnabled) {
-            withAudioState([&]() {
-                audio.soundtrackChuckStopRequested = true;
-                audio.soundtrackChuckStartRequested = false;
-                audio.soundtrackChuckActive = false;
-                audio.soundtrackChuckGain = 0.0f;
-            });
-            loadTrack(audio.headTrackPath, audio.headTrackBuffer, audio.headTrackSampleRate, audio.headTrackPos,
-                      "head track", lastHeadPath, lastHeadError);
-            withAudioState([&]() {
-                if (skipRequested) {
-                    audio.headTrackActive = false;
-                }
-                audio.headTrackGain = static_cast<float>(soundtrackGain);
-            });
-            activeTrackKind = PlaylistTrackKind::None;
-            activeTrackPath.clear();
-            activeTrackElapsedSec = 0.0;
-            activeTrackTargetSec = 0.0;
-            fadeOutActive = false;
-            fadeRemainingSec = 0.0;
-            warnedNoTracks = false;
+            currentTrack.clear();
+            silenceRemainingSec = -1.0;
+            publishDebug(baseSystem, heuristic, 0.0, false, currentTrack, eligibleTracks, heuristic.folders);
             return;
         }
 
-        std::string desiredFolder = getRegistryString(baseSystem, "SoundtrackFolder", "Procedures/soundtrack");
-        if (playlistFolder != desiredFolder) {
-            playlistFolder = desiredFolder;
-            playlistTracks.clear();
-            playlistRescanTimerSec = 0.0;
-            warnedNoTracks = false;
-            lastTrackIndex = std::numeric_limits<size_t>::max();
+        if (wasPlaying && !playing) {
+            currentTrack.clear();
+            silenceRemainingSec = randomRange(rng, gapMinSec, gapMaxSec);
+        }
+        wasPlaying = playing;
+
+        if (silenceRemainingSec < 0.0) {
+            silenceRemainingSec = randomRange(rng, gapMinSec, gapMaxSec);
         }
 
-        playlistRescanTimerSec -= dtSec;
-        if (playlistTracks.empty() || playlistRescanTimerSec <= 0.0) {
-            scanSoundtrackFolder(playlistFolder, playlistTracks, playlistScanError);
-            playlistRescanTimerSec = 2.0;
+        const std::filesystem::path soundtrackRoot = getRegistryString(baseSystem, "SoundtrackFolder", "Procedures/soundtrack");
+        scanTimerSec -= dtSec;
+        if (scanTimerSec <= 0.0) {
+            scanEligibleTracks(soundtrackRoot, heuristic.folders, eligibleTracks, lastScanError);
+            scanTimerSec = 5.0;
         }
 
-        bool wavPlaying = false;
-        bool ckPlaying = false;
+        if (playing) {
+            withAudioState([&]() {
+                audio.headTrackGain = static_cast<float>(soundtrackGain);
+                audio.headTrackLoop = false;
+            });
+            publishDebug(baseSystem, heuristic, silenceRemainingSec, true, currentTrack, eligibleTracks, heuristic.folders);
+            return;
+        }
+
+        silenceRemainingSec = std::max(0.0, silenceRemainingSec - dtSec);
+        if (silenceRemainingSec > 0.0) {
+            publishDebug(baseSystem, heuristic, silenceRemainingSec, false, currentTrack, eligibleTracks, heuristic.folders);
+            return;
+        }
+
+        if (eligibleTracks.empty()) {
+            if (!warnedNoTracks) {
+                std::cerr << "SoundtrackSystem: no eligible .opus files found under '"
+                          << soundtrackRoot.string() << "' for folders: "
+                          << joinStrings(heuristic.folders, ", ") << "." << std::endl;
+                warnedNoTracks = true;
+            }
+            silenceRemainingSec = 60.0;
+            publishDebug(baseSystem, heuristic, silenceRemainingSec, false, currentTrack, eligibleTracks, heuristic.folders);
+            return;
+        }
+        warnedNoTracks = false;
+
+        std::uniform_int_distribution<size_t> dist(0, eligibleTracks.size() - 1);
+        size_t pickIndex = dist(rng);
+        if (eligibleTracks.size() > 1 && eligibleTracks[pickIndex] == lastTrackPath) {
+            pickIndex = (pickIndex + 1 + (dist(rng) % (eligibleTracks.size() - 1))) % eligibleTracks.size();
+        }
+
+        const std::string chosenTrack = eligibleTracks[pickIndex];
+        std::vector<float> samples;
+        uint32_t rate = 0;
+        int channels = 0;
+        if (!loadOpusStereo(chosenTrack, samples, rate, channels) || samples.empty() || rate == 0 || channels <= 0) {
+            if (lastHeadError != chosenTrack) {
+                std::cerr << "SoundtrackSystem: failed to load opus soundtrack '" << chosenTrack << "'." << std::endl;
+                lastHeadError = chosenTrack;
+            }
+            eligibleTracks.erase(eligibleTracks.begin() + static_cast<std::ptrdiff_t>(pickIndex));
+            silenceRemainingSec = 60.0;
+            publishDebug(baseSystem, heuristic, silenceRemainingSec, false, currentTrack, eligibleTracks, heuristic.folders);
+            return;
+        }
+
         withAudioState([&]() {
-            wavPlaying = audio.headTrackActive && !audio.headTrackBuffer.empty();
-            ckPlaying = audio.soundtrackChuckActive;
+            audio.headTrackPath = chosenTrack;
+            audio.headTrackBuffer = std::move(samples);
+            audio.headTrackChannels = channels;
+            audio.headTrackSampleRate = rate;
+            audio.headTrackPos = 0.0;
+            audio.headTrackGain = static_cast<float>(soundtrackGain);
+            audio.headTrackLoop = false;
+            audio.headTrackActive = true;
         });
-        bool currentlyPlaying = wavPlaying || ckPlaying;
-
-        if (skipRequested) {
-            stopActiveTrack();
-            currentlyPlaying = false;
-        }
-
-        if (activeTrackKind != PlaylistTrackKind::None && currentlyPlaying) {
-            activeTrackElapsedSec += dtSec;
-            if (!fadeOutActive && activeTrackElapsedSec >= activeTrackTargetSec) {
-                fadeOutActive = true;
-                fadeRemainingSec = soundtrackFadeSeconds;
-            }
-            double fadeMul = 1.0;
-            if (fadeOutActive) {
-                fadeRemainingSec = std::max(0.0, fadeRemainingSec - dtSec);
-                fadeMul = std::clamp(fadeRemainingSec / soundtrackFadeSeconds, 0.0, 1.0);
-                if (fadeRemainingSec <= 0.0) {
-                    stopActiveTrack();
-                    currentlyPlaying = false;
-                }
-            }
-            if (activeTrackKind != PlaylistTrackKind::None) {
-                applyTrackGain(soundtrackGain * fadeMul);
-            }
-        } else if (activeTrackKind != PlaylistTrackKind::None && !currentlyPlaying) {
-            activeTrackKind = PlaylistTrackKind::None;
-            activeTrackPath.clear();
-            activeTrackElapsedSec = 0.0;
-            activeTrackTargetSec = 0.0;
-            fadeOutActive = false;
-            fadeRemainingSec = 0.0;
-        }
-
-        if (!currentlyPlaying && !playlistTracks.empty()) {
-            size_t count = playlistTracks.size();
-            std::uniform_int_distribution<size_t> dist(0, count - 1);
-            size_t pickIndex = dist(rng);
-            if (count > 1 && lastTrackIndex < count && pickIndex == lastTrackIndex) {
-                pickIndex = (pickIndex + 1 + (dist(rng) % (count - 1))) % count;
-            }
-
-            const std::string chosenTrack = playlistTracks[pickIndex];
-            const std::string ext = toLower(std::filesystem::path(chosenTrack).extension().string());
-            if (ext == ".ck") {
-                std::string generatedTrackPath;
-                if (!prepareCkSoundtrackScript(chosenTrack, audio.soundtrackChuckChannel, generatedTrackPath, playlistPrepError)) {
-                    playlistTracks.erase(playlistTracks.begin() + static_cast<std::ptrdiff_t>(pickIndex));
-                    if (lastTrackIndex >= playlistTracks.size()) {
-                        lastTrackIndex = std::numeric_limits<size_t>::max();
-                    }
-                } else {
-                    withAudioState([&]() {
-                        audio.headTrackActive = false;
-                        audio.headTrackGain = 0.0f;
-                        audio.soundtrackChuckScriptPath = generatedTrackPath;
-                        audio.soundtrackChuckGain = static_cast<float>(soundtrackGain);
-                        audio.soundtrackChuckStopRequested = false;
-                        audio.soundtrackChuckStartRequested = true;
-                        audio.soundtrackChuckActive = true;
-                    });
-                    activeTrackKind = PlaylistTrackKind::Ck;
-                    activeTrackPath = chosenTrack;
-                    beginTrackWindow();
-                    lastTrackIndex = pickIndex;
-                    warnedNoTracks = false;
-                    std::cout << "SoundtrackSystem: playing script '" << chosenTrack << "' for "
-                              << static_cast<int>(std::round(activeTrackTargetSec)) << "s." << std::endl;
-                }
-            } else {
-                withAudioState([&]() {
-                    audio.soundtrackChuckStopRequested = true;
-                    audio.soundtrackChuckStartRequested = false;
-                    audio.soundtrackChuckActive = false;
-                    audio.soundtrackChuckGain = 0.0f;
-                });
-                audio.headTrackPath = chosenTrack;
-                loadTrack(audio.headTrackPath, audio.headTrackBuffer, audio.headTrackSampleRate, audio.headTrackPos,
-                          "head track", lastHeadPath, lastHeadError);
-
-                bool loaded = false;
-                withAudioState([&]() {
-                    loaded = (lastHeadPath == chosenTrack)
-                        && !audio.headTrackBuffer.empty()
-                        && audio.headTrackSampleRate > 0;
-                });
-                if (!loaded) {
-                    playlistTracks.erase(playlistTracks.begin() + static_cast<std::ptrdiff_t>(pickIndex));
-                    if (lastTrackIndex >= playlistTracks.size()) {
-                        lastTrackIndex = std::numeric_limits<size_t>::max();
-                    }
-                } else {
-                    withAudioState([&]() {
-                        audio.headTrackPos = 0.0;
-                        audio.headTrackGain = static_cast<float>(soundtrackGain);
-                        audio.headTrackLoop = true;
-                        audio.headTrackActive = true;
-                    });
-                    activeTrackKind = PlaylistTrackKind::Wav;
-                    activeTrackPath = chosenTrack;
-                    beginTrackWindow();
-                    lastTrackIndex = pickIndex;
-                    warnedNoTracks = false;
-                    std::cout << "SoundtrackSystem: playing '" << chosenTrack << "' for "
-                              << static_cast<int>(std::round(activeTrackTargetSec)) << "s." << std::endl;
-                }
-            }
-        }
-
-        if (!currentlyPlaying && playlistTracks.empty() && !warnedNoTracks) {
-            std::cerr << "SoundtrackSystem: no soundtrack .wav/.ck files found in '"
-                      << playlistFolder << "'." << std::endl;
-            warnedNoTracks = true;
-        }
-
-        if (!currentlyPlaying && activeTrackKind == PlaylistTrackKind::None) {
-            // Optional gap support while idle in timed mode.
-            if (gapMaxSec > 0.0 && gapMaxSec >= gapMinSec) {
-                // Keep compatibility with previous gap controls by delaying only when idle.
-                static bool gapArmed = false;
-                static double gapRemaining = 0.0;
-                if (!gapArmed) {
-                    gapRemaining = randomRange(rng, gapMinSec, gapMaxSec);
-                    gapArmed = true;
-                } else {
-                    gapRemaining = std::max(0.0, gapRemaining - dtSec);
-                    if (gapRemaining <= 0.0) {
-                        gapArmed = false;
-                    }
-                }
-                if (gapArmed) {
-                    return;
-                }
-            }
-        }
-
-        // If playlist has tracks and nothing active, let next update pick/start one.
-        if (!currentlyPlaying && !playlistTracks.empty() && activeTrackKind == PlaylistTrackKind::None) {
-            // no-op; start occurs at top of next frame
-        }
+        lastHeadPath = chosenTrack;
+        lastTrackPath = chosenTrack;
+        currentTrack = chosenTrack;
+        std::cout << "SoundtrackSystem: playing opus '" << chosenTrack << "'." << std::endl;
+        publishDebug(baseSystem, heuristic, silenceRemainingSec, true, currentTrack, eligibleTracks, heuristic.folders);
     }
 }

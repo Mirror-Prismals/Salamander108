@@ -8,6 +8,9 @@
     "island_audio_visualizer_world.json",
     "island_computer_block_world.json",
     "island_microphone_world.json",
+    "island_security_camera_world.json",
+    "island_book_world.json",
+    "island_light_block_world.json",
     "star_world.json",
     "debug_hud_world.json"
   ],

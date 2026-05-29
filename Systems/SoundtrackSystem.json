@@ -2,7 +2,13 @@
     "init_steps": {},
     "update_steps": {
         "UpdateSoundtracks": {
-            "dependencies": ["AudioContext"]
+            "dependencies": [
+                "AudioContext",
+                "PlayerContext",
+                "WorldContext",
+                "ColorEmotionContext",
+                "RegistryContext"
+            ]
         }
     },
     "cleanup_steps": {}

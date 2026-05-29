@@ -120,18 +120,16 @@ namespace RenderInitSystemLogic {
             return sideTile;
         }
         if (isLantern) {
-            // User-authored atlas layout:
-            // front=304, back=292, side=294, top=295, bottom=293.
-            constexpr int kLanternFrontTile = 304;
-            constexpr int kLanternBackTile = 292;
-            constexpr int kLanternSideTile = 294;
-            constexpr int kLanternTopTile = 295;
-            constexpr int kLanternBottomTile = 293;
-            if (faceType == 0) return kLanternFrontTile;
-            if (faceType == 1) return kLanternBackTile;
-            if (faceType == 2) return kLanternTopTile;
-            if (faceType == 3) return kLanternBottomTile;
-            return kLanternSideTile;
+            const int sideTile = resolveMappedTile("24x24LanternSideRgbaV001", side);
+            const int frontTile = resolveMappedTile("24x24LanternFaceRgbaV001", sideTile);
+            const int backTile = resolveMappedTile("24x24LanternBackRgbaV001", sideTile);
+            const int topTile = resolveMappedTile("24x24LanternTopRgbaV001", (top >= 0) ? top : sideTile);
+            const int bottomTile = resolveMappedTile("24x24LanternBottomRgbaV001", (bottom >= 0) ? bottom : sideTile);
+            if (faceType == 0) return frontTile;
+            if (faceType == 1) return backTile;
+            if (faceType == 2) return topTile;
+            if (faceType == 3) return bottomTile;
+            return sideTile;
         }
         if (isFirNubX) {
             if (faceType == 0 || faceType == 1) return (side >= 0) ? side : top;

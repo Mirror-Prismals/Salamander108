@@ -177,9 +177,9 @@ namespace ExpanseBiomeSystemLogic {
         if (!worldCtx.expanse.loaded) return 0;
         const ExpanseConfig& cfg = worldCtx.expanse;
 
-        // Island world (6-way split):
+        // Island world (5-way split):
         // top-left = 0 conifer, bottom-left = 1 meadow,
-        // top-right is split into 2 desert + 5 debug grass test,
+        // top-right = 2 desert,
         // bottom-right is split into:
         // 3 jungle + 4 winter bare forest (two 1/8 wedges).
         // "Top" is negative-Z to match existing world orientation.
@@ -192,9 +192,7 @@ namespace ExpanseBiomeSystemLogic {
             const bool right = x >= cfg.islandCenterX;
             const bool top = z <= cfg.islandCenterZ;
             if (right && top) {
-                // Split the former desert quadrant by the diagonal ray (dx == -dz)
-                // so the new grass texture test biome has a full 45-degree sector.
-                return (dx >= -dz) ? 2 : 5; // desert : debug grass test
+                return 2; // desert
             }
             if (right && !top) {
                 // Split the former jungle quadrant by the diagonal ray (dx == dz)

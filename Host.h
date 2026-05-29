@@ -902,6 +902,7 @@ struct AudioContext {
     std::vector<float> headRayItdBuffer;
     std::string headTrackPath;
     std::vector<float> headTrackBuffer;
+    int headTrackChannels = 1;
     uint32_t headTrackSampleRate = 0;
     double headTrackPos = 0.0;
     float headTrackGain = 0.0f;

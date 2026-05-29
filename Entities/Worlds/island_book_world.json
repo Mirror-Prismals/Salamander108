@@ -1,0 +1,17 @@
+{
+  "name": "IslandBookWorld",
+  "isWorld": true,
+  "isVolume": false,
+  "instances": [
+    {
+      "prototypeID": -1,
+      "name": "StonePebblePetalsBookTexX",
+      "position": [0.0, 99.0, 10.0]
+    },
+    {
+      "prototypeID": -1,
+      "name": "StonePebblePetalsBookTexZ",
+      "position": [1.0, 99.0, 10.0]
+    }
+  ]
+}

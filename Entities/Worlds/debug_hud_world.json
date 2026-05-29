@@ -52,6 +52,56 @@
       "font": "AlegreyaSans-Regular.ttf",
       "textType": "VariableText",
       "textKey": "fish_today_coords"
+    },
+    {
+      "prototypeID": -1,
+      "name": "Text",
+      "position": [80.0, 142.0, 0.0],
+      "color": "MiraText",
+      "size": 20.0,
+      "font": "AlegreyaSans-Regular.ttf",
+      "textType": "VariableText",
+      "textKey": "SoundtrackDebugTimer"
+    },
+    {
+      "prototypeID": -1,
+      "name": "Text",
+      "position": [80.0, 166.0, 0.0],
+      "color": "MiraText",
+      "size": 20.0,
+      "font": "AlegreyaSans-Regular.ttf",
+      "textType": "VariableText",
+      "textKey": "SoundtrackDebugState"
+    },
+    {
+      "prototypeID": -1,
+      "name": "Text",
+      "position": [80.0, 190.0, 0.0],
+      "color": "MiraText",
+      "size": 20.0,
+      "font": "AlegreyaSans-Regular.ttf",
+      "textType": "VariableText",
+      "textKey": "SoundtrackDebugPool"
+    },
+    {
+      "prototypeID": -1,
+      "name": "Text",
+      "position": [80.0, 214.0, 0.0],
+      "color": "MiraText",
+      "size": 20.0,
+      "font": "AlegreyaSans-Regular.ttf",
+      "textType": "VariableText",
+      "textKey": "SoundtrackDebugTracks"
+    },
+    {
+      "prototypeID": -1,
+      "name": "Text",
+      "position": [80.0, 238.0, 0.0],
+      "color": "MiraText",
+      "size": 20.0,
+      "font": "AlegreyaSans-Regular.ttf",
+      "textType": "VariableText",
+      "textKey": "SoundtrackDebugCurrent"
     }
   ]
 }

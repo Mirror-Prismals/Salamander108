@@ -8,6 +8,7 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdlib>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -37,6 +38,16 @@ struct FullscreenVertex {
     float y = 0.0f;
     float u = 0.0f;
     float v = 0.0f;
+};
+
+struct StereoSample {
+    float l = 0.0f;
+    float r = 0.0f;
+};
+
+struct SoundtrackWindow {
+    bool active = false;
+    std::vector<StereoSample> samples;
 };
 
 struct RedWaveNode {
@@ -90,6 +101,11 @@ struct RuntimeState {
     RedWaveState redWave;
     std::vector<Color> trueColorStrip;
     double trueColorAccumulator = 0.0;
+    std::string binaryTrackPath;
+    size_t binaryTrackFrameCount = 0;
+    int binaryWidth = 0;
+    int binaryHeight = 0;
+    std::vector<FlatVertex> binaryTrackVertices;
 };
 
 RuntimeState g_state;
@@ -215,6 +231,48 @@ Color sampleToTrueColor(float sample) {
     float normalized = (sample + 1.0f) * 0.5f;
     normalized = std::pow(normalized, 3.0f);
     return hsvToRgb(normalized, 1.0f, 1.0f);
+}
+
+Color stereoToTrueColor(const StereoSample& sample) {
+    const float mid = std::clamp((sample.l + sample.r) * 0.5f, -1.0f, 1.0f);
+    const float side = std::clamp((sample.l - sample.r) * 0.5f, -1.0f, 1.0f);
+    const float level = std::clamp(std::max(std::fabs(sample.l), std::fabs(sample.r)), 0.0f, 1.0f);
+    const float hue = std::fmod(0.58f + side * 0.35f + mid * 0.12f + 1.0f, 1.0f);
+    const float value = std::clamp(0.12f + std::pow(level, 0.55f) * 0.98f, 0.0f, 1.0f);
+    return hsvToRgb(hue, 0.92f, value);
+}
+
+StereoSample sampleStereoFrame(const std::vector<float>& buffer, int channels, size_t frame) {
+    if (buffer.empty() || channels <= 0) return {};
+    const size_t frameCount = buffer.size() / static_cast<size_t>(channels);
+    if (frameCount == 0) return {};
+    frame = std::min(frame, frameCount - 1);
+    const size_t base = frame * static_cast<size_t>(channels);
+    StereoSample out;
+    out.l = buffer[base];
+    out.r = (channels > 1 && base + 1 < buffer.size()) ? buffer[base + 1] : out.l;
+    return out;
+}
+
+SoundtrackWindow collectSoundtrackWindow(BaseSystem& baseSystem, int count, double spacingFrames = 1.0) {
+    SoundtrackWindow out;
+    if (!baseSystem.audio || count <= 0) return out;
+    AudioContext& audio = *baseSystem.audio;
+    std::lock_guard<std::mutex> lock(audio.audio_state_mutex);
+    const int channels = std::max(1, audio.headTrackChannels);
+    const size_t frameCount = audio.headTrackBuffer.size() / static_cast<size_t>(channels);
+    if (!audio.headTrackActive || frameCount == 0) return out;
+
+    out.active = true;
+    out.samples.resize(static_cast<size_t>(count));
+    double pos = audio.headTrackPos;
+    for (int i = 0; i < count; ++i) {
+        size_t frame = static_cast<size_t>(std::clamp(pos, 0.0, static_cast<double>(frameCount - 1)));
+        out.samples[static_cast<size_t>(i)] = sampleStereoFrame(audio.headTrackBuffer, channels, frame);
+        pos += spacingFrames;
+        if (pos >= static_cast<double>(frameCount)) pos = static_cast<double>(frameCount - 1);
+    }
+    return out;
 }
 
 std::string normalizeMode(std::string mode) {
@@ -562,21 +620,33 @@ float masterLevel(const DawContext& daw) {
     return std::clamp(level, 0.0f, 1.0f);
 }
 
-std::vector<FlatVertex> buildTrueColorGeometry(RuntimeState& state, const DawContext& daw, int width, int height, float time, float dt) {
+std::vector<FlatVertex> buildTrueColorGeometry(RuntimeState& state, BaseSystem& baseSystem, const DawContext& daw, int width, int height, float time, float dt) {
     constexpr int stripWidth = 2;
     const int maxBlocks = std::max(1, width / stripWidth);
+    const float opacity = std::clamp(daw.activeThemeBackground.a, 0.0f, 1.0f);
     state.trueColorAccumulator += static_cast<double>(dt) * 480.0;
     int samplesToEmit = static_cast<int>(state.trueColorAccumulator);
     state.trueColorAccumulator -= static_cast<double>(samplesToEmit);
     samplesToEmit = std::clamp(samplesToEmit, 0, 240);
-    const float audioLevel = masterLevel(daw);
-    for (int i = 0; i < samplesToEmit; ++i) {
-        const float t = time + static_cast<float>(i) * 0.002f;
-        float sample = 0.55f * std::sin(t * kPi * 2.0f * 0.47f)
-            + 0.30f * std::sin(t * kPi * 2.0f * 1.31f)
-            + 0.15f * std::sin(t * kPi * 2.0f * 4.90f);
-        sample = std::clamp(sample * (0.35f + audioLevel * 1.25f), -1.0f, 1.0f);
-        state.trueColorStrip.push_back(sampleToTrueColor(sample));
+    const SoundtrackWindow soundtrack = collectSoundtrackWindow(baseSystem, samplesToEmit);
+    if (soundtrack.active) {
+        for (const StereoSample& sample : soundtrack.samples) {
+            Color color = stereoToTrueColor(sample);
+            color.a = opacity;
+            state.trueColorStrip.push_back(color);
+        }
+    } else {
+        const float audioLevel = masterLevel(daw);
+        for (int i = 0; i < samplesToEmit; ++i) {
+            const float t = time + static_cast<float>(i) * 0.002f;
+            float sample = 0.55f * std::sin(t * kPi * 2.0f * 0.47f)
+                + 0.30f * std::sin(t * kPi * 2.0f * 1.31f)
+                + 0.15f * std::sin(t * kPi * 2.0f * 4.90f);
+            sample = std::clamp(sample * (0.35f + audioLevel * 1.25f), -1.0f, 1.0f);
+            Color color = sampleToTrueColor(sample);
+            color.a = opacity;
+            state.trueColorStrip.push_back(color);
+        }
     }
     if (state.trueColorStrip.size() > static_cast<size_t>(maxBlocks)) {
         state.trueColorStrip.erase(state.trueColorStrip.begin(), state.trueColorStrip.end() - maxBlocks);
@@ -590,7 +660,7 @@ std::vector<FlatVertex> buildTrueColorGeometry(RuntimeState& state, const DawCon
     return vertices;
 }
 
-std::vector<FlatVertex> buildOscilloscopeLines(const DawContext& daw, int width, int height, float time) {
+std::vector<FlatVertex> buildOscilloscopeLines(BaseSystem& baseSystem, const DawContext& daw, int width, int height, float time) {
     std::vector<FlatVertex> lines;
     lines.reserve(8400);
     const Color grid = rgba(0.0f, 0.28f, 0.08f, 0.42f);
@@ -604,8 +674,27 @@ std::vector<FlatVertex> buildOscilloscopeLines(const DawContext& daw, int width,
         lines.push_back(makePxVertex(0.0f, y, width, height, grid));
         lines.push_back(makePxVertex(static_cast<float>(width), y, width, height, grid));
     }
-    const float audioLevel = masterLevel(daw);
     constexpr int samples = 4096;
+    const SoundtrackWindow soundtrack = collectSoundtrackWindow(baseSystem, samples, 4.0);
+    if (soundtrack.active) {
+        for (int i = 0; i + 1 < samples; ++i) {
+            const float fade = static_cast<float>(i) / static_cast<float>(samples - 1);
+            const Color color = rgba(0.05f + 0.20f * fade, 1.0f, 0.08f + 0.28f * (1.0f - fade), 0.72f);
+            auto pointFor = [&](const StereoSample& sample) {
+                return std::array<float, 2>{
+                    static_cast<float>(width) * (0.5f + std::clamp(sample.l, -1.0f, 1.0f) * 0.43f),
+                    static_cast<float>(height) * (0.5f - std::clamp(sample.r, -1.0f, 1.0f) * 0.43f),
+                };
+            };
+            const auto a = pointFor(soundtrack.samples[static_cast<size_t>(i)]);
+            const auto b = pointFor(soundtrack.samples[static_cast<size_t>(i + 1)]);
+            lines.push_back(makePxVertex(a[0], a[1], width, height, color));
+            lines.push_back(makePxVertex(b[0], b[1], width, height, color));
+        }
+        return lines;
+    }
+
+    const float audioLevel = masterLevel(daw);
     auto samplePoint = [&](int index) {
         const float p = static_cast<float>(index) / static_cast<float>(samples - 1);
         const float phase = p * kPi * 2.0f * 7.0f;
@@ -628,6 +717,101 @@ std::vector<FlatVertex> buildOscilloscopeLines(const DawContext& daw, int width,
         lines.push_back(makePxVertex(b[0], b[1], width, height, color));
     }
     return lines;
+}
+
+Color binaryAudioColor(const StereoSample& sample, int row, int col) {
+    const float mid = std::clamp((sample.l + sample.r) * 0.5f, -1.0f, 1.0f);
+    const float side = std::clamp((sample.l - sample.r) * 0.5f, -1.0f, 1.0f);
+    const float amp = std::clamp(std::max(std::fabs(sample.l), std::fabs(sample.r)), 0.0f, 1.0f);
+    const float gate = std::fmod(std::fabs(mid) * 37.0f + std::fabs(side) * 19.0f + static_cast<float>((row * 13 + col * 7) % 11), 1.0f);
+    if (gate > std::clamp(amp * 1.8f + 0.08f, 0.12f, 0.92f)) {
+        return rgba(0.0f, 0.0f, 0.0f, 1.0f);
+    }
+    const float hue = std::fmod(0.34f + side * 0.42f + static_cast<float>((row + col) % 17) / 51.0f + 1.0f, 1.0f);
+    const float value = std::clamp(0.22f + std::pow(amp, 0.45f) * 1.15f, 0.0f, 1.0f);
+    return hsvToRgb(hue, 0.95f, value);
+}
+
+std::vector<FlatVertex> buildBinaryWaterfallAudioGeometry(RuntimeState& state, BaseSystem& baseSystem, int width, int height) {
+    if (!baseSystem.audio) return {};
+
+    std::string trackPath;
+    std::vector<float> trackBuffer;
+    int trackChannels = 1;
+    double trackPos = 0.0;
+    size_t trackFrameCount = 0;
+    bool cacheValid = false;
+    {
+        AudioContext& audio = *baseSystem.audio;
+        std::lock_guard<std::mutex> lock(audio.audio_state_mutex);
+        trackChannels = std::max(1, audio.headTrackChannels);
+        trackFrameCount = audio.headTrackBuffer.size() / static_cast<size_t>(trackChannels);
+        if (!audio.headTrackActive || trackFrameCount == 0) {
+            state.binaryTrackPath.clear();
+            state.binaryTrackFrameCount = 0;
+            state.binaryTrackVertices.clear();
+            return {};
+        }
+        trackPath = audio.headTrackPath;
+        trackPos = audio.headTrackPos;
+        cacheValid = state.binaryTrackPath == trackPath
+            && state.binaryTrackFrameCount == trackFrameCount
+            && state.binaryWidth == width
+            && state.binaryHeight == height
+            && !state.binaryTrackVertices.empty();
+        if (!cacheValid) {
+            trackBuffer = audio.headTrackBuffer;
+        }
+    }
+
+    if (trackPath.empty()) {
+        state.binaryTrackPath.clear();
+        state.binaryTrackFrameCount = 0;
+        state.binaryTrackVertices.clear();
+        return {};
+    }
+
+    constexpr int cell = 6;
+    const int cols = std::max(1, width / cell);
+    const int rows = std::max(1, height / cell);
+
+    if (!cacheValid) {
+        state.binaryTrackPath = trackPath;
+        state.binaryTrackFrameCount = trackFrameCount;
+        state.binaryWidth = width;
+        state.binaryHeight = height;
+        state.binaryTrackVertices.clear();
+        state.binaryTrackVertices.reserve(static_cast<size_t>(cols) * static_cast<size_t>(rows) * 6u);
+        addRectPx(state.binaryTrackVertices, 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), width, height, rgba(0.0f, 0.0f, 0.0f, 1.0f));
+        const size_t totalCells = static_cast<size_t>(cols) * static_cast<size_t>(rows);
+        for (int row = 0; row < rows; ++row) {
+            for (int col = 0; col < cols; ++col) {
+                const size_t cellIndex = static_cast<size_t>(row) * static_cast<size_t>(cols) + static_cast<size_t>(col);
+                const size_t frame = (totalCells > 1)
+                    ? std::min(trackFrameCount - 1, (cellIndex * trackFrameCount) / totalCells)
+                    : 0;
+                const StereoSample sample = sampleStereoFrame(trackBuffer, trackChannels, frame);
+                Color color = binaryAudioColor(sample, row, col);
+                if (color.r <= 0.0f && color.g <= 0.0f && color.b <= 0.0f) continue;
+                addRectPx(state.binaryTrackVertices,
+                          static_cast<float>(col * cell),
+                          static_cast<float>(row * cell),
+                          static_cast<float>(cell),
+                          static_cast<float>(cell),
+                          width,
+                          height,
+                          color);
+            }
+        }
+    }
+
+    std::vector<FlatVertex> vertices = state.binaryTrackVertices;
+    if (trackFrameCount > 0) {
+        const float progress = std::clamp(static_cast<float>(trackPos / static_cast<double>(trackFrameCount)), 0.0f, 1.0f);
+        const float x = progress * static_cast<float>(width);
+        addRectPx(vertices, x - 2.0f, 0.0f, 4.0f, static_cast<float>(height), width, height, rgba(1.0f, 1.0f, 1.0f, 0.95f));
+    }
+    return vertices;
 }
 
 std::vector<FlatVertex> buildPinwheelSymbol(int width, int height, float time) {
@@ -903,14 +1087,19 @@ void UpdateDawBackdrop(BaseSystem& baseSystem, std::vector<Entity>&, float dt, P
     const float now = static_cast<float>(PlatformInput::GetTimeSeconds());
 
     if (mode == "binary_waterfall") {
-        drawFullscreen(renderer, backend, renderer.dawBackdropBinaryShader.get(), now, width, height);
+        const std::vector<FlatVertex> audioWaterfall = buildBinaryWaterfallAudioGeometry(g_state, baseSystem, width, height);
+        if (!audioWaterfall.empty()) {
+            drawFlatTriangles(renderer, backend, audioWaterfall, true);
+        } else {
+            drawFullscreen(renderer, backend, renderer.dawBackdropBinaryShader.get(), now, width, height);
+        }
     } else if (mode == "pinwheel") {
         drawFullscreen(renderer, backend, renderer.dawBackdropPinwheelBgShader.get(), now, width, height);
         drawFlatTriangles(renderer, backend, buildPinwheelSymbol(width, height, now), true);
     } else if (mode == "true_color") {
-        drawFlatTriangles(renderer, backend, buildTrueColorGeometry(g_state, daw, width, height, now, dt), false);
+        drawFlatTriangles(renderer, backend, buildTrueColorGeometry(g_state, baseSystem, daw, width, height, now, dt), daw.activeThemeBackground.a < 0.999f);
     } else if (mode == "oscilloscope") {
-        drawFlatLines(renderer, backend, buildOscilloscopeLines(daw, width, height, now), true);
+        drawFlatLines(renderer, backend, buildOscilloscopeLines(baseSystem, daw, width, height, now), true);
     } else if (mode == "red_wave") {
         // Finish red-wave rendering with instanced cube geometry.
         initRedWave(g_state.redWave);

@@ -1031,6 +1031,7 @@ namespace CollisionSystemLogic {
             }
         }
 
+        const bool wallClimbEnabled = getRegistryBool(baseSystem, "WallClimbEnabled", true);
         const float wallClingContactGrace = glm::clamp(
             getRegistryFloat(baseSystem, "WallClimbContactGrace", 0.20f),
             0.0f,
@@ -1042,14 +1043,16 @@ namespace CollisionSystemLogic {
         const bool blockedZ = std::abs(velocity.z) > 1e-4f && (resolvedZ + 1e-4f) < std::abs(velocity.z);
         const AABB* wallContactBlock = nullptr;
         glm::vec3 wallContactNormal(0.0f);
-        if (blockedX
+        if (wallClimbEnabled
+            && blockedX
             && hitBlockX
             && isClimbablePrototypeID(prototypes, hitBlockX->prototypeID)
             && std::abs(hitNormalX.y) < 0.1f) {
             wallContactBlock = hitBlockX;
             wallContactNormal = hitNormalX;
         }
-        if (blockedZ
+        if (wallClimbEnabled
+            && blockedZ
             && hitBlockZ
             && isClimbablePrototypeID(prototypes, hitBlockZ->prototypeID)
             && std::abs(hitNormalZ.y) < 0.1f
@@ -1057,15 +1060,18 @@ namespace CollisionSystemLogic {
             wallContactBlock = hitBlockZ;
             wallContactNormal = hitNormalZ;
         }
-        if (wallContactBlock) {
+        if (wallClimbEnabled && wallContactBlock) {
             player.wallClingContactValid = true;
             player.wallClingContactNormal = wallContactNormal;
             player.wallClingContactCell = wallContactBlock->cell;
             player.wallClingContactWorldIndex = wallContactBlock->worldIndex;
             player.wallClingContactPrototypeID = wallContactBlock->prototypeID;
             player.wallClingContactTimer = std::max(player.wallClingContactTimer, wallClingContactGrace);
-        } else {
+        } else if (wallClimbEnabled) {
             player.wallClingContactValid = player.wallClingContactTimer > 0.0f;
+        } else {
+            player.wallClingContactValid = false;
+            player.wallClingContactTimer = 0.0f;
         }
 
         player.cameraPosition = resolvedPos;
