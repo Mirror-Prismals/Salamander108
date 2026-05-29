@@ -105,6 +105,7 @@
 #include "BaseSystem/TreeGenerationSystem.cpp"
 #include "BaseSystem/TreeSectionSchedulerSystem.cpp"
 #include "BaseSystem/UIScreenSystem.cpp"
+#include "BaseSystem/DawBackdropSystem.cpp"
 #include "BaseSystem/SecurityCameraSystem.cpp"
 #include "BaseSystem/DimensionSystem.cpp"
 #include "BaseSystem/DawLaneTimelineSystem.cpp"

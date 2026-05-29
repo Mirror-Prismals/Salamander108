@@ -24,6 +24,7 @@
 #include <mutex>
 #include <queue>
 #include <atomic>
+#include <limits>
 #include "json.hpp"
 #include <jack/jack.h>
 #include <jack/ringbuffer.h>
@@ -170,6 +171,7 @@ struct ExpanseConfig {
     float islandMaxHeight = 64.0f;
     float islandNoiseScale = 120.0f;
     float islandNoiseAmp = 24.0f;
+    float maxSurfaceY = std::numeric_limits<float>::infinity();
     float beachHeight = 3.0f;
     float baseElevation = 8.0f;
     float baseRidge = 12.0f;
@@ -687,6 +689,18 @@ struct RendererContext {
     RenderHandle uiMidiLaneVBO = 0;
     RenderHandle uiPianoRollVAO = 0;
     RenderHandle uiPianoRollVBO = 0;
+    std::unique_ptr<Shader> dawBackdropFlatShader;
+    std::unique_ptr<Shader> dawBackdropRedWaveShader;
+    std::unique_ptr<Shader> dawBackdropBinaryShader;
+    std::unique_ptr<Shader> dawBackdropPinwheelBgShader;
+    RenderHandle dawBackdropFlatVAO = 0;
+    RenderHandle dawBackdropFlatVBO = 0;
+    RenderHandle dawBackdropFullscreenVAO = 0;
+    RenderHandle dawBackdropFullscreenVBO = 0;
+    RenderHandle dawBackdropRedWaveVAO = 0;
+    RenderHandle dawBackdropRedWaveTemplateVBO = 0;
+    RenderHandle dawBackdropRedWaveInstanceVBO = 0;
+    int dawBackdropRedWaveVertexCount = 0;
     RenderHandle glyphVAO = 0;
     RenderHandle fontVAO = 0;
     RenderHandle fontVBO = 0;
@@ -1525,6 +1539,7 @@ struct DawTrack {
 
 struct DawThemePreset {
     std::string name = "Default";
+    std::string backdropMode = "world_camera";
     glm::vec4 background = glm::vec4(0.90f, 0.88f, 0.83f, 0.85f);
     glm::vec4 panel = glm::vec4(0.90f, 0.88f, 0.83f, 0.80f);
     glm::vec4 button = glm::vec4(0.90f, 0.88f, 0.83f, 0.85f);
@@ -1699,6 +1714,7 @@ struct DawContext {
     bool themeCreateMode = false;
     int themeEditField = -1; // 0 name, 1 background, 2 panel, 3 button, 4 piano, 5 piano accent, 6 lane
     std::string themeDraftName;
+    std::string themeDraftBackdropMode = "world_camera";
     std::string themeDraftBackgroundHex;
     std::string themeDraftPanelHex;
     std::string themeDraftButtonHex;
@@ -1723,6 +1739,7 @@ struct DawContext {
     glm::vec4 activeThemePianoRoll = glm::vec4(0.00f, 0.12f, 0.12f, 1.00f);
     glm::vec4 activeThemePianoRollAccent = glm::vec4(0.00f, 0.20f, 0.20f, 1.00f);
     glm::vec4 activeThemeLane = glm::vec4(230.0f / 255.0f, 224.0f / 255.0f, 212.0f / 255.0f, 1.00f);
+    std::string activeThemeBackdropMode = "world_camera";
 
     DawContext() {
         for (auto& level : masterBusLevels) {
@@ -2096,6 +2113,7 @@ namespace GemChiselSystemLogic {
 }
 namespace HUDSystemLogic { void UpdateHUD(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
 namespace ColorEmotionSystemLogic { void UpdateColorEmotions(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); void RenderColorEmotions(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
+namespace DawBackdropSystemLogic { void UpdateDawBackdrop(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); void CleanupDawBackdrop(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
 namespace FishingSystemLogic { void UpdateFishing(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); void RenderFishing(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
 namespace GemSystemLogic {
     void UpdateGems(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle);

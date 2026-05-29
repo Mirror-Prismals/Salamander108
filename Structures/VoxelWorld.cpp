@@ -2,6 +2,7 @@
 
 #include "Structures/VoxelWorld.h"
 #include <algorithm>
+#include <array>
 
 namespace {
     int floorDivInt(int value, int divisor) {
@@ -22,18 +23,113 @@ namespace {
         return baseSize > 0 ? baseSize : 1;
     }
 
+    VoxelColumnKey columnKeyForWorld(const glm::ivec3& worldPos, int size) {
+        return VoxelColumnKey{glm::ivec2(
+            floorDivInt(worldPos.x, size),
+            floorDivInt(worldPos.z, size)
+        )};
+    }
+
+    VoxelSectionKey sectionKeyForWorld(const glm::ivec3& worldPos, int size) {
+        return VoxelSectionKey{glm::ivec3(
+            floorDivInt(worldPos.x, size),
+            floorDivInt(worldPos.y, size),
+            floorDivInt(worldPos.z, size)
+        )};
+    }
+
     int voxelIndex(const glm::ivec3& local, int size) {
         return local.x + local.y * size + local.z * size * size;
     }
 
+    int columnHeight(const VoxelColumn& column) {
+        return std::max(0, column.maxYExclusive - column.minY);
+    }
+
+    int columnVoxelIndex(const VoxelColumn& column, const glm::ivec3& local) {
+        const int height = columnHeight(column);
+        return local.x + local.y * column.chunkSize + local.z * column.chunkSize * height;
+    }
+
+    size_t columnVoxelCount(int size, int minY, int maxYExclusive) {
+        const int height = std::max(0, maxYExclusive - minY);
+        return static_cast<size_t>(size) * static_cast<size_t>(height) * static_cast<size_t>(size);
+    }
+
+    void initializeColumnStorage(VoxelWorldContext& world, VoxelColumn& column) {
+        const size_t count = columnVoxelCount(column.chunkSize, column.minY, column.maxYExclusive);
+        column.ids.assign(count, 0u);
+        column.colors.assign(count, 0u);
+        column.skyLight.assign(count, world.defaultSkyLightLevel);
+        column.blockLight.assign(count, static_cast<uint8_t>(0));
+        column.nonAirCount = 0;
+    }
+
+    bool columnProfileMatches(const VoxelColumn& column, int size, int minY, int maxYExclusive) {
+        return column.chunkSize == size
+            && column.minY == minY
+            && column.maxYExclusive == maxYExclusive
+            && column.ids.size() == columnVoxelCount(size, minY, maxYExclusive);
+    }
+
+    bool yInColumnProfile(const VoxelWorldContext& world, int y) {
+        return y >= world.columnMinY && y < world.columnMaxYExclusive;
+    }
+
+    void releaseRenderSectionOnly(VoxelWorldContext& world, const VoxelSectionKey& key);
+
+    bool hasAirNeighbor(const VoxelWorldContext& world, const glm::ivec3& worldPos) {
+        static const std::array<glm::ivec3, 6> kDirs = {{
+            glm::ivec3( 1,  0,  0),
+            glm::ivec3(-1,  0,  0),
+            glm::ivec3( 0,  1,  0),
+            glm::ivec3( 0, -1,  0),
+            glm::ivec3( 0,  0,  1),
+            glm::ivec3( 0,  0, -1)
+        }};
+        for (const glm::ivec3& dir : kDirs) {
+            if (world.getBlockWorld(worldPos + dir) == 0u) return true;
+        }
+        return false;
+    }
 }
 
 void VoxelWorldContext::reset() {
+    columns.clear();
     sections.clear();
     dirtySections.clear();
     dirtyTickets.clear();
     chunkStates.clear();
+    columnStates.clear();
     nextDirtyTicket = 1;
+}
+
+VoxelChunkLifecycleState& VoxelWorldContext::ensureColumnState(const VoxelColumnKey& key) {
+    return columnStates[key];
+}
+
+VoxelChunkLifecycleState* VoxelWorldContext::findColumnState(const VoxelColumnKey& key) {
+    auto it = columnStates.find(key);
+    if (it == columnStates.end()) return nullptr;
+    return &it->second;
+}
+
+const VoxelChunkLifecycleState* VoxelWorldContext::findColumnState(const VoxelColumnKey& key) const {
+    auto it = columnStates.find(key);
+    if (it == columnStates.end()) return nullptr;
+    return &it->second;
+}
+
+void VoxelWorldContext::eraseColumnState(const VoxelColumnKey& key) {
+    columnStates.erase(key);
+}
+
+void VoxelWorldContext::setColumnStage(const VoxelColumnKey& key,
+                                       VoxelChunkLifecycleStage stage,
+                                       uint64_t touchFrame) {
+    VoxelChunkLifecycleState& state = ensureColumnState(key);
+    state.stage = stage;
+    state.touchFrame = touchFrame;
 }
 
 VoxelChunkLifecycleState& VoxelWorldContext::ensureChunkState(const VoxelSectionKey& key) {
@@ -100,104 +196,392 @@ namespace {
     void releaseBuffers(VoxelWorldContext& world, int size, VoxelSectionBuffers&& buffers) {
         world.bufferPools[size].push_back(std::move(buffers));
     }
+
+    void releaseRenderSectionOnly(VoxelWorldContext& world, const VoxelSectionKey& key) {
+        auto it = world.sections.find(key);
+        if (it == world.sections.end()) return;
+        VoxelSectionBuffers buffers;
+        buffers.ids = std::move(it->second.ids);
+        buffers.colors = std::move(it->second.colors);
+        buffers.skyLight = std::move(it->second.skyLight);
+        buffers.blockLight = std::move(it->second.blockLight);
+        releaseBuffers(world, it->second.size, std::move(buffers));
+        world.sections.erase(it);
+        world.clearSectionDirty(key);
+        auto chunkIt = world.chunkStates.find(key);
+        if (chunkIt != world.chunkStates.end()) {
+            chunkIt->second.hasSection = false;
+        }
+    }
 }
 
 uint32_t VoxelWorldContext::getBlockWorld(const glm::ivec3& worldPos) const {
     int size = sectionSizeForTier(sectionSize, 0);
-    glm::ivec3 sectionCoord = floorDivVec(worldPos, size);
-    glm::ivec3 local = worldPos - sectionCoord * size;
-    VoxelSectionKey key{sectionCoord};
-    auto it = sections.find(key);
-    if (it == sections.end()) return 0;
-    const VoxelSection& section = it->second;
-    int idx = voxelIndex(local, section.size);
-    if (idx < 0 || idx >= static_cast<int>(section.ids.size())) return 0;
-    return section.ids[idx];
+    if (!yInColumnProfile(*this, worldPos.y)) return 0;
+    const VoxelColumnKey columnKey = columnKeyForWorld(worldPos, size);
+    auto columnIt = columns.find(columnKey);
+    if (columnIt == columns.end()) return 0;
+    const VoxelColumn& column = columnIt->second;
+    if (!columnProfileMatches(column, size, column.minY, column.maxYExclusive)) return 0;
+    const glm::ivec3 local(
+        worldPos.x - columnKey.coord.x * size,
+        worldPos.y - column.minY,
+        worldPos.z - columnKey.coord.y * size
+    );
+    int idx = columnVoxelIndex(column, local);
+    if (idx < 0 || idx >= static_cast<int>(column.ids.size())) return 0;
+    return column.ids[static_cast<size_t>(idx)];
 }
 
 uint32_t VoxelWorldContext::getColorWorld(const glm::ivec3& worldPos) const {
     int size = sectionSizeForTier(sectionSize, 0);
-    glm::ivec3 sectionCoord = floorDivVec(worldPos, size);
-    glm::ivec3 local = worldPos - sectionCoord * size;
-    VoxelSectionKey key{sectionCoord};
-    auto it = sections.find(key);
-    if (it == sections.end()) return 0;
-    const VoxelSection& section = it->second;
-    int idx = voxelIndex(local, section.size);
-    if (idx < 0 || idx >= static_cast<int>(section.colors.size())) return 0;
-    return section.colors[idx];
+    if (!yInColumnProfile(*this, worldPos.y)) return 0;
+    const VoxelColumnKey columnKey = columnKeyForWorld(worldPos, size);
+    auto columnIt = columns.find(columnKey);
+    if (columnIt == columns.end()) return 0;
+    const VoxelColumn& column = columnIt->second;
+    if (!columnProfileMatches(column, size, column.minY, column.maxYExclusive)) return 0;
+    const glm::ivec3 local(
+        worldPos.x - columnKey.coord.x * size,
+        worldPos.y - column.minY,
+        worldPos.z - columnKey.coord.y * size
+    );
+    int idx = columnVoxelIndex(column, local);
+    if (idx < 0 || idx >= static_cast<int>(column.colors.size())) return 0;
+    return column.colors[static_cast<size_t>(idx)];
 }
 
 uint8_t VoxelWorldContext::getSkyLightWorld(const glm::ivec3& worldPos) const {
     int size = sectionSizeForTier(sectionSize, 0);
-    glm::ivec3 sectionCoord = floorDivVec(worldPos, size);
-    glm::ivec3 local = worldPos - sectionCoord * size;
-    VoxelSectionKey key{sectionCoord};
-    auto it = sections.find(key);
-    if (it == sections.end()) return defaultSkyLightLevel;
-    const VoxelSection& section = it->second;
-    int idx = voxelIndex(local, section.size);
-    if (idx < 0 || idx >= static_cast<int>(section.skyLight.size())) return defaultSkyLightLevel;
-    return section.skyLight[static_cast<size_t>(idx)];
+    if (!yInColumnProfile(*this, worldPos.y)) return defaultSkyLightLevel;
+    const VoxelColumnKey columnKey = columnKeyForWorld(worldPos, size);
+    auto columnIt = columns.find(columnKey);
+    if (columnIt == columns.end()) return defaultSkyLightLevel;
+    const VoxelColumn& column = columnIt->second;
+    if (!columnProfileMatches(column, size, column.minY, column.maxYExclusive)) return defaultSkyLightLevel;
+    const glm::ivec3 local(
+        worldPos.x - columnKey.coord.x * size,
+        worldPos.y - column.minY,
+        worldPos.z - columnKey.coord.y * size
+    );
+    int idx = columnVoxelIndex(column, local);
+    if (idx < 0 || idx >= static_cast<int>(column.skyLight.size())) return defaultSkyLightLevel;
+    return column.skyLight[static_cast<size_t>(idx)];
 }
 
 uint8_t VoxelWorldContext::getBlockLightWorld(const glm::ivec3& worldPos) const {
     int size = sectionSizeForTier(sectionSize, 0);
-    glm::ivec3 sectionCoord = floorDivVec(worldPos, size);
-    glm::ivec3 local = worldPos - sectionCoord * size;
-    VoxelSectionKey key{sectionCoord};
-    auto it = sections.find(key);
-    if (it == sections.end()) return static_cast<uint8_t>(0);
-    const VoxelSection& section = it->second;
-    int idx = voxelIndex(local, section.size);
-    if (idx < 0 || idx >= static_cast<int>(section.blockLight.size())) return static_cast<uint8_t>(0);
-    return section.blockLight[static_cast<size_t>(idx)];
+    if (!yInColumnProfile(*this, worldPos.y)) return static_cast<uint8_t>(0);
+    const VoxelColumnKey columnKey = columnKeyForWorld(worldPos, size);
+    auto columnIt = columns.find(columnKey);
+    if (columnIt == columns.end()) return static_cast<uint8_t>(0);
+    const VoxelColumn& column = columnIt->second;
+    if (!columnProfileMatches(column, size, column.minY, column.maxYExclusive)) return static_cast<uint8_t>(0);
+    const glm::ivec3 local(
+        worldPos.x - columnKey.coord.x * size,
+        worldPos.y - column.minY,
+        worldPos.z - columnKey.coord.y * size
+    );
+    int idx = columnVoxelIndex(column, local);
+    if (idx < 0 || idx >= static_cast<int>(column.blockLight.size())) return static_cast<uint8_t>(0);
+    return column.blockLight[static_cast<size_t>(idx)];
 }
 
 void VoxelWorldContext::setBlockWorld(const glm::ivec3& worldPos, uint32_t id, uint32_t color) {
     setBlock(worldPos, id, color, true);
 }
 
+VoxelColumn* VoxelWorldContext::ensureColumnForWrite(const VoxelColumnKey& key) {
+    const int size = sectionSizeForTier(sectionSize, 0);
+    auto existingColumnIt = columns.find(key);
+    if (existingColumnIt != columns.end()
+        && !columnProfileMatches(existingColumnIt->second, size, columnMinY, columnMaxYExclusive)) {
+        releaseColumn(key);
+        existingColumnIt = columns.end();
+    }
+
+    if (existingColumnIt == columns.end()) {
+        VoxelColumn column;
+        column.key = key;
+        column.chunkSize = size;
+        column.minY = columnMinY;
+        column.maxYExclusive = columnMaxYExclusive;
+        initializeColumnStorage(*this, column);
+        auto [insertedColumnIt, _] = columns.emplace(key, std::move(column));
+        existingColumnIt = insertedColumnIt;
+        ensureColumnState(key).hasSection = true;
+    }
+    return &existingColumnIt->second;
+}
+
+bool VoxelWorldContext::writeColumnBlock(VoxelColumn& column,
+                                         int localX,
+                                         int worldY,
+                                         int localZ,
+                                         uint32_t id,
+                                         uint32_t color) {
+    if (localX < 0 || localX >= column.chunkSize) return false;
+    if (localZ < 0 || localZ >= column.chunkSize) return false;
+    if (worldY < column.minY || worldY >= column.maxYExclusive) return false;
+    const int idx = columnVoxelIndex(column, glm::ivec3(localX, worldY - column.minY, localZ));
+    if (idx < 0 || idx >= static_cast<int>(column.ids.size())) return false;
+
+    const size_t slot = static_cast<size_t>(idx);
+    const uint32_t oldId = column.ids[slot];
+    const uint32_t oldColor = column.colors[slot];
+    const uint32_t storedColor = (id == 0u) ? 0u : color;
+    if (oldId == id && oldColor == storedColor) return false;
+
+    column.ids[slot] = id;
+    column.colors[slot] = storedColor;
+    if (oldId == 0u && id != 0u) {
+        column.nonAirCount += 1;
+    } else if (oldId != 0u && id == 0u) {
+        column.nonAirCount = std::max(0, column.nonAirCount - 1);
+    }
+    return true;
+}
+
+int VoxelWorldContext::writeColumnRun(VoxelColumn& column,
+                                      int localX,
+                                      int localZ,
+                                      int minY,
+                                      int maxY,
+                                      uint32_t id,
+                                      uint32_t color) {
+    if (localX < 0 || localX >= column.chunkSize) return 0;
+    if (localZ < 0 || localZ >= column.chunkSize) return 0;
+    int writeMinY = std::max(minY, column.minY);
+    int writeMaxY = std::min(maxY, column.maxYExclusive - 1);
+    if (writeMinY > writeMaxY) return 0;
+
+    const uint32_t storedColor = (id == 0u) ? 0u : color;
+    int changed = 0;
+    for (int y = writeMinY; y <= writeMaxY; ++y) {
+        const int idx = columnVoxelIndex(column, glm::ivec3(localX, y - column.minY, localZ));
+        if (idx < 0 || idx >= static_cast<int>(column.ids.size())) continue;
+        const size_t slot = static_cast<size_t>(idx);
+        const uint32_t oldId = column.ids[slot];
+        const uint32_t oldColor = column.colors[slot];
+        if (oldId == id && oldColor == storedColor) continue;
+
+        column.ids[slot] = id;
+        column.colors[slot] = storedColor;
+        if (oldId == 0u && id != 0u) {
+            column.nonAirCount += 1;
+        } else if (oldId != 0u && id == 0u) {
+            column.nonAirCount = std::max(0, column.nonAirCount - 1);
+        }
+        changed += 1;
+    }
+    return changed;
+}
+
 void VoxelWorldContext::setBlock(const glm::ivec3& worldPos, uint32_t id, uint32_t color, bool markDirty) {
     int size = sectionSizeForTier(sectionSize, 0);
-    glm::ivec3 sectionCoord = floorDivVec(worldPos, size);
-    glm::ivec3 local = worldPos - sectionCoord * size;
-    VoxelSectionKey key{sectionCoord};
+    if (!yInColumnProfile(*this, worldPos.y)) return;
 
-    auto it = sections.find(key);
-    if (it == sections.end()) {
+    const VoxelColumnKey columnKey = columnKeyForWorld(worldPos, size);
+    const VoxelSectionKey sectionKey = sectionKeyForWorld(worldPos, size);
+    const int sectionY = sectionKey.coord.y;
+    auto existingColumnIt = columns.find(columnKey);
+    if (existingColumnIt != columns.end()
+        && !columnProfileMatches(existingColumnIt->second, size, columnMinY, columnMaxYExclusive)) {
+        releaseColumn(columnKey);
+    }
+
+    const glm::ivec3 local(
+        worldPos.x - columnKey.coord.x * size,
+        worldPos.y - columnMinY,
+        worldPos.z - columnKey.coord.y * size
+    );
+    const glm::ivec3 sectionLocal(
+        worldPos.x - sectionKey.coord.x * size,
+        worldPos.y - sectionY * size,
+        worldPos.z - sectionKey.coord.z * size
+    );
+    const int sectionIdx = voxelIndex(sectionLocal, size);
+    if (sectionIdx < 0 || sectionIdx >= size * size * size) return;
+
+    auto columnIt = columns.find(columnKey);
+    if (columnIt == columns.end()) {
         if (id == 0) return;
+        VoxelColumn column;
+        column.key = columnKey;
+        column.chunkSize = size;
+        column.minY = columnMinY;
+        column.maxYExclusive = columnMaxYExclusive;
+        initializeColumnStorage(*this, column);
+        auto [insertedColumnIt, _] = columns.emplace(columnKey, std::move(column));
+        columnIt = insertedColumnIt;
+        ensureColumnState(columnKey).hasSection = true;
+    }
+
+    VoxelColumn& column = columnIt->second;
+    const int idx = columnVoxelIndex(column, local);
+    if (idx < 0 || idx >= static_cast<int>(column.ids.size())) return;
+    uint32_t oldId = column.ids[static_cast<size_t>(idx)];
+    uint32_t oldColor = column.colors[static_cast<size_t>(idx)];
+    if (oldId == id && oldColor == color) return;
+    column.ids[static_cast<size_t>(idx)] = id;
+    column.colors[static_cast<size_t>(idx)] = (id == 0) ? 0 : color;
+    if (oldId == 0 && id != 0) {
+        column.nonAirCount += 1;
+    }
+    if (oldId != 0 && id == 0) {
+        column.nonAirCount -= 1;
+    }
+
+    auto sectionIt = sections.find(sectionKey);
+    if (sectionIt == sections.end()) {
+        if (markDirty) {
+            materializeSectionFromColumn(sectionKey);
+            sectionIt = sections.find(sectionKey);
+        }
+    }
+    if (sectionIt != sections.end()) {
+        VoxelSection& section = sectionIt->second;
+        const uint32_t oldSectionId = section.ids[static_cast<size_t>(sectionIdx)];
+        section.ids[static_cast<size_t>(sectionIdx)] = id;
+        section.colors[static_cast<size_t>(sectionIdx)] = (id == 0) ? 0 : color;
+        if (oldSectionId == 0 && id != 0) section.nonAirCount += 1;
+        if (oldSectionId != 0 && id == 0) section.nonAirCount -= 1;
+        if (markDirty) {
+            section.editVersion += 1;
+            section.dirty = true;
+            markSectionDirty(sectionKey);
+        }
+        if (section.nonAirCount <= 0) {
+            releaseRenderSectionOnly(*this, sectionKey);
+        }
+    }
+
+    if (markDirty) {
+        column.editVersion += 1;
+    }
+
+    if (column.nonAirCount <= 0) {
+        columns.erase(columnKey);
+        auto columnStateIt = columnStates.find(columnKey);
+        if (columnStateIt != columnStates.end()) {
+            columnStateIt->second.hasSection = false;
+        }
+    }
+}
+
+bool VoxelWorldContext::materializeSectionFromColumn(const VoxelSectionKey& key) {
+    const int size = sectionSizeForTier(sectionSize, 0);
+    const VoxelColumnKey columnKey{glm::ivec2(key.coord.x, key.coord.z)};
+    auto columnIt = columns.find(columnKey);
+    if (columnIt == columns.end()) {
+        releaseRenderSectionOnly(*this, key);
+        return false;
+    }
+
+    VoxelColumn& column = columnIt->second;
+    if (!columnProfileMatches(column, size, columnMinY, columnMaxYExclusive)) {
+        releaseColumn(columnKey);
+        return false;
+    }
+
+    const int sectionMinY = key.coord.y * size;
+    const int sectionMaxYExclusive = sectionMinY + size;
+    const int copyMinY = std::max(sectionMinY, column.minY);
+    const int copyMaxYExclusive = std::min(sectionMaxYExclusive, column.maxYExclusive);
+    if (copyMinY >= copyMaxYExclusive) {
+        releaseRenderSectionOnly(*this, key);
+        return false;
+    }
+
+    bool hasNonAir = false;
+    bool hasExposedVoxel = false;
+    for (int z = 0; z < size && !hasExposedVoxel; ++z) {
+        for (int y = copyMinY; y < copyMaxYExclusive && !hasExposedVoxel; ++y) {
+            for (int x = 0; x < size; ++x) {
+                const glm::ivec3 columnLocal(x, y - column.minY, z);
+                const int columnIdx = columnVoxelIndex(column, columnLocal);
+                if (columnIdx < 0 || columnIdx >= static_cast<int>(column.ids.size())) continue;
+                if (column.ids[static_cast<size_t>(columnIdx)] == 0u) continue;
+                hasNonAir = true;
+                const glm::ivec3 worldPos(
+                    columnKey.coord.x * size + x,
+                    y,
+                    columnKey.coord.y * size + z
+                );
+                if (hasAirNeighbor(*this, worldPos)) {
+                    hasExposedVoxel = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (!hasNonAir || !hasExposedVoxel) {
+        releaseRenderSectionOnly(*this, key);
+        return false;
+    }
+
+    auto sectionIt = sections.find(key);
+    if (sectionIt == sections.end()) {
         VoxelSection section;
         section.size = size;
-        section.coord = sectionCoord;
+        section.coord = key.coord;
         VoxelSectionBuffers buffers = acquireBuffers(*this, size);
         section.ids = std::move(buffers.ids);
         section.colors = std::move(buffers.colors);
         section.skyLight = std::move(buffers.skyLight);
         section.blockLight = std::move(buffers.blockLight);
         auto [insertedIt, _] = sections.emplace(key, std::move(section));
-        it = insertedIt;
-        ensureChunkState(key).hasSection = true;
+        sectionIt = insertedIt;
+    } else {
+        VoxelSection& section = sectionIt->second;
+        const size_t count = static_cast<size_t>(size) * static_cast<size_t>(size) * static_cast<size_t>(size);
+        section.size = size;
+        section.coord = key.coord;
+        section.ids.assign(count, 0u);
+        section.colors.assign(count, 0u);
+        section.skyLight.assign(count, defaultSkyLightLevel);
+        section.blockLight.assign(count, static_cast<uint8_t>(0));
+        section.nonAirCount = 0;
     }
 
-    VoxelSection& section = it->second;
-    int idx = voxelIndex(local, section.size);
-    uint32_t oldId = section.ids[idx];
-    uint32_t oldColor = section.colors[idx];
-    if (oldId == id && oldColor == color) return;
-    section.ids[idx] = id;
-    section.colors[idx] = (id == 0) ? 0 : color;
-    if (oldId == 0 && id != 0) section.nonAirCount += 1;
-    if (oldId != 0 && id == 0) section.nonAirCount -= 1;
-    if (markDirty) {
-        section.editVersion += 1;
-        section.dirty = true;
-        markSectionDirty(key);
+    VoxelSection& section = sectionIt->second;
+    for (int z = 0; z < size; ++z) {
+        for (int y = copyMinY; y < copyMaxYExclusive; ++y) {
+            for (int x = 0; x < size; ++x) {
+                const glm::ivec3 columnLocal(x, y - column.minY, z);
+                const int columnIdx = columnVoxelIndex(column, columnLocal);
+                if (columnIdx < 0 || columnIdx >= static_cast<int>(column.ids.size())) continue;
+
+                const uint32_t id = column.ids[static_cast<size_t>(columnIdx)];
+                const int sectionLocalY = y - sectionMinY;
+                const int sectionIdx = voxelIndex(glm::ivec3(x, sectionLocalY, z), size);
+                if (sectionIdx < 0 || sectionIdx >= static_cast<int>(section.ids.size())) continue;
+                section.ids[static_cast<size_t>(sectionIdx)] = id;
+                section.colors[static_cast<size_t>(sectionIdx)] =
+                    id == 0u ? 0u : column.colors[static_cast<size_t>(columnIdx)];
+                if (static_cast<size_t>(columnIdx) < column.skyLight.size()
+                    && static_cast<size_t>(sectionIdx) < section.skyLight.size()) {
+                    section.skyLight[static_cast<size_t>(sectionIdx)] =
+                        column.skyLight[static_cast<size_t>(columnIdx)];
+                }
+                if (static_cast<size_t>(columnIdx) < column.blockLight.size()
+                    && static_cast<size_t>(sectionIdx) < section.blockLight.size()) {
+                    section.blockLight[static_cast<size_t>(sectionIdx)] =
+                        column.blockLight[static_cast<size_t>(columnIdx)];
+                }
+                if (id != 0u) section.nonAirCount += 1;
+            }
+        }
     }
 
     if (section.nonAirCount <= 0) {
-        releaseSection(key);
+        releaseRenderSectionOnly(*this, key);
+        return false;
     }
+
+    ensureChunkState(key).hasSection = true;
+    return true;
 }
 
 uint64_t VoxelWorldContext::markSectionDirty(const VoxelSectionKey& key) {
@@ -222,18 +606,74 @@ uint64_t VoxelWorldContext::getSectionDirtyTicket(const VoxelSectionKey& key) co
 }
 
 void VoxelWorldContext::releaseSection(const VoxelSectionKey& key) {
-    auto it = sections.find(key);
-    if (it == sections.end()) return;
-    VoxelSectionBuffers buffers;
-    buffers.ids = std::move(it->second.ids);
-    buffers.colors = std::move(it->second.colors);
-    buffers.skyLight = std::move(it->second.skyLight);
-    buffers.blockLight = std::move(it->second.blockLight);
-    releaseBuffers(*this, it->second.size, std::move(buffers));
-    sections.erase(it);
-    clearSectionDirty(key);
-    auto chunkIt = chunkStates.find(key);
-    if (chunkIt != chunkStates.end()) {
-        chunkIt->second.hasSection = false;
+    releaseRenderSectionOnly(*this, key);
+
+    const int size = sectionSizeForTier(sectionSize, 0);
+    const VoxelColumnKey columnKey{glm::ivec2(key.coord.x, key.coord.z)};
+    auto columnIt = columns.find(columnKey);
+    if (columnIt != columns.end()) {
+        VoxelColumn& column = columnIt->second;
+        const int sectionMinY = key.coord.y * size;
+        const int sectionMaxYExclusive = sectionMinY + size;
+        const int clearMinY = std::max(sectionMinY, column.minY);
+        const int clearMaxYExclusive = std::min(sectionMaxYExclusive, column.maxYExclusive);
+        for (int z = 0; z < size; ++z) {
+            for (int y = clearMinY; y < clearMaxYExclusive; ++y) {
+                for (int x = 0; x < size; ++x) {
+                    const glm::ivec3 local(x, y - column.minY, z);
+                    const int idx = columnVoxelIndex(column, local);
+                    if (idx < 0 || idx >= static_cast<int>(column.ids.size())) continue;
+                    uint32_t& oldId = column.ids[static_cast<size_t>(idx)];
+                    if (oldId != 0u) {
+                        oldId = 0u;
+                        column.colors[static_cast<size_t>(idx)] = 0u;
+                        column.nonAirCount = std::max(0, column.nonAirCount - 1);
+                    }
+                }
+            }
+        }
+        if (column.nonAirCount <= 0) {
+            columns.erase(columnIt);
+            auto columnStateIt = columnStates.find(columnKey);
+            if (columnStateIt != columnStates.end()) {
+                columnStateIt->second.hasSection = false;
+            }
+        }
     }
+    (void)size;
+}
+
+void VoxelWorldContext::releaseColumn(const VoxelColumnKey& key) {
+    const int size = sectionSizeForTier(sectionSize, 0);
+    auto columnIt = columns.find(key);
+    if (columnIt != columns.end()) {
+        std::vector<VoxelSectionKey> slabKeys;
+        const int minSectionY = floorDivInt(columnIt->second.minY, size);
+        const int maxSectionY = floorDivInt(columnIt->second.maxYExclusive - 1, size);
+        slabKeys.reserve(static_cast<size_t>(std::max(0, maxSectionY - minSectionY + 1)));
+        for (int sectionY = minSectionY; sectionY <= maxSectionY; ++sectionY) {
+            const VoxelSectionKey slabKey{glm::ivec3(key.coord.x, sectionY, key.coord.y)};
+            if (sections.count(slabKey) > 0 || chunkStates.count(slabKey) > 0) {
+                slabKeys.push_back(slabKey);
+            }
+        }
+        for (const VoxelSectionKey& slabKey : slabKeys) {
+            releaseRenderSectionOnly(*this, slabKey);
+            chunkStates.erase(slabKey);
+        }
+        columns.erase(columnIt);
+    } else {
+        std::vector<VoxelSectionKey> renderKeys;
+        for (const auto& [sectionKey, _] : sections) {
+            if (sectionKey.coord.x == key.coord.x && sectionKey.coord.z == key.coord.y) {
+                renderKeys.push_back(sectionKey);
+            }
+        }
+        for (const VoxelSectionKey& sectionKey : renderKeys) {
+            releaseRenderSectionOnly(*this, sectionKey);
+            chunkStates.erase(sectionKey);
+        }
+    }
+    columnStates.erase(key);
+    (void)size;
 }

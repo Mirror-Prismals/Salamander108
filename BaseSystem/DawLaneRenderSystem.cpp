@@ -27,6 +27,7 @@ namespace DawLaneResourceSystemLogic {
 namespace DawIOSystemLogic {
     double BarSamples(const DawContext& daw);
     int64_t BarDisplayToSample(const DawContext& daw, int displayBar);
+    std::string ThemeBackdropModeLabel(const std::string& mode);
 }
 namespace AudioSystemLogic {
     bool SupportsManagedJackServer(const BaseSystem&);
@@ -152,6 +153,9 @@ namespace DawLaneRenderSystemLogic {
             Rect pianoField;
             Rect pianoAccentField;
             Rect laneField;
+            Rect backdropField;
+            Rect backdropPrev;
+            Rect backdropNext;
             Rect audioOutField;
             Rect audioOutPrev;
             Rect audioOutNext;
@@ -277,7 +281,7 @@ namespace DawLaneRenderSystemLogic {
         SettingsDialogLayout computeSettingsDialogLayout(const DawLaneTimelineSystemLogic::LaneLayout& layout) {
             SettingsDialogLayout out;
             out.w = 640.0f;
-            out.h = 390.0f;
+            out.h = 430.0f;
             out.x = std::max(24.0f, static_cast<float>((layout.screenWidth - out.w) * 0.5));
             out.y = std::max(24.0f, static_cast<float>((layout.screenHeight - out.h) * 0.5) - 24.0f);
             const float closeSize = 24.0f;
@@ -310,6 +314,9 @@ namespace DawLaneRenderSystemLogic {
             out.pianoField = makeRect(fieldX, bodyTop + 170.0f, fieldW, 28.0f);
             out.pianoAccentField = makeRect(fieldX, bodyTop + 208.0f, fieldW, 28.0f);
             out.laneField = makeRect(fieldX, bodyTop + 246.0f, fieldW, 28.0f);
+            out.backdropPrev = makeRect(fieldX, bodyTop + 284.0f, 28.0f, 28.0f);
+            out.backdropField = makeRect(fieldX + 36.0f, bodyTop + 284.0f, fieldW - 72.0f, 28.0f);
+            out.backdropNext = makeRect(fieldX + fieldW - 28.0f, bodyTop + 284.0f, 28.0f, 28.0f);
 
             const float audioLabelX = out.x + 48.0f;
             const float audioFieldX = out.x + 180.0f;
@@ -1267,6 +1274,17 @@ namespace DawLaneRenderSystemLogic {
                     if (daw.settingsSelectedTheme >= 0 && daw.settingsSelectedTheme < static_cast<int>(daw.themes.size())) {
                         selectedTheme = &daw.themes[static_cast<size_t>(daw.settingsSelectedTheme)];
                     }
+                    if (selectedTheme) {
+                        const std::string backdropText =
+                            std::string("Backdrop: ") + DawIOSystemLogic::ThemeBackdropModeLabel(selectedTheme->backdropMode);
+                        pushText(vertices,
+                                 settingsLayout.x + 314.0f,
+                                 settingsLayout.y + 154.0f,
+                                 backdropText.c_str(),
+                                 textColor,
+                                 layout.screenWidth,
+                                 layout.screenHeight);
+                    }
                     const bool canEdit = selectedTheme && selectedTheme->name != "Default";
                     const bool canDelete = selectedTheme
                         && selectedTheme->name != "Default"
@@ -1339,6 +1357,31 @@ namespace DawLaneRenderSystemLogic {
                               "Lane RGBA",
                               daw.themeDraftLaneHex.empty() ? std::string("<RRGGBBAA>") : daw.themeDraftLaneHex,
                               daw.themeEditField == 6);
+                    pushText(vertices,
+                             settingsLayout.backdropField.left,
+                             settingsLayout.backdropField.top - 6.0f,
+                             "Backdrop",
+                             textColor,
+                             layout.screenWidth,
+                             layout.screenHeight);
+                    pushBeveledRect(vertices,
+                                    settingsLayout.backdropField,
+                                    3.0f,
+                                    glm::clamp(panelFront + glm::vec3(0.02f), glm::vec3(0.0f), glm::vec3(1.0f)),
+                                    glm::clamp(panelTop + glm::vec3(0.02f), glm::vec3(0.0f), glm::vec3(1.0f)),
+                                    glm::clamp(panelSide - glm::vec3(0.01f), glm::vec3(0.0f), glm::vec3(1.0f)),
+                                    layout.screenWidth,
+                                    layout.screenHeight);
+                    const std::string backdropLabel = DawIOSystemLogic::ThemeBackdropModeLabel(daw.themeDraftBackdropMode);
+                    pushText(vertices,
+                             settingsLayout.backdropField.left + 8.0f,
+                             settingsLayout.backdropField.top + 18.0f,
+                             backdropLabel.c_str(),
+                             textColor,
+                             layout.screenWidth,
+                             layout.screenHeight);
+                    drawButton(settingsLayout.backdropPrev, "<", false, false);
+                    drawButton(settingsLayout.backdropNext, ">", false, false);
                     drawButton(settingsLayout.backBtn, "Back", false, false);
                     drawButton(settingsLayout.saveBtn, "Save", false, false);
                 }

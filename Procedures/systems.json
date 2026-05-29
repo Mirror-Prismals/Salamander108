@@ -94,6 +94,7 @@
         "3DGrassSystem.json",
         "WaterRenderSystem.json",
         "OverlayRenderSystem.json",
+        "DawBackdropSystem.json",
         "UIScreenSystem.json",
         "DawLaneTimelineSystem.json",
         "DawLaneModalSystem.json",

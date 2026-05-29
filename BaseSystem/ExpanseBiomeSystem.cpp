@@ -256,6 +256,7 @@ namespace ExpanseBiomeSystemLogic {
                 cfg.islandMaxHeight = terrain.value("islandMaxHeight", cfg.islandMaxHeight);
                 cfg.islandNoiseScale = terrain.value("islandNoiseScale", cfg.islandNoiseScale);
                 cfg.islandNoiseAmp = terrain.value("islandNoiseAmp", cfg.islandNoiseAmp);
+                cfg.maxSurfaceY = terrain.value("maxSurfaceY", cfg.maxSurfaceY);
                 cfg.beachHeight = terrain.value("beachHeight", cfg.beachHeight);
                 cfg.baseElevation = terrain.value("baseElevation", cfg.baseElevation);
                 cfg.baseRidge = terrain.value("baseRidge", cfg.baseRidge);
@@ -342,6 +343,9 @@ namespace ExpanseBiomeSystemLogic {
             if (!isDesertBiome) {
                 height += LeyLineSystemLogic::SampleLeyUplift(worldCtx, x, z);
             }
+            if (std::isfinite(cfg.maxSurfaceY)) {
+                height = std::min(height, cfg.maxSurfaceY);
+            }
             outHeight = height;
             if (height <= cfg.waterSurface) {
                 return false;
@@ -372,6 +376,9 @@ namespace ExpanseBiomeSystemLogic {
         const bool isDesertBiome = x >= cfg.desertStartX;
         if (!isDesertBiome) {
             height += LeyLineSystemLogic::SampleLeyUplift(worldCtx, x, z);
+        }
+        if (std::isfinite(cfg.maxSurfaceY)) {
+            height = std::min(height, cfg.maxSurfaceY);
         }
         outHeight = height;
         return true;

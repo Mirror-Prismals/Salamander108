@@ -382,6 +382,8 @@ void Host::registerSystemFunctions() {
     functionRegistry["UpdateColorEmotions"] = ColorEmotionSystemLogic::UpdateColorEmotions;
     functionRegistry["UpdateBuildMode"] = BuildSystemLogic::UpdateBuildMode;
     functionRegistry["UpdateMiniModels"] = MiniModelSystemLogic::UpdateMiniModels;
+    functionRegistry["UpdateDawBackdrop"] = DawBackdropSystemLogic::UpdateDawBackdrop;
+    functionRegistry["CleanupDawBackdrop"] = DawBackdropSystemLogic::CleanupDawBackdrop;
     functionRegistry["UpdateUIScreen"] = UIScreenSystemLogic::UpdateUIScreen;
     functionRegistry["UpdateSecurityCamera"] = SecurityCameraSystemLogic::UpdateSecurityCamera;
     functionRegistry["UpdateDimension"] = DimensionSystemLogic::UpdateDimension;

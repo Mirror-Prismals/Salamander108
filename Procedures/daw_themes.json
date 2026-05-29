@@ -1,8 +1,9 @@
 {
   "format": "salamander_theme_presets",
-  "selected_theme": "Default 2",
+  "selected_theme": "hg",
   "themes": [
     {
+      "backdrop_mode": "world_camera",
       "background": "008080D9",
       "builtin": true,
       "button": "E6E0D4D9",
@@ -13,6 +14,7 @@
       "piano_roll_accent": "003333FF"
     },
     {
+      "backdrop_mode": "red_wave",
       "background": "EEEEEE0F",
       "builtin": false,
       "button": "CC2626CC",
@@ -23,8 +25,9 @@
       "piano_roll_accent": "7A1A1AFF"
     },
     {
+      "backdrop_mode": "binary_waterfall",
       "background": "0E1620E6",
-      "builtin": true,
+      "builtin": false,
       "button": "E6B35FCC",
       "lane": "E4D2B2FF",
       "name": "Default 3",
@@ -33,6 +36,7 @@
       "piano_roll_accent": "274766FF"
     },
     {
+      "backdrop_mode": "true_color",
       "background": "008080D9",
       "builtin": false,
       "button": "AEB36798",

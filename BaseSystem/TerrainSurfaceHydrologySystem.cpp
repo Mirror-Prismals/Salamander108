@@ -70,6 +70,44 @@ namespace TerrainSystemLogic {
         static std::unordered_map<VoxelSectionKey, std::vector<glm::ivec3>, VoxelSectionKeyHash>
             g_pendingDepthFeatureChalkPlacements;
 
+        struct TerrainPrototypeLookupCache {
+            const std::vector<Entity>* source = nullptr;
+            const Entity* data = nullptr;
+            size_t size = 0;
+            std::unordered_map<std::string, const Entity*> byName;
+            const Entity* fallbackBlock = nullptr;
+
+            void sync(const std::vector<Entity>& prototypes) {
+                const Entity* currentData = prototypes.empty() ? nullptr : prototypes.data();
+                if (source == &prototypes && data == currentData && size == prototypes.size()) return;
+                source = &prototypes;
+                data = currentData;
+                size = prototypes.size();
+                byName.clear();
+                fallbackBlock = nullptr;
+            }
+        };
+
+        const Entity* findTerrainPrototypeCached(std::vector<Entity>& prototypes, const char* name) {
+            static thread_local TerrainPrototypeLookupCache cache;
+            cache.sync(prototypes);
+            const std::string key(name ? name : "");
+            auto it = cache.byName.find(key);
+            if (it != cache.byName.end()) return it->second;
+            const Entity* proto = HostLogic::findPrototype(key, prototypes);
+            cache.byName.emplace(key, proto);
+            return proto;
+        }
+
+        const Entity* findTerrainFallbackBlockCached(std::vector<Entity>& prototypes) {
+            static thread_local TerrainPrototypeLookupCache cache;
+            cache.sync(prototypes);
+            if (!cache.fallbackBlock) {
+                cache.fallbackBlock = findNonZeroBlockProto(prototypes);
+            }
+            return cache.fallbackBlock;
+        }
+
         bool GenerateExpanseSectionWorker(BaseSystem& baseSystem,
                                           std::vector<Entity>& prototypes,
                                           WorldContext& worldCtx,
@@ -81,7 +119,10 @@ namespace TerrainSystemLogic {
                                           int& outNextColumn,
                                           bool& outCompleted,
                                           bool& outPostFeaturesCompleted,
-                                          bool runPostFeatures) {
+                                          bool runPostFeatures,
+                                          bool columnMode,
+                                          int columnMinY,
+                                          int columnMaxY) {
             if (!baseSystem.voxelWorld) {
                 outNextColumn = startColumn;
                 outCompleted = true;
@@ -91,6 +132,49 @@ namespace TerrainSystemLogic {
             VoxelWorldContext& voxelWorld = *baseSystem.voxelWorld;
             int size = sectionSizeForSection(voxelWorld);
             int scale = 1;
+            auto readRegistryInt = static_cast<int (*)(const BaseSystem&, const std::string&, int)>(&getRegistryInt);
+            auto readRegistryBool = static_cast<bool (*)(const BaseSystem&, const std::string&, bool)>(&getRegistryBool);
+            auto readRegistryFloat = static_cast<float (*)(const BaseSystem&, const std::string&, float)>(&getRegistryFloat);
+            auto readRegistryString =
+                static_cast<std::string (*)(const BaseSystem&, const std::string&, const std::string&)>(&getRegistryString);
+            std::unordered_map<std::string, int> registryIntCache;
+            std::unordered_map<std::string, bool> registryBoolCache;
+            std::unordered_map<std::string, float> registryFloatCache;
+            std::unordered_map<std::string, std::string> registryStringCache;
+            auto getRegistryInt = [&](const BaseSystem& system, const std::string& key, int fallback) -> int {
+                const std::string cacheKey = key + "\n" + std::to_string(fallback);
+                auto it = registryIntCache.find(cacheKey);
+                if (it != registryIntCache.end()) return it->second;
+                const int value = readRegistryInt(system, key, fallback);
+                registryIntCache.emplace(cacheKey, value);
+                return value;
+            };
+            auto getRegistryBool = [&](const BaseSystem& system, const std::string& key, bool fallback) -> bool {
+                const std::string cacheKey = key + (fallback ? "\n1" : "\n0");
+                auto it = registryBoolCache.find(cacheKey);
+                if (it != registryBoolCache.end()) return it->second;
+                const bool value = readRegistryBool(system, key, fallback);
+                registryBoolCache.emplace(cacheKey, value);
+                return value;
+            };
+            auto getRegistryFloat = [&](const BaseSystem& system, const std::string& key, float fallback) -> float {
+                const std::string cacheKey = key + "\n" + std::to_string(fallback);
+                auto it = registryFloatCache.find(cacheKey);
+                if (it != registryFloatCache.end()) return it->second;
+                const float value = readRegistryFloat(system, key, fallback);
+                registryFloatCache.emplace(cacheKey, value);
+                return value;
+            };
+            auto getRegistryString = [&](const BaseSystem& system,
+                                         const std::string& key,
+                                         const std::string& fallback) -> std::string {
+                const std::string cacheKey = key + "\n" + fallback;
+                auto it = registryStringCache.find(cacheKey);
+                if (it != registryStringCache.end()) return it->second;
+                const std::string value = readRegistryString(system, key, fallback);
+                registryStringCache.emplace(cacheKey, value);
+                return value;
+            };
             const std::string currentLevel = getRegistryString(baseSystem, "level", "the_expanse");
             const bool isDepthLevel = (currentLevel == "the_depths");
             const bool isExpanseLevel = (currentLevel == "the_expanse");
@@ -99,10 +183,10 @@ namespace TerrainSystemLogic {
             outPostFeaturesCompleted = false;
             auto pickBlockProto = [&](std::initializer_list<const char*> names) -> const Entity* {
                 for (const char* name : names) {
-                    const Entity* proto = HostLogic::findPrototype(name, prototypes);
+                    const Entity* proto = findTerrainPrototypeCached(prototypes, name);
                     if (proto && proto->prototypeID != 0) return proto;
                 }
-                return findNonZeroBlockProto(prototypes);
+                return findTerrainFallbackBlockCached(prototypes);
             };
             std::array<const Entity*, 4> surfaceProtoConiferVariants = {
                 pickBlockProto({"GrassBlockTex", "ScaffoldBlock"}),
@@ -129,24 +213,24 @@ namespace TerrainSystemLogic {
             const Entity* depthStoneProto = pickBlockProto({"DepthStoneBlockTex", "StoneBlockTex", "ScaffoldBlock"});
             // Portals are disabled; depths are now a contiguous underground band in the expanse.
             const Entity* voidPortalProto = nullptr;
-            const Entity* rubyOreProto = HostLogic::findPrototype("RubyOreTex", prototypes);
-            const Entity* silverOreProto = HostLogic::findPrototype("SilverOreTex", prototypes);
-            const Entity* amethystOreProto = HostLogic::findPrototype("AmethystOreTex", prototypes);
-            const Entity* flouriteOreProto = HostLogic::findPrototype("FlouriteOreTex", prototypes);
-            const Entity* graniteProto = HostLogic::findPrototype("GraniteBlockTex", prototypes);
-            const Entity* chalkProto = HostLogic::findPrototype("ChalkBlockTex", prototypes);
-            const Entity* clayProto = HostLogic::findPrototype("ClayBlockTex", prototypes);
-            const Entity* chalkStickProtoX = HostLogic::findPrototype("StonePebbleChalkTexX", prototypes);
-            const Entity* chalkStickProtoZ = HostLogic::findPrototype("StonePebbleChalkTexZ", prototypes);
-            const Entity* waterProto = HostLogic::findPrototype("Water", prototypes);
-            const Entity* waterSlopeProtoPosX = HostLogic::findPrototype("WaterSlopePosX", prototypes);
-            const Entity* waterSlopeProtoNegX = HostLogic::findPrototype("WaterSlopeNegX", prototypes);
-            const Entity* waterSlopeProtoPosZ = HostLogic::findPrototype("WaterSlopePosZ", prototypes);
-            const Entity* waterSlopeProtoNegZ = HostLogic::findPrototype("WaterSlopeNegZ", prototypes);
-            const Entity* waterSlopeCornerProtoPosXPosZ = HostLogic::findPrototype("WaterSlopeCornerPosXPosZ", prototypes);
-            const Entity* waterSlopeCornerProtoPosXNegZ = HostLogic::findPrototype("WaterSlopeCornerPosXNegZ", prototypes);
-            const Entity* waterSlopeCornerProtoNegXPosZ = HostLogic::findPrototype("WaterSlopeCornerNegXPosZ", prototypes);
-            const Entity* waterSlopeCornerProtoNegXNegZ = HostLogic::findPrototype("WaterSlopeCornerNegXNegZ", prototypes);
+            const Entity* rubyOreProto = findTerrainPrototypeCached(prototypes, "RubyOreTex");
+            const Entity* silverOreProto = findTerrainPrototypeCached(prototypes, "SilverOreTex");
+            const Entity* amethystOreProto = findTerrainPrototypeCached(prototypes, "AmethystOreTex");
+            const Entity* flouriteOreProto = findTerrainPrototypeCached(prototypes, "FlouriteOreTex");
+            const Entity* graniteProto = findTerrainPrototypeCached(prototypes, "GraniteBlockTex");
+            const Entity* chalkProto = findTerrainPrototypeCached(prototypes, "ChalkBlockTex");
+            const Entity* clayProto = findTerrainPrototypeCached(prototypes, "ClayBlockTex");
+            const Entity* chalkStickProtoX = findTerrainPrototypeCached(prototypes, "StonePebbleChalkTexX");
+            const Entity* chalkStickProtoZ = findTerrainPrototypeCached(prototypes, "StonePebbleChalkTexZ");
+            const Entity* waterProto = findTerrainPrototypeCached(prototypes, "Water");
+            const Entity* waterSlopeProtoPosX = findTerrainPrototypeCached(prototypes, "WaterSlopePosX");
+            const Entity* waterSlopeProtoNegX = findTerrainPrototypeCached(prototypes, "WaterSlopeNegX");
+            const Entity* waterSlopeProtoPosZ = findTerrainPrototypeCached(prototypes, "WaterSlopePosZ");
+            const Entity* waterSlopeProtoNegZ = findTerrainPrototypeCached(prototypes, "WaterSlopeNegZ");
+            const Entity* waterSlopeCornerProtoPosXPosZ = findTerrainPrototypeCached(prototypes, "WaterSlopeCornerPosXPosZ");
+            const Entity* waterSlopeCornerProtoPosXNegZ = findTerrainPrototypeCached(prototypes, "WaterSlopeCornerPosXNegZ");
+            const Entity* waterSlopeCornerProtoNegXPosZ = findTerrainPrototypeCached(prototypes, "WaterSlopeCornerNegXPosZ");
+            const Entity* waterSlopeCornerProtoNegXNegZ = findTerrainPrototypeCached(prototypes, "WaterSlopeCornerNegXNegZ");
             const Entity* obsidianProto = pickBlockProto({"ObsidianBlockTex", "StoneBlockTex", "ScaffoldBlock"});
             const std::array<const Entity*, 9> depthLavaTileProtos = {
                 pickBlockProto({"DepthLavaTileR01C01", "LavaBlockTex", "StoneBlockTex", "ScaffoldBlock"}),
@@ -160,37 +244,37 @@ namespace TerrainSystemLogic {
                 pickBlockProto({"DepthLavaTileR03C03", "LavaBlockTex", "StoneBlockTex", "ScaffoldBlock"})
             };
             const std::array<const Entity*, 7> depthLodestoneOreProtos = {
-                HostLogic::findPrototype("DepthLodestoneOreV001", prototypes),
-                HostLogic::findPrototype("DepthLodestoneOreV002", prototypes),
-                HostLogic::findPrototype("DepthLodestoneOreV003", prototypes),
-                HostLogic::findPrototype("DepthLodestoneOreV004", prototypes),
-                HostLogic::findPrototype("DepthLodestoneOreV005", prototypes),
-                HostLogic::findPrototype("DepthLodestoneOreV006", prototypes),
-                HostLogic::findPrototype("DepthLodestoneOreV007", prototypes)
+                findTerrainPrototypeCached(prototypes, "DepthLodestoneOreV001"),
+                findTerrainPrototypeCached(prototypes, "DepthLodestoneOreV002"),
+                findTerrainPrototypeCached(prototypes, "DepthLodestoneOreV003"),
+                findTerrainPrototypeCached(prototypes, "DepthLodestoneOreV004"),
+                findTerrainPrototypeCached(prototypes, "DepthLodestoneOreV005"),
+                findTerrainPrototypeCached(prototypes, "DepthLodestoneOreV006"),
+                findTerrainPrototypeCached(prototypes, "DepthLodestoneOreV007")
             };
-            const Entity* depthCopperSulfateOreProto = HostLogic::findPrototype("DepthCopperSulfateOreTex", prototypes);
-            const Entity* depthPurpleDirtProto = HostLogic::findPrototype("DepthPurpleDirtTex", prototypes);
-            const Entity* depthRustBeamProto = HostLogic::findPrototype("DepthRustBeamTex", prototypes);
+            const Entity* depthCopperSulfateOreProto = findTerrainPrototypeCached(prototypes, "DepthCopperSulfateOreTex");
+            const Entity* depthPurpleDirtProto = findTerrainPrototypeCached(prototypes, "DepthPurpleDirtTex");
+            const Entity* depthRustBeamProto = findTerrainPrototypeCached(prototypes, "DepthRustBeamTex");
             const std::array<const Entity*, 4> depthBigLilypadProtosX = {
-                HostLogic::findPrototype("GrassCoverBigLilypadR01C01TexX", prototypes),
-                HostLogic::findPrototype("GrassCoverBigLilypadR01C02TexX", prototypes),
-                HostLogic::findPrototype("GrassCoverBigLilypadR02C01TexX", prototypes),
-                HostLogic::findPrototype("GrassCoverBigLilypadR02C02TexX", prototypes)
+                findTerrainPrototypeCached(prototypes, "GrassCoverBigLilypadR01C01TexX"),
+                findTerrainPrototypeCached(prototypes, "GrassCoverBigLilypadR01C02TexX"),
+                findTerrainPrototypeCached(prototypes, "GrassCoverBigLilypadR02C01TexX"),
+                findTerrainPrototypeCached(prototypes, "GrassCoverBigLilypadR02C02TexX")
             };
             const std::array<const Entity*, 4> depthBigLilypadProtosZ = {
-                HostLogic::findPrototype("GrassCoverBigLilypadR01C01TexZ", prototypes),
-                HostLogic::findPrototype("GrassCoverBigLilypadR01C02TexZ", prototypes),
-                HostLogic::findPrototype("GrassCoverBigLilypadR02C01TexZ", prototypes),
-                HostLogic::findPrototype("GrassCoverBigLilypadR02C02TexZ", prototypes)
+                findTerrainPrototypeCached(prototypes, "GrassCoverBigLilypadR01C01TexZ"),
+                findTerrainPrototypeCached(prototypes, "GrassCoverBigLilypadR01C02TexZ"),
+                findTerrainPrototypeCached(prototypes, "GrassCoverBigLilypadR02C01TexZ"),
+                findTerrainPrototypeCached(prototypes, "GrassCoverBigLilypadR02C02TexZ")
             };
-            const Entity* depthMossWallProtoPosX = HostLogic::findPrototype("DepthMossWallTexPosX", prototypes);
-            const Entity* depthMossWallProtoNegX = HostLogic::findPrototype("DepthMossWallTexNegX", prototypes);
-            const Entity* depthMossWallProtoPosZ = HostLogic::findPrototype("DepthMossWallTexPosZ", prototypes);
-            const Entity* depthMossWallProtoNegZ = HostLogic::findPrototype("DepthMossWallTexNegZ", prototypes);
-            const Entity* depthCrystalProto = HostLogic::findPrototype("DepthCrystalClusterTex", prototypes);
-            const Entity* depthCrystalBlueProto = HostLogic::findPrototype("DepthCrystalClusterBlueTex", prototypes);
-            const Entity* depthCrystalBlueBigProto = HostLogic::findPrototype("DepthCrystalClusterBlueBigTex", prototypes);
-            const Entity* depthCrystalMagentaBigProto = HostLogic::findPrototype("DepthCrystalClusterMagentaBigTex", prototypes);
+            const Entity* depthMossWallProtoPosX = findTerrainPrototypeCached(prototypes, "DepthMossWallTexPosX");
+            const Entity* depthMossWallProtoNegX = findTerrainPrototypeCached(prototypes, "DepthMossWallTexNegX");
+            const Entity* depthMossWallProtoPosZ = findTerrainPrototypeCached(prototypes, "DepthMossWallTexPosZ");
+            const Entity* depthMossWallProtoNegZ = findTerrainPrototypeCached(prototypes, "DepthMossWallTexNegZ");
+            const Entity* depthCrystalProto = findTerrainPrototypeCached(prototypes, "DepthCrystalClusterTex");
+            const Entity* depthCrystalBlueProto = findTerrainPrototypeCached(prototypes, "DepthCrystalClusterBlueTex");
+            const Entity* depthCrystalBlueBigProto = findTerrainPrototypeCached(prototypes, "DepthCrystalClusterBlueBigTex");
+            const Entity* depthCrystalMagentaBigProto = findTerrainPrototypeCached(prototypes, "DepthCrystalClusterMagentaBigTex");
             if (!surfaceProtoConifer || !waterProto) {
                 outNextColumn = startColumn;
                 outCompleted = true;
@@ -225,19 +309,22 @@ namespace TerrainSystemLogic {
                 soilProto = depthStoneProto;
             }
 
-            int caveMinY = -96;
+            int caveMinY = -70;
             if (isDepthLevel) {
-                caveMinY = std::min(caveMinY, cfg.minY - 8);
+                caveMinY = std::min(caveMinY, cfg.minY);
             }
             if (isExpanseLevel && getRegistryBool(baseSystem, "UnifiedDepthsEnabled", true)) {
                 caveMinY = std::min(
                     caveMinY,
-                    getRegistryInt(baseSystem, "UnifiedDepthsMinY", -200) - 8
+                    getRegistryInt(baseSystem, "UnifiedDepthsMinY", -70)
                 );
             }
             const int caveMaxY = std::max(
                 192,
-                static_cast<int>(std::ceil(cfg.waterSurface + cfg.islandMaxHeight + (cfg.islandNoiseAmp * 2.0f)))
+                std::max(
+                    static_cast<int>(std::ceil(cfg.waterSurface + cfg.islandMaxHeight + (cfg.islandNoiseAmp * 2.0f))),
+                    std::isfinite(cfg.maxSurfaceY) ? static_cast<int>(std::ceil(cfg.maxSurfaceY)) : 192
+                )
             );
             ensureCaveField(baseSystem, cfg, caveMinY, caveMaxY);
 
@@ -265,7 +352,10 @@ namespace TerrainSystemLogic {
             const float volcanoOuterRadius = std::max(8.0f, cfg.jungleVolcanoOuterRadius);
             const float volcanoCraterRadius = std::clamp(cfg.jungleVolcanoCraterRadius, 4.0f, volcanoOuterRadius * 0.95f);
             const float volcanoLavaRadius = volcanoCraterRadius;
-            const float volcanoPeakY = cfg.waterSurface + cfg.islandMaxHeight + cfg.jungleVolcanoHeight;
+            float volcanoPeakY = cfg.waterSurface + cfg.islandMaxHeight + cfg.jungleVolcanoHeight;
+            if (std::isfinite(cfg.maxSurfaceY)) {
+                volcanoPeakY = std::min(volcanoPeakY, cfg.maxSurfaceY);
+            }
             const float volcanoCraterFloorY = volcanoPeakY - std::max(0.0f, cfg.jungleVolcanoCraterDepth);
             const int volcanoLavaSurfaceY = static_cast<int>(std::floor(
                 volcanoCraterFloorY + std::max(2.0f, cfg.jungleVolcanoCraterDepth * 0.08f)
@@ -610,15 +700,13 @@ namespace TerrainSystemLogic {
             int waterFloorY = static_cast<int>(std::floor(cfg.waterFloor));
             const int waterFloorYLower = waterFloorY - 1;
             const int seabedPortalY = waterFloorY - 2;
-            // Hard split for expanse generation: legacy expanse cave stone must never appear below -98.
-            const int expanseDepthSplitY = isExpanseLevel ? -98 : seabedPortalY;
             const int depthPortalY = cfg.minY + 1;
             const bool unifiedDepthsEnabled = isExpanseLevel && getRegistryBool(baseSystem, "UnifiedDepthsEnabled", true);
-            const int unifiedDepthsTopY = expanseDepthSplitY - 1;
-            const int unifiedDepthsMinY = std::min(
-                unifiedDepthsTopY,
-                getRegistryInt(baseSystem, "UnifiedDepthsMinY", -200)
-            );
+            const int configuredUnifiedDepthsTopY = getRegistryInt(baseSystem, "UnifiedDepthsTopY", -20);
+            const int configuredUnifiedDepthsMinY = getRegistryInt(baseSystem, "UnifiedDepthsMinY", -70);
+            const int unifiedDepthsTopY = std::max(configuredUnifiedDepthsTopY, configuredUnifiedDepthsMinY);
+            const int unifiedDepthsMinY = std::min(configuredUnifiedDepthsTopY, configuredUnifiedDepthsMinY);
+            const int expanseDepthSplitY = isExpanseLevel ? (unifiedDepthsTopY + 1) : seabedPortalY;
             const int unifiedDepthRiverFloorGuard = std::max(
                 1,
                 getRegistryInt(baseSystem, "UnifiedDepthsRiverFloorGuard", 2)
@@ -652,7 +740,7 @@ namespace TerrainSystemLogic {
             const bool unifiedDepthRiverBandValid = (unifiedDepthRiverMinWaterY <= unifiedDepthRiverMaxWaterY);
             const int unifiedDepthRiverWaterY = unifiedDepthRiverBandValid
                 ? std::clamp(
-                    getRegistryInt(baseSystem, "UnifiedDepthsRiverWaterY", -150),
+                    getRegistryInt(baseSystem, "UnifiedDepthsRiverWaterY", -45),
                     unifiedDepthRiverMinWaterY,
                     unifiedDepthRiverMaxWaterY
                 )
@@ -691,8 +779,8 @@ namespace TerrainSystemLogic {
                 getRegistryInt(baseSystem, "UnifiedDepthsRiverCeilingCarveMax", 15)
             );
             const bool depthLavaFloorEnabled = getRegistryBool(baseSystem, "DepthLavaFloorEnabled", true);
-            const int depthLavaTopY = getRegistryInt(baseSystem, "DepthLavaTopY", -195);
-            const int depthLavaBottomY = getRegistryInt(baseSystem, "DepthLavaBottomY", -199);
+            const int depthLavaTopY = getRegistryInt(baseSystem, "DepthLavaTopY", -66);
+            const int depthLavaBottomY = getRegistryInt(baseSystem, "DepthLavaBottomY", -69);
             const int depthLodestoneSeed = getRegistryInt(baseSystem, "DepthLodestoneSeed", 12037);
             const int depthLodestoneVeinCellSize = std::max(6, getRegistryInt(baseSystem, "DepthLodestoneVeinCellSize", 16));
             const float depthLodestoneVeinChance = glm::clamp(getRegistryFloat(baseSystem, "DepthLodestoneVeinChance", 0.23f), 0.0f, 1.0f);
@@ -817,8 +905,8 @@ namespace TerrainSystemLogic {
                 }
                 return inVein;
             };
-            int sectionMinY = sectionCoord.y * size * scale;
-            int sectionMaxY = sectionMinY + size * scale - 1;
+            int sectionMinY = columnMode ? columnMinY : (sectionCoord.y * size * scale);
+            int sectionMaxY = columnMode ? columnMaxY : (sectionMinY + size * scale - 1);
             int minY = std::min(cfg.minY, waterFloorY);
             if (isExpanseLevel) {
                 minY = std::min(minY, seabedPortalY);
@@ -832,7 +920,9 @@ namespace TerrainSystemLogic {
                 const int volcanoChamberBottomY = volcanoLavaSurfaceY - volcanoLavaDepth - volcanoChamberDepth;
                 minY = std::min(minY, volcanoChamberBottomY - 8);
             }
-            minY = std::min(minY, -96);
+            if (isExpanseLevel && unifiedDepthsEnabled) {
+                minY = std::max(minY, unifiedDepthsMinY);
+            }
             int maxY = computeExpanseMaxY(baseSystem, worldCtx, cfg);
             const int totalColumns = size * size;
             const bool terrainDetailPass = !runPostFeatures && startColumn >= totalColumns;
@@ -851,6 +941,111 @@ namespace TerrainSystemLogic {
                 clampedEndColumn = std::min(totalColumns, clampedStartColumn + maxColumns);
             }
             bool wroteAny = false;
+            VoxelColumn* directColumn = nullptr;
+            const VoxelColumnKey directColumnKey{glm::ivec2(sectionCoord.x, sectionCoord.z)};
+            auto ensureDirectColumn = [&]() -> VoxelColumn* {
+                if (!directColumn) {
+                    directColumn = voxelWorld.ensureColumnForWrite(directColumnKey);
+                }
+                return directColumn;
+            };
+            auto writeVoxel = [&](const glm::ivec3& worldCoord,
+                                  uint32_t id,
+                                  uint32_t color) -> bool {
+                if (columnMode && !runPostFeatures
+                    && floorDivInt(worldCoord.x, size) == sectionCoord.x
+                    && floorDivInt(worldCoord.z, size) == sectionCoord.z) {
+                    VoxelColumn* column = ensureDirectColumn();
+                    if (!column) return false;
+                    const int localX = worldCoord.x - sectionCoord.x * size;
+                    const int localZ = worldCoord.z - sectionCoord.z * size;
+                    return voxelWorld.writeColumnBlock(*column, localX, worldCoord.y, localZ, id, color);
+                }
+                voxelWorld.setBlock(worldCoord, id, color, false);
+                return true;
+            };
+            auto writeVoxelRun = [&](int localX,
+                                     int localZ,
+                                     int minRunY,
+                                     int maxRunY,
+                                     uint32_t id,
+                                     uint32_t color) -> int {
+                if (minRunY > maxRunY) return 0;
+                if (columnMode && !runPostFeatures) {
+                    VoxelColumn* column = ensureDirectColumn();
+                    if (!column) return 0;
+                    return voxelWorld.writeColumnRun(*column, localX, localZ, minRunY, maxRunY, id, color);
+                }
+                int changed = 0;
+                for (int y = minRunY; y <= maxRunY; ++y) {
+                    voxelWorld.setBlock(glm::ivec3(sectionCoord.x * size + localX, y, sectionCoord.z * size + localZ),
+                                        id,
+                                        color,
+                                        false);
+                    changed += 1;
+                }
+                return changed;
+            };
+            struct TerrainSurfaceSample {
+                bool isLand = false;
+                float height = 0.0f;
+            };
+            std::unordered_map<uint64_t, TerrainSurfaceSample> terrainSampleCache;
+            auto terrainSampleKey = [](int x, int z) -> uint64_t {
+                return (static_cast<uint64_t>(static_cast<uint32_t>(x)) << 32u)
+                    | static_cast<uint32_t>(z);
+            };
+            auto sampleTerrainExact = [&](int x, int z) -> TerrainSurfaceSample {
+                const uint64_t key = terrainSampleKey(x, z);
+                auto it = terrainSampleCache.find(key);
+                if (it != terrainSampleCache.end()) return it->second;
+                TerrainSurfaceSample sample;
+                sample.isLand = ExpanseBiomeSystemLogic::SampleTerrain(
+                    worldCtx,
+                    static_cast<float>(x),
+                    static_cast<float>(z),
+                    sample.height
+                );
+                terrainSampleCache.emplace(key, sample);
+                return sample;
+            };
+            const int terrainCoarseHeightStep = std::max(1, getRegistryInt(baseSystem, "TerrainCoarseHeightStep", 1));
+            auto sampleTerrainColumn = [&](float worldX, float worldZ, float& outHeight) -> bool {
+                const int sampleX = static_cast<int>(std::floor(worldX));
+                const int sampleZ = static_cast<int>(std::floor(worldZ));
+                if (terrainCoarseHeightStep <= 1) {
+                    const TerrainSurfaceSample sample = sampleTerrainExact(sampleX, sampleZ);
+                    outHeight = sample.height;
+                    return sample.isLand;
+                }
+
+                const int baseX = floorDivInt(sampleX, terrainCoarseHeightStep) * terrainCoarseHeightStep;
+                const int baseZ = floorDivInt(sampleZ, terrainCoarseHeightStep) * terrainCoarseHeightStep;
+                const int nextX = baseX + terrainCoarseHeightStep;
+                const int nextZ = baseZ + terrainCoarseHeightStep;
+                const float tx = glm::clamp(
+                    (worldX - static_cast<float>(baseX)) / static_cast<float>(terrainCoarseHeightStep),
+                    0.0f,
+                    1.0f
+                );
+                const float tz = glm::clamp(
+                    (worldZ - static_cast<float>(baseZ)) / static_cast<float>(terrainCoarseHeightStep),
+                    0.0f,
+                    1.0f
+                );
+                const TerrainSurfaceSample s00 = sampleTerrainExact(baseX, baseZ);
+                const TerrainSurfaceSample s10 = sampleTerrainExact(nextX, baseZ);
+                const TerrainSurfaceSample s01 = sampleTerrainExact(baseX, nextZ);
+                const TerrainSurfaceSample s11 = sampleTerrainExact(nextX, nextZ);
+                const float hx0 = glm::mix(s00.height, s10.height, tx);
+                const float hx1 = glm::mix(s01.height, s11.height, tx);
+                outHeight = glm::mix(hx0, hx1, tz);
+                return outHeight > cfg.waterSurface
+                    || s00.isLand
+                    || s10.isLand
+                    || s01.isLand
+                    || s11.isLand;
+            };
             std::vector<glm::ivec3> pendingChalkPlacements;
             pendingChalkPlacements.reserve(static_cast<size_t>(totalColumns));
             for (int column = clampedStartColumn; column < clampedEndColumn; ++column) {
@@ -861,7 +1056,7 @@ namespace TerrainSystemLogic {
                     const int worldXi = static_cast<int>(std::floor(worldX));
                     const int worldZi = static_cast<int>(std::floor(worldZ));
                     float height = 0.0f;
-                    bool isLand = ExpanseBiomeSystemLogic::SampleTerrain(worldCtx, worldX, worldZ, height);
+                    bool isLand = sampleTerrainColumn(worldX, worldZ, height);
                     int surfaceY = static_cast<int>(std::floor(height));
                     if (isDepthLevel) {
                         // Depth dimension is intentionally all cave-terrain land columns;
@@ -1312,10 +1507,15 @@ namespace TerrainSystemLogic {
                         }
                         return false;
                     };
-                    for (int y = 0; y < size; ++y) {
-                        int worldY = (sectionCoord.y * size + y) * scale;
+                    const int verticalCellCount = columnMode
+                        ? std::max(0, sectionMaxY - sectionMinY + 1)
+                        : size;
+                    for (int y = 0; y < verticalCellCount; ++y) {
+                        int worldY = columnMode
+                            ? (sectionMinY + y)
+                            : ((sectionCoord.y * size + y) * scale);
                         glm::ivec3 worldCoord(sectionCoord.x * size + x,
-                                            sectionCoord.y * size + y,
+                                            worldY,
                                             sectionCoord.z * size + z);
                         int cellMinY = worldY;
                         int cellMaxY = worldY + scale - 1;
@@ -1377,8 +1577,7 @@ namespace TerrainSystemLogic {
                                         placeColor = packColor(glm::vec3(0.15f, 0.62f, 0.86f));
                                     }
                                 }
-                                if (placeId != currentId) {
-                                    voxelWorld.setBlock(worldCoord, placeId, placeColor, false);
+                                if (placeId != currentId && writeVoxel(worldCoord, placeId, placeColor)) {
                                     wroteAny = true;
                                 }
                                 continue;
@@ -1394,13 +1593,13 @@ namespace TerrainSystemLogic {
                                     && clayReplaceRollPass
                                     && clayProto
                                     && currentId == static_cast<uint32_t>(soilProto->prototypeID)) {
-                                    voxelWorld.setBlock(
+                                    if (writeVoxel(
                                         worldCoord,
                                         static_cast<uint32_t>(clayProto->prototypeID),
-                                        packColor(clayColor),
-                                        false
-                                    );
-                                    wroteAny = true;
+                                        packColor(clayColor)
+                                    )) {
+                                        wroteAny = true;
+                                    }
                                 } else if (chalkColumnCandidate && chalkReplaceRollPass && chalkProto) {
                                     pendingChalkPlacements.emplace_back(
                                         sectionCoord.x * size + x,
@@ -1464,22 +1663,22 @@ namespace TerrainSystemLogic {
                                 }
 
                                 if (placeOre) {
-                                    voxelWorld.setBlock(
+                                    if (writeVoxel(
                                         worldCoord,
                                         oreProtos[static_cast<size_t>(oreVariant)]->prototypeID,
-                                        oreColors[static_cast<size_t>(oreVariant)],
-                                        false
-                                    );
-                                    wroteAny = true;
+                                        oreColors[static_cast<size_t>(oreVariant)]
+                                    )) {
+                                        wroteAny = true;
+                                    }
                                 } else if (placeGranite
                                            && currentId != static_cast<uint32_t>(graniteProto->prototypeID)) {
-                                    voxelWorld.setBlock(
+                                    if (writeVoxel(
                                         worldCoord,
                                         graniteProto->prototypeID,
-                                        packColor(graniteColor),
-                                        false
-                                    );
-                                    wroteAny = true;
+                                        packColor(graniteColor)
+                                    )) {
+                                        wroteAny = true;
+                                    }
                                 }
                             }
                             continue;
@@ -1516,33 +1715,35 @@ namespace TerrainSystemLogic {
                                 (portalColumnExpanse && rangeContains(seabedPortalY))
                                 || (isDepthLevel && rangeContains(depthPortalY));
                             if (isPortalLayer) {
-                                voxelWorld.setBlock(worldCoord,
+                                if (writeVoxel(worldCoord,
                                     static_cast<uint32_t>(voidPortalProto->prototypeID),
-                                    packColor(glm::vec3(1.0f)),
-                                    false
-                                );
-                                wroteAny = true;
+                                    packColor(glm::vec3(1.0f))
+                                )) {
+                                    wroteAny = true;
+                                }
                                 continue;
                             }
                         }
 
                         if (isExpanseLevel && worldY < expanseDepthSplitY) {
                             // Strict split:
-                            // - unified depths band (-99..UnifiedDepthsMinY): generate depth stone/caves/rivers
+                            // - unified depths band (UnifiedDepthsTopY..UnifiedDepthsMinY): generate depth stone/caves/rivers
                             // - below UnifiedDepthsMinY: empty (never regular expanse cave stone)
                             if (unifiedDepthsEnabled && worldY >= unifiedDepthsMinY) {
                                 if (worldY == unifiedDepthsTopY || worldY == unifiedDepthsMinY) {
                                     const uint32_t depthStoneId = static_cast<uint32_t>((depthStoneProto ? depthStoneProto : stoneProto)->prototypeID);
-                                    voxelWorld.setBlock(worldCoord, depthStoneId, packColor(stoneColor), false);
-                                    wroteAny = true;
+                                    if (writeVoxel(worldCoord, depthStoneId, packColor(stoneColor))) {
+                                        wroteAny = true;
+                                    }
                                     continue;
                                 }
                                 const bool inDepthLavaBand = depthLavaFloorEnabled
                                     && (worldY >= depthLavaBandBottom)
                                     && (worldY <= depthLavaBandTop);
                                 if (unifiedDepthRiverColumn && rangeOverlaps(unifiedDepthRiverBottomY, unifiedDepthRiverTopY)) {
-                                    voxelWorld.setBlock(worldCoord, waterProto->prototypeID, packedWaterColorRiver, false);
-                                    wroteAny = true;
+                                    if (writeVoxel(worldCoord, waterProto->prototypeID, packedWaterColorRiver)) {
+                                        wroteAny = true;
+                                    }
                                     continue;
                                 }
                                 if (unifiedDepthRiverColumn
@@ -1561,8 +1762,9 @@ namespace TerrainSystemLogic {
                                     const int tileIdx = tz * 3 + tx;
                                     const Entity* lavaTileProto = depthLavaTileProtos[static_cast<size_t>(tileIdx)];
                                     if (lavaTileProto && lavaTileProto->prototypeID > 0) {
-                                        voxelWorld.setBlock(worldCoord, static_cast<uint32_t>(lavaTileProto->prototypeID), packColor(lavaColor), false);
-                                        wroteAny = true;
+                                        if (writeVoxel(worldCoord, static_cast<uint32_t>(lavaTileProto->prototypeID), packColor(lavaColor))) {
+                                            wroteAny = true;
+                                        }
                                     }
                                     continue;
                                 }
@@ -1574,19 +1776,20 @@ namespace TerrainSystemLogic {
                                         const int tileIdx = tz * 3 + tx;
                                         const Entity* lavaTileProto = depthLavaTileProtos[static_cast<size_t>(tileIdx)];
                                         if (lavaTileProto && lavaTileProto->prototypeID > 0) {
-                                            voxelWorld.setBlock(worldCoord, static_cast<uint32_t>(lavaTileProto->prototypeID), packColor(lavaColor), false);
-                                            wroteAny = true;
+                                            if (writeVoxel(worldCoord, static_cast<uint32_t>(lavaTileProto->prototypeID), packColor(lavaColor))) {
+                                                wroteAny = true;
+                                            }
                                         }
                                     }
                                     continue;
                                 }
-                                voxelWorld.setBlock(
+                                if (writeVoxel(
                                     worldCoord,
                                     static_cast<uint32_t>((depthStoneProto ? depthStoneProto : stoneProto)->prototypeID),
-                                    packColor(stoneColor),
-                                    false
-                                );
-                                wroteAny = true;
+                                    packColor(stoneColor)
+                                )) {
+                                    wroteAny = true;
+                                }
                                 continue;
                             }
                             // Below configured depths band: keep empty.
@@ -1595,21 +1798,24 @@ namespace TerrainSystemLogic {
 
                         if (!isLand) {
                             if (rangeContains(waterFloorY)) {
-                                voxelWorld.setBlock(worldCoord, sandSeabedProto->prototypeID, packColor(seabedColor), false);
-                                wroteAny = true;
+                                if (writeVoxelRun(x, z, worldY, worldY, sandSeabedProto->prototypeID, packColor(seabedColor)) > 0) {
+                                    wroteAny = true;
+                                }
                                 continue;
                             }
                             if (worldY < waterFloorY) {
-                                voxelWorld.setBlock(worldCoord, stoneProto->prototypeID, packColor(stoneColor), false);
-                                wroteAny = true;
+                                if (writeVoxelRun(x, z, worldY, worldY, stoneProto->prototypeID, packColor(stoneColor)) > 0) {
+                                    wroteAny = true;
+                                }
                                 continue;
                             }
                             if (waterSurfaceY > waterFloorY) {
                                 int waterMin = waterFloorY + 1;
                                 int waterMax = waterSurfaceY;
                                 if (rangeOverlaps(waterMin, waterMax)) {
-                                    voxelWorld.setBlock(worldCoord, waterProto->prototypeID, packedWaterColorOcean, false);
-                                    wroteAny = true;
+                                    if (writeVoxelRun(x, z, worldY, worldY, waterProto->prototypeID, packedWaterColorOcean) > 0) {
+                                        wroteAny = true;
+                                    }
                                 }
                             }
                             continue;
@@ -1617,8 +1823,9 @@ namespace TerrainSystemLogic {
 
                         if (carve) {
                             if (worldY <= waterSurfaceY) {
-                                voxelWorld.setBlock(worldCoord, waterProto->prototypeID, packedWaterColorOcean, false);
-                                wroteAny = true;
+                                if (writeVoxel(worldCoord, waterProto->prototypeID, packedWaterColorOcean)) {
+                                    wroteAny = true;
+                                }
                             }
                             continue;
                         }
@@ -1626,8 +1833,9 @@ namespace TerrainSystemLogic {
                         if (waterFeatureColumn && waterFeatureWaterY > surfaceY) {
                             const int featureWaterMinY = surfaceY + 1;
                             if (rangeOverlaps(featureWaterMinY, waterFeatureWaterY)) {
-                                voxelWorld.setBlock(worldCoord, waterProto->prototypeID, packedFeatureWaterColor, false);
-                                wroteAny = true;
+                                if (writeVoxel(worldCoord, waterProto->prototypeID, packedFeatureWaterColor)) {
+                                    wroteAny = true;
+                                }
                                 continue;
                             }
                         }
@@ -1638,8 +1846,9 @@ namespace TerrainSystemLogic {
                                 continue;
                             }
                             if (rangeOverlaps(lavaFillMinY, lavaSurfaceY)) {
-                                voxelWorld.setBlock(worldCoord, waterProto->prototypeID, packColor(lavaColor), false);
-                                wroteAny = true;
+                                if (writeVoxel(worldCoord, waterProto->prototypeID, packColor(lavaColor))) {
+                                    wroteAny = true;
+                                }
                                 continue;
                             }
                             // Carve a magma chamber under the lake to push lava/cavity deep underground.
@@ -1650,22 +1859,22 @@ namespace TerrainSystemLogic {
 
                         if (rangeContains(surfaceY)) {
                             if (waterFeatureColumn && waterFeatureWaterY > surfaceY) {
-                                voxelWorld.setBlock(worldCoord,
+                                if (writeVoxel(worldCoord,
                                     static_cast<uint32_t>(soilProto->prototypeID),
-                                    packColor(soilColor),
-                                    false
-                                );
-                                wroteAny = true;
+                                    packColor(soilColor)
+                                )) {
+                                    wroteAny = true;
+                                }
                                 continue;
                             }
 
                             glm::vec3 topColor = isBeach ? sandColor : biomeSurfaceColor;
-                            voxelWorld.setBlock(worldCoord,
+                            if (writeVoxel(worldCoord,
                                 topSurfaceProto->prototypeID,
-                                packColor(topColor),
-                                false
-                            );
-                            wroteAny = true;
+                                packColor(topColor)
+                            )) {
+                                wroteAny = true;
+                            }
                             continue;
                         }
 
@@ -1673,19 +1882,23 @@ namespace TerrainSystemLogic {
                             int soilMin = surfaceY - cfg.soilDepth;
                             int stoneMin = surfaceY - cfg.soilDepth - cfg.stoneDepth;
                             if (rangeContains(waterFloorY)) {
-                                voxelWorld.setBlock(worldCoord, sandSeabedProto->prototypeID, packColor(seabedColor), false);
-                                wroteAny = true;
+                                if (writeVoxel(worldCoord, sandSeabedProto->prototypeID, packColor(seabedColor))) {
+                                    wroteAny = true;
+                                }
                                 continue;
                             }
                             bool inSoilLayer = rangeOverlaps(soilMin, surfaceY - 1);
                             bool inStoneLayer = rangeOverlaps(cfg.minY, stoneMin) || (worldY < stoneMin);
                             if (inSoilLayer || inStoneLayer) {
                                 if (inSoilLayer) {
-                                    voxelWorld.setBlock(worldCoord, soilProto->prototypeID, packColor(soilColor), false);
+                                    if (writeVoxel(worldCoord, soilProto->prototypeID, packColor(soilColor))) {
+                                        wroteAny = true;
+                                    }
                                 } else {
-                                    voxelWorld.setBlock(worldCoord, stoneProto->prototypeID, packColor(stoneColor), false);
+                                    if (writeVoxel(worldCoord, stoneProto->prototypeID, packColor(stoneColor))) {
+                                        wroteAny = true;
+                                    }
                                 }
-                                wroteAny = true;
                                 continue;
                             }
                         }
@@ -1782,7 +1995,21 @@ namespace TerrainSystemLogic {
             } else {
                 bool hasDeferredFeatures = false;
                 if (outCompleted) {
-                    if (!pendingChalkPlacements.empty()) {
+                    if (columnMode) {
+                        const int minSectionY = floorDivInt(sectionMinY, size);
+                        const int maxSectionY = floorDivInt(sectionMaxY, size);
+                        for (int sy = minSectionY; sy <= maxSectionY; ++sy) {
+                            g_pendingDepthFeatureChalkPlacements.erase(
+                                VoxelSectionKey{glm::ivec3(sectionCoord.x, sy, sectionCoord.z)}
+                            );
+                        }
+                        for (const glm::ivec3& placement : pendingChalkPlacements) {
+                            const int placementSectionY = floorDivInt(placement.y, size);
+                            g_pendingDepthFeatureChalkPlacements[
+                                VoxelSectionKey{glm::ivec3(sectionCoord.x, placementSectionY, sectionCoord.z)}
+                            ].push_back(placement);
+                        }
+                    } else if (!pendingChalkPlacements.empty()) {
                         g_pendingDepthFeatureChalkPlacements[sectionKey] = pendingChalkPlacements;
                     } else {
                         g_pendingDepthFeatureChalkPlacements.erase(sectionKey);
@@ -1813,6 +2040,9 @@ namespace TerrainSystemLogic {
             if (publishSectionNow) {
                 auto markSectionDirty = [&](const glm::ivec3& coord, bool bumpVersion) {
                     VoxelSectionKey dirtyKey{coord};
+                    if (bumpVersion || voxelWorld.sections.find(dirtyKey) != voxelWorld.sections.end()) {
+                        voxelWorld.materializeSectionFromColumn(dirtyKey);
+                    }
                     auto it = voxelWorld.sections.find(dirtyKey);
                     if (it == voxelWorld.sections.end()) return;
                     // Only bump version for the section whose voxel data changed.
@@ -1822,13 +2052,26 @@ namespace TerrainSystemLogic {
                     voxelWorld.markSectionDirty(dirtyKey);
                 };
 
-                markSectionDirty(sectionCoord, true);
-                markSectionDirty(sectionCoord + glm::ivec3(1, 0, 0), false);
-                markSectionDirty(sectionCoord + glm::ivec3(-1, 0, 0), false);
-                markSectionDirty(sectionCoord + glm::ivec3(0, 1, 0), false);
-                markSectionDirty(sectionCoord + glm::ivec3(0, -1, 0), false);
-                markSectionDirty(sectionCoord + glm::ivec3(0, 0, 1), false);
-                markSectionDirty(sectionCoord + glm::ivec3(0, 0, -1), false);
+                if (columnMode) {
+                    const int minSectionY = floorDivInt(sectionMinY, size);
+                    const int maxSectionY = floorDivInt(sectionMaxY, size);
+                    for (int sy = minSectionY; sy <= maxSectionY; ++sy) {
+                        const glm::ivec3 coord(sectionCoord.x, sy, sectionCoord.z);
+                        markSectionDirty(coord, true);
+                        markSectionDirty(coord + glm::ivec3(1, 0, 0), false);
+                        markSectionDirty(coord + glm::ivec3(-1, 0, 0), false);
+                        markSectionDirty(coord + glm::ivec3(0, 0, 1), false);
+                        markSectionDirty(coord + glm::ivec3(0, 0, -1), false);
+                    }
+                } else {
+                    markSectionDirty(sectionCoord, true);
+                    markSectionDirty(sectionCoord + glm::ivec3(1, 0, 0), false);
+                    markSectionDirty(sectionCoord + glm::ivec3(-1, 0, 0), false);
+                    markSectionDirty(sectionCoord + glm::ivec3(0, 1, 0), false);
+                    markSectionDirty(sectionCoord + glm::ivec3(0, -1, 0), false);
+                    markSectionDirty(sectionCoord + glm::ivec3(0, 0, 1), false);
+                    markSectionDirty(sectionCoord + glm::ivec3(0, 0, -1), false);
+                }
             }
             return outCompleted;
         }
@@ -1856,7 +2099,43 @@ namespace TerrainSystemLogic {
                 outNextColumn,
                 outCompleted,
                 outPostFeaturesCompleted,
-                false
+                false,
+                false,
+                0,
+                0
+            );
+        }
+
+        bool GenerateExpanseColumnBase(BaseSystem& baseSystem,
+                                       std::vector<Entity>& prototypes,
+                                       WorldContext& worldCtx,
+                                       const ExpanseConfig& cfg,
+                                       const VoxelColumnKey& columnKey,
+                                       int minY,
+                                       int maxY,
+                                       int startColumn,
+                                       int maxColumns,
+                                       bool& inOutWroteAny,
+                                       int& outNextColumn,
+                                       bool& outCompleted,
+                                       bool& outPostFeaturesCompleted) {
+            const glm::ivec3 columnCoord(columnKey.coord.x, 0, columnKey.coord.y);
+            return GenerateExpanseSectionWorker(
+                baseSystem,
+                prototypes,
+                worldCtx,
+                cfg,
+                columnCoord,
+                startColumn,
+                maxColumns,
+                inOutWroteAny,
+                outNextColumn,
+                outCompleted,
+                outPostFeaturesCompleted,
+                false,
+                true,
+                minY,
+                maxY
             );
         }
 
@@ -1887,7 +2166,10 @@ namespace TerrainSystemLogic {
                 nextColumn,
                 outCompleted,
                 outPostFeaturesCompleted,
-                true
+                true,
+                false,
+                0,
+                0
             );
         }
     }

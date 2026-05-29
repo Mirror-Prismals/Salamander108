@@ -419,6 +419,50 @@ namespace DawIOSystemLogic {
             return true;
         }
 
+        const std::array<const char*, 6>& backdropModes() {
+            static const std::array<const char*, 6> modes{{
+                "world_camera",
+                "red_wave",
+                "binary_waterfall",
+                "oscilloscope",
+                "true_color",
+                "pinwheel",
+            }};
+            return modes;
+        }
+
+        std::string normalizeBackdropMode(std::string mode) {
+            std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+            for (char& c : mode) {
+                if (c == '-' || c == ' ') c = '_';
+            }
+            if (mode == "world" || mode == "camera" || mode == "security_camera") {
+                return "world_camera";
+            }
+            if (mode == "binary") {
+                return "binary_waterfall";
+            }
+            if (mode == "truecolor") {
+                return "true_color";
+            }
+            for (const char* candidate : backdropModes()) {
+                if (mode == candidate) return mode;
+            }
+            return "world_camera";
+        }
+
+        std::string backdropModeLabel(const std::string& mode) {
+            const std::string normalized = normalizeBackdropMode(mode);
+            if (normalized == "red_wave") return "Red Wave";
+            if (normalized == "binary_waterfall") return "Binary Waterfall";
+            if (normalized == "oscilloscope") return "Oscilloscope";
+            if (normalized == "true_color") return "True Color";
+            if (normalized == "pinwheel") return "Pinwheel";
+            return "World Camera";
+        }
+
         bool findDawScreenColor(const BaseSystem& baseSystem, glm::vec3& outColor) {
             if (!baseSystem.level) return false;
             for (const auto& worldEntity : baseSystem.level->worlds) {
@@ -525,6 +569,7 @@ namespace DawIOSystemLogic {
         json serializeThemePreset(const DawThemePreset& preset) {
             json out = json::object();
             out["name"] = preset.name;
+            out["backdrop_mode"] = normalizeBackdropMode(preset.backdropMode);
             out["background"] = rgbaToHex(preset.background);
             out["panel"] = rgbaToHex(preset.panel);
             out["button"] = rgbaToHex(preset.button);
@@ -551,10 +596,12 @@ namespace DawIOSystemLogic {
             const std::string pianoRollHex = readString(in, "piano_roll", readString(in, "pianoRoll", ""));
             const std::string pianoRollAccentHex = readString(in, "piano_roll_accent", readString(in, "pianoRollAccent", ""));
             const std::string laneHex = readString(in, "lane", "");
+            const std::string backdropMode = normalizeBackdropMode(readString(in, "backdrop_mode", readString(in, "backdropMode", "world_camera")));
             if (!pianoRollHex.empty() && !parseRgbaHex(pianoRollHex, pianoRoll)) return false;
             if (!pianoRollAccentHex.empty() && !parseRgbaHex(pianoRollAccentHex, pianoRollAccent)) return false;
             if (!laneHex.empty() && !parseRgbaHex(laneHex, lane)) return false;
             out.name = name;
+            out.backdropMode = backdropMode;
             out.background = clampThemeColor(background);
             out.panel = clampThemeColor(panel);
             out.button = clampThemeColor(button);
@@ -576,16 +623,16 @@ namespace DawIOSystemLogic {
         }
 
         void applyThemeToWorld(BaseSystem& baseSystem, DawContext& daw, const DawThemePreset& preset) {
-            const DawThemePreset safe = {
-                preset.name,
-                clampThemeColor(preset.background),
-                clampThemeColor(preset.panel),
-                clampThemeColor(preset.button),
-                clampThemeColor(preset.pianoRoll),
-                clampThemeColor(preset.pianoRollAccent),
-                clampThemeColor(preset.lane),
-                preset.isBuiltin
-            };
+            DawThemePreset safe;
+            safe.name = preset.name;
+            safe.backdropMode = normalizeBackdropMode(preset.backdropMode);
+            safe.background = clampThemeColor(preset.background);
+            safe.panel = clampThemeColor(preset.panel);
+            safe.button = clampThemeColor(preset.button);
+            safe.pianoRoll = clampThemeColor(preset.pianoRoll);
+            safe.pianoRollAccent = clampThemeColor(preset.pianoRollAccent);
+            safe.lane = clampThemeColor(preset.lane);
+            safe.isBuiltin = preset.isBuiltin;
             daw.themeRevision += 1;
             daw.activeThemeBackground = safe.background;
             daw.activeThemePanel = safe.panel;
@@ -593,6 +640,7 @@ namespace DawIOSystemLogic {
             daw.activeThemePianoRoll = safe.pianoRoll;
             daw.activeThemePianoRollAccent = safe.pianoRollAccent;
             daw.activeThemeLane = safe.lane;
+            daw.activeThemeBackdropMode = safe.backdropMode;
             daw.selectedThemeName = safe.name;
             WorldContext* world = baseSystem.world ? baseSystem.world.get() : nullptr;
             if (!world) {
@@ -645,6 +693,7 @@ namespace DawIOSystemLogic {
 
         void fillThemeDraftFromPreset(DawContext& daw, const DawThemePreset& preset, bool keepName) {
             daw.themeDraftName = keepName ? daw.themeDraftName : preset.name;
+            daw.themeDraftBackdropMode = normalizeBackdropMode(preset.backdropMode);
             daw.themeDraftBackgroundHex = rgbaToHex(preset.background);
             daw.themeDraftPanelHex = rgbaToHex(preset.panel);
             daw.themeDraftButtonHex = rgbaToHex(preset.button);
@@ -2304,6 +2353,29 @@ namespace DawIOSystemLogic {
         return rgbaToHex(color);
     }
 
+    std::string NormalizeThemeBackdropMode(const std::string& mode) {
+        return normalizeBackdropMode(mode);
+    }
+
+    std::string ThemeBackdropModeLabel(const std::string& mode) {
+        return backdropModeLabel(mode);
+    }
+
+    std::string CycleThemeBackdropMode(const std::string& mode, int delta) {
+        const auto& modes = backdropModes();
+        const std::string normalized = normalizeBackdropMode(mode);
+        int index = 0;
+        for (int i = 0; i < static_cast<int>(modes.size()); ++i) {
+            if (normalized == modes[static_cast<size_t>(i)]) {
+                index = i;
+                break;
+            }
+        }
+        index = (index + delta) % static_cast<int>(modes.size());
+        if (index < 0) index += static_cast<int>(modes.size());
+        return modes[static_cast<size_t>(index)];
+    }
+
     bool ApplyThemeByIndex(BaseSystem& baseSystem, int themeIndex, bool persistToDisk) {
         if (!baseSystem.daw) return false;
         DawContext& daw = *baseSystem.daw;
@@ -2364,6 +2436,7 @@ namespace DawIOSystemLogic {
 
     bool SaveThemeFromDraft(BaseSystem& baseSystem,
                             const std::string& rawName,
+                            const std::string& backdropMode,
                             const std::string& backgroundHex,
                             const std::string& panelHex,
                             const std::string& buttonHex,
@@ -2421,6 +2494,7 @@ namespace DawIOSystemLogic {
 
         DawThemePreset preset;
         preset.name = name;
+        preset.backdropMode = normalizeBackdropMode(backdropMode);
         preset.background = clampThemeColor(bg);
         preset.panel = clampThemeColor(panel);
         preset.button = clampThemeColor(button);

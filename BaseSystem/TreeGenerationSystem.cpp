@@ -1080,6 +1080,12 @@ namespace TreeGenerationSystemLogic {
                                          const VoxelSectionKey& key,
                                          int maxPasses) {
         if (maxPasses <= 0) maxPasses = 1;
+        auto clearSurfaceOnlyPending = [&]() {
+            g_treePendingSections.erase(key);
+            g_treePendingDependencies.erase(key);
+            g_treeSectionProgress.erase(key);
+            g_treeCaveContinuationQueued.erase(key);
+        };
         struct ForceCompleteGuard {
             VoxelSectionKey key;
             ForceCompleteGuard(const VoxelSectionKey& inKey) : key(inKey) {
@@ -1091,13 +1097,23 @@ namespace TreeGenerationSystemLogic {
         } forceCompleteGuard(key);
 
         RequestImmediateSectionFoliage(key);
-        if (IsSectionSurfaceFoliageReady(baseSystem, key)) return true;
+        if (IsSectionSurfaceFoliageReady(baseSystem, key)) {
+            clearSurfaceOnlyPending();
+            return true;
+        }
 
         for (int pass = 0; pass < maxPasses; ++pass) {
             UpdateExpanseTrees(baseSystem, prototypes, 0.0f, {});
-            if (IsSectionSurfaceFoliageReady(baseSystem, key)) return true;
+            if (IsSectionSurfaceFoliageReady(baseSystem, key)) {
+                clearSurfaceOnlyPending();
+                return true;
+            }
         }
-        return IsSectionSurfaceFoliageReady(baseSystem, key);
+        const bool ready = IsSectionSurfaceFoliageReady(baseSystem, key);
+        if (ready) {
+            clearSurfaceOnlyPending();
+        }
+        return ready;
     }
 
     void ProcessImmediateSectionFoliage(BaseSystem& baseSystem,

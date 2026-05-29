@@ -217,12 +217,18 @@ namespace UIScreenSystemLogic {
             float screenAlpha = kScreenAlphaDefault;
             if (baseSystem.daw) {
                 screenAlpha = std::clamp(baseSystem.daw->activeThemeBackground.a, 0.0f, 1.0f);
+                if (baseSystem.daw->activeThemeBackdropMode != "world_camera"
+                    && baseSystem.daw->activeThemeBackdropMode != "world") {
+                    screenAlpha = 0.0f;
+                }
             }
-            setBlendModeConstantAlpha(screenAlpha);
-            renderer.uiShader->use();
-            renderer.uiShader->setVec3("color", screenColor);
-            renderBackend.bindVertexArray(renderer.uiVAO);
-            renderBackend.drawArraysTriangles(0, 6);
+            if (screenAlpha > 0.001f) {
+                setBlendModeConstantAlpha(screenAlpha);
+                renderer.uiShader->use();
+                renderer.uiShader->setVec3("color", screenColor);
+                renderBackend.bindVertexArray(renderer.uiVAO);
+                renderBackend.drawArraysTriangles(0, 6);
+            }
             setBlendModeAlpha();
             setDepthTestEnabled(true);
         }

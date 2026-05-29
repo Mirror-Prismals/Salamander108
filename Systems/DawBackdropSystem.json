@@ -1,0 +1,19 @@
+{
+    "update_steps": {
+        "UpdateDawBackdrop": {
+            "dependencies": [
+                "DawContext",
+                "UIContext",
+                "RendererContext",
+                "WorldContext"
+            ]
+        }
+    },
+    "cleanup_steps": {
+        "CleanupDawBackdrop": {
+            "dependencies": [
+                "RendererContext"
+            ]
+        }
+    }
+}

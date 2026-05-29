@@ -39,10 +39,14 @@ namespace DawIOSystemLogic {
     bool OpenExportFolderDialog(std::string& ioPath);
     bool StartStemExport(BaseSystem& baseSystem);
     std::string ThemeColorToHex(const glm::vec4& color);
+    std::string NormalizeThemeBackdropMode(const std::string& mode);
+    std::string ThemeBackdropModeLabel(const std::string& mode);
+    std::string CycleThemeBackdropMode(const std::string& mode, int delta);
     bool ApplyThemeByIndex(BaseSystem& baseSystem, int themeIndex, bool persistToDisk);
     bool RemoveThemeByIndex(BaseSystem& baseSystem, int themeIndex, std::string& outMessage);
     bool SaveThemeFromDraft(BaseSystem& baseSystem,
                             const std::string& rawName,
+                            const std::string& backdropMode,
                             const std::string& backgroundHex,
                             const std::string& panelHex,
                             const std::string& buttonHex,
@@ -137,6 +141,9 @@ namespace DawLaneInputSystemLogic {
             Rect pianoField;
             Rect pianoAccentField;
             Rect laneField;
+            Rect backdropField;
+            Rect backdropPrev;
+            Rect backdropNext;
             Rect audioOutField;
             Rect audioOutPrev;
             Rect audioOutNext;
@@ -229,7 +236,7 @@ namespace DawLaneInputSystemLogic {
         SettingsDialogLayout computeSettingsDialogLayout(const DawLaneTimelineSystemLogic::LaneLayout& layout) {
             SettingsDialogLayout out;
             out.w = 640.0f;
-            out.h = 390.0f;
+            out.h = 430.0f;
             out.x = std::max(24.0f, static_cast<float>((layout.screenWidth - out.w) * 0.5));
             out.y = std::max(24.0f, static_cast<float>((layout.screenHeight - out.h) * 0.5) - 24.0f);
             out.panelRect = makeRect(out.x, out.y, out.w, out.h);
@@ -263,6 +270,9 @@ namespace DawLaneInputSystemLogic {
             out.pianoField = makeRect(fieldX, bodyTop + 170.0f, fieldW, 28.0f);
             out.pianoAccentField = makeRect(fieldX, bodyTop + 208.0f, fieldW, 28.0f);
             out.laneField = makeRect(fieldX, bodyTop + 246.0f, fieldW, 28.0f);
+            out.backdropPrev = makeRect(fieldX, bodyTop + 284.0f, 28.0f, 28.0f);
+            out.backdropField = makeRect(fieldX + 36.0f, bodyTop + 284.0f, fieldW - 72.0f, 28.0f);
+            out.backdropNext = makeRect(fieldX + fieldW - 28.0f, bodyTop + 284.0f, 28.0f, 28.0f);
 
             const float audioLabelX = out.x + 48.0f;
             const float audioFieldX = out.x + 180.0f;
@@ -1044,6 +1054,13 @@ namespace DawLaneInputSystemLogic {
                         daw.themeEditField = 5;
                     } else if (cursorInRect(ui, settingsLayout.laneField)) {
                         daw.themeEditField = 6;
+                    } else if (cursorInRect(ui, settingsLayout.backdropPrev)) {
+                        daw.themeDraftBackdropMode =
+                            DawIOSystemLogic::CycleThemeBackdropMode(daw.themeDraftBackdropMode, -1);
+                    } else if (cursorInRect(ui, settingsLayout.backdropField)
+                               || cursorInRect(ui, settingsLayout.backdropNext)) {
+                        daw.themeDraftBackdropMode =
+                            DawIOSystemLogic::CycleThemeBackdropMode(daw.themeDraftBackdropMode, 1);
                     } else if (cursorInRect(ui, settingsLayout.backBtn)) {
                         daw.themeCreateMode = false;
                         daw.themeEditField = -1;
@@ -1052,6 +1069,7 @@ namespace DawLaneInputSystemLogic {
                         std::string status;
                         if (DawIOSystemLogic::SaveThemeFromDraft(baseSystem,
                                                                  daw.themeDraftName,
+                                                                 daw.themeDraftBackdropMode,
                                                                  daw.themeDraftBackgroundHex,
                                                                  daw.themeDraftPanelHex,
                                                                  daw.themeDraftButtonHex,
@@ -1099,6 +1117,8 @@ namespace DawLaneInputSystemLogic {
                             daw.themeStatusMessage = "Default theme cannot be edited.";
                         } else {
                             daw.themeDraftName = preset->name;
+                            daw.themeDraftBackdropMode =
+                                DawIOSystemLogic::NormalizeThemeBackdropMode(preset->backdropMode);
                             daw.themeDraftBackgroundHex = DawIOSystemLogic::ThemeColorToHex(preset->background);
                             daw.themeDraftPanelHex = DawIOSystemLogic::ThemeColorToHex(preset->panel);
                             daw.themeDraftButtonHex = DawIOSystemLogic::ThemeColorToHex(preset->button);
@@ -1142,6 +1162,7 @@ namespace DawLaneInputSystemLogic {
                     std::string status;
                     if (DawIOSystemLogic::SaveThemeFromDraft(baseSystem,
                                                              daw.themeDraftName,
+                                                             daw.themeDraftBackdropMode,
                                                              daw.themeDraftBackgroundHex,
                                                              daw.themeDraftPanelHex,
                                                              daw.themeDraftButtonHex,

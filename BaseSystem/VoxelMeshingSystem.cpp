@@ -243,10 +243,6 @@ namespace VoxelMeshingSystemLogic {
                 }
             }
 
-            if (!outSnapshot.voxelLightingEnabled) {
-                return true;
-            }
-
             for (int z = -1; z <= sectionSize; ++z) {
                 for (int y = -1; y <= sectionSize; ++y) {
                     for (int x = -1; x <= sectionSize; ++x) {
@@ -258,11 +254,13 @@ namespace VoxelMeshingSystemLogic {
                         const int dstIndex = paddedSnapshotIndex(x, y, z, paddedSize);
                         outSnapshot.paddedIds[static_cast<size_t>(dstIndex)] = voxelWorld.getBlockWorld(worldCell);
                         outSnapshot.paddedColors[static_cast<size_t>(dstIndex)] = voxelWorld.getColorWorld(worldCell);
-                        outSnapshot.paddedCombinedLight[static_cast<size_t>(dstIndex)] =
-                            static_cast<uint8_t>(std::max<int>(
-                                voxelWorld.getSkyLightWorld(worldCell),
-                                voxelWorld.getBlockLightWorld(worldCell)
-                            ));
+                        if (outSnapshot.voxelLightingEnabled) {
+                            outSnapshot.paddedCombinedLight[static_cast<size_t>(dstIndex)] =
+                                static_cast<uint8_t>(std::max<int>(
+                                    voxelWorld.getSkyLightWorld(worldCell),
+                                    voxelWorld.getBlockLightWorld(worldCell)
+                                ));
+                        }
                     }
                 }
             }

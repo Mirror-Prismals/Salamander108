@@ -24,38 +24,12 @@ namespace VoxelMeshInitSystemLogic {
 
     uint32_t GetVoxelIdAt(const VoxelWorldContext& voxelWorld,
                           const glm::ivec3& coord) {
-        int size = SectionSizeForSection(voxelWorld);
-        glm::ivec3 sectionCoord(
-            FloorDivInt(coord.x, size),
-            FloorDivInt(coord.y, size),
-            FloorDivInt(coord.z, size)
-        );
-        glm::ivec3 local = coord - sectionCoord * size;
-        VoxelSectionKey key{sectionCoord};
-        auto it = voxelWorld.sections.find(key);
-        if (it == voxelWorld.sections.end()) return 0;
-        const VoxelSection& section = it->second;
-        int idx = local.x + local.y * section.size + local.z * section.size * section.size;
-        if (idx < 0 || idx >= static_cast<int>(section.ids.size())) return 0;
-        return section.ids[idx];
+        return voxelWorld.getBlockWorld(coord);
     }
 
     uint32_t GetVoxelColorAt(const VoxelWorldContext& voxelWorld,
                              const glm::ivec3& coord) {
-        int size = SectionSizeForSection(voxelWorld);
-        glm::ivec3 sectionCoord(
-            FloorDivInt(coord.x, size),
-            FloorDivInt(coord.y, size),
-            FloorDivInt(coord.z, size)
-        );
-        glm::ivec3 local = coord - sectionCoord * size;
-        VoxelSectionKey key{sectionCoord};
-        auto it = voxelWorld.sections.find(key);
-        if (it == voxelWorld.sections.end()) return 0;
-        const VoxelSection& section = it->second;
-        int idx = local.x + local.y * section.size + local.z * section.size * section.size;
-        if (idx < 0 || idx >= static_cast<int>(section.colors.size())) return 0;
-        return section.colors[idx];
+        return voxelWorld.getColorWorld(coord);
     }
 
     glm::ivec3 LocalCellFromUV(int faceType, int slice, int u, int v) {

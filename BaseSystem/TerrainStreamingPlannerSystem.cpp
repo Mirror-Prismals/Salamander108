@@ -31,6 +31,61 @@ namespace TerrainSystemLogic {
     constexpr int kBinaryCaveTileBits = 64;
     using BinaryCaveTile = std::array<uint64_t, kBinaryCaveTileBits>;
 
+    class PerlinNoise3DLocal {
+    public:
+        explicit PerlinNoise3DLocal(int seed) {
+            std::iota(permutation.begin(), permutation.begin() + 256, 0);
+            std::mt19937 rng(seed);
+            std::shuffle(permutation.begin(), permutation.begin() + 256, rng);
+            for (int i = 0; i < 256; ++i) permutation[256 + i] = permutation[i];
+        }
+
+        float noise(float x, float y, float z) const {
+            int X = static_cast<int>(std::floor(x)) & 255;
+            int Y = static_cast<int>(std::floor(y)) & 255;
+            int Z = static_cast<int>(std::floor(z)) & 255;
+
+            x -= std::floor(x);
+            y -= std::floor(y);
+            z -= std::floor(z);
+
+            float u = fade(x);
+            float v = fade(y);
+            float w = fade(z);
+
+            int A = permutation[X] + Y;
+            int AA = permutation[A] + Z;
+            int AB = permutation[A + 1] + Z;
+            int B = permutation[X + 1] + Y;
+            int BA = permutation[B] + Z;
+            int BB = permutation[B + 1] + Z;
+
+            return lerp(w,
+                lerp(v,
+                    lerp(u, grad(permutation[AA], x, y, z),
+                            grad(permutation[BA], x - 1, y, z)),
+                    lerp(u, grad(permutation[AB], x, y - 1, z),
+                            grad(permutation[BB], x - 1, y - 1, z))),
+                lerp(v,
+                    lerp(u, grad(permutation[AA + 1], x, y, z - 1),
+                            grad(permutation[BA + 1], x - 1, y, z - 1)),
+                    lerp(u, grad(permutation[AB + 1], x, y - 1, z - 1),
+                            grad(permutation[BB + 1], x - 1, y - 1, z - 1))));
+        }
+
+    private:
+        std::array<int, 512> permutation{};
+
+        static float fade(float t) { return t * t * t * (t * (t * 6 - 15) + 10); }
+        static float lerp(float t, float a, float b) { return a + t * (b - a); }
+        static float grad(int hash, float x, float y, float z) {
+            int h = hash & 15;
+            float u = h < 8 ? x : y;
+            float v = h < 4 ? y : (h == 12 || h == 14 ? x : z);
+            return ((h & 1) ? -u : u) + ((h & 2) ? -v : v);
+        }
+    };
+
     struct BinaryCaveTileKey {
         int plane = 0;
         int x = 0;
@@ -53,12 +108,27 @@ namespace TerrainSystemLogic {
     struct CaveFieldLocal {
         bool ready = false;
         bool enabled = true;
+        bool building = false;
+        int mode = 0; // 0=binary CA, 1=precomputed Perlin field
         int seedA = 0;
         int seedB = 0;
         int iterations = 3;
         int fillPercent = 50;
         int openThreshold = 5;
+        int cellScale = 1;
         size_t maxCachedTiles = 512;
+        glm::vec3 origin{0.0f};
+        int step = 4;
+        int dimX = 0;
+        int dimY = 0;
+        int dimZ = 0;
+        size_t buildCursor = 0;
+        size_t totalCount = 0;
+        uint64_t lastBuildFrame = std::numeric_limits<uint64_t>::max();
+        std::unique_ptr<PerlinNoise3DLocal> noiseA;
+        std::unique_ptr<PerlinNoise3DLocal> noiseB;
+        std::vector<uint8_t> a;
+        std::vector<uint8_t> b;
         std::unordered_map<BinaryCaveTileKey, BinaryCaveTile, BinaryCaveTileKeyHash> tiles;
     };
 
@@ -116,6 +186,29 @@ namespace TerrainSystemLogic {
             bool wroteAny = false;
         };
 
+        struct VoxelColumnGenerationJob {
+            int nextColumn = 0;
+            int nextFeatureSectionY = std::numeric_limits<int>::min();
+            int nextSurfaceSectionY = std::numeric_limits<int>::min();
+            int phase = 0; // 0 base, 1 decorators, 2 foliage, 3 publish render bridge
+            bool wroteAny = false;
+        };
+
+        struct VoxelColumnStreamingState {
+            std::vector<VoxelColumnKey> pending;
+            std::unordered_set<VoxelColumnKey, VoxelColumnKeyHash> pendingSet;
+            std::unordered_set<VoxelColumnKey, VoxelColumnKeyHash> inProgress;
+            std::unordered_set<VoxelColumnKey, VoxelColumnKeyHash> desired;
+            std::vector<VoxelColumnKey> desiredOrder;
+            std::unordered_set<VoxelColumnKey, VoxelColumnKeyHash> generated;
+            std::unordered_map<VoxelColumnKey, VoxelColumnGenerationJob, VoxelColumnKeyHash> jobs;
+            glm::ivec2 lastCenterColumn = glm::ivec2(std::numeric_limits<int>::min());
+            int lastRadius = std::numeric_limits<int>::min();
+            int lastCpuViewYawBucket = std::numeric_limits<int>::min();
+            bool lastCpuViewCullingEnabled = false;
+            bool pendingDesiredRebuild = true;
+        };
+
         struct VoxelStreamingPerfStats {
             size_t pending = 0;
             size_t desired = 0;
@@ -153,6 +246,7 @@ namespace TerrainSystemLogic {
         };
 
         static VoxelStreamingState g_voxelStreaming;
+        static VoxelColumnStreamingState g_voxelColumnStreaming;
         static VoxelDesiredRebuildState g_voxelDesiredRebuild;
         static std::unordered_map<VoxelSectionKey, VoxelSectionGenerationJob, VoxelSectionKeyHash> g_voxelSectionJobs;
         static VoxelStreamingPerfStats g_voxelStreamingPerfStats;
@@ -181,6 +275,7 @@ namespace TerrainSystemLogic {
         static size_t g_tier0RescueScanHead = 0;
         static int g_verticalDomainMode = 0; // 0=unset/off, 1=upper(expanse), 2=lower(depths)
         static std::string g_voxelLevelKey;
+        static std::string g_caveConfigKey;
         static CaveFieldLocal g_caveField;
         static float g_caveFieldFrameMs = 0.0f;
         static uint64_t g_caveFieldFrameCellsBuilt = 0;
@@ -189,6 +284,22 @@ namespace TerrainSystemLogic {
 
         int getRegistryInt(const BaseSystem& baseSystem, const std::string& key, int fallback);
         bool getRegistryBool(const BaseSystem& baseSystem, const std::string& key, bool fallback);
+        std::string getRegistryString(const BaseSystem& baseSystem,
+                                      const std::string& key,
+                                      const std::string& fallback);
+
+        inline uint8_t quantizeNoise01(float v) {
+            return static_cast<uint8_t>(std::clamp(v, 0.0f, 1.0f) * 255.0f);
+        }
+
+        inline bool samplePerlinCaveNoiseDirect(float worldX, float worldY, float worldZ, float& outA, float& outB) {
+            if (!g_caveField.noiseA || !g_caveField.noiseB) return false;
+            const float v1 = (g_caveField.noiseA->noise(worldX / 64.0f, worldY / 48.0f, worldZ / 64.0f) + 1.0f) * 0.5f;
+            const float v2 = (g_caveField.noiseB->noise(worldX / 128.0f, worldY / 128.0f, worldZ / 128.0f) + 1.0f) * 0.5f;
+            outA = static_cast<float>(quantizeNoise01(v1)) / 255.0f;
+            outB = static_cast<float>(quantizeNoise01(v2)) / 255.0f;
+            return true;
+        }
 
         inline uint64_t mixCaveHash(uint64_t v) {
             v += 0x9e3779b97f4a7c15ULL;
@@ -371,9 +482,9 @@ namespace TerrainSystemLogic {
                              const ExpanseConfig& cfg,
                              int requestedMinY,
                              int requestedMaxY) {
-            (void)requestedMinY;
-            (void)requestedMaxY;
             const bool enabled = getRegistryBool(baseSystem, "BinaryCaveEnabled", true);
+            const std::string modeName = getRegistryString(baseSystem, "BinaryCaveMode", "binary");
+            const int mode = (modeName == "perlin" || modeName == "old" || modeName == "legacy") ? 1 : 0;
             const int desiredSeedA = cfg.elevationSeed + 1337;
             const int desiredSeedB = cfg.ridgeSeed + 7331;
             const int iterations = std::clamp(
@@ -391,33 +502,163 @@ namespace TerrainSystemLogic {
                 1,
                 9
             );
+            const int cellScale = std::clamp(
+                getRegistryInt(baseSystem, "BinaryCaveCellScale", 3),
+                1,
+                16
+            );
             const size_t maxCachedTiles = static_cast<size_t>(std::max(
                 16,
                 getRegistryInt(baseSystem, "BinaryCaveMaxCachedTiles", 512)
             ));
 
+            if (mode == 1) {
+                const int step = std::clamp(
+                    getRegistryInt(baseSystem, "PerlinCaveFieldStep", 4),
+                    1,
+                    16
+                );
+                const int sizeXZ = std::max(
+                    128,
+                    getRegistryInt(baseSystem, "PerlinCaveFieldSizeXZ", 2304)
+                );
+                const int halfXZ = sizeXZ / 2;
+                const int targetMinY = std::min(requestedMinY, requestedMaxY);
+                const int targetMaxY = std::max(requestedMinY, requestedMaxY);
+                const int minY = targetMinY - step;
+                const int maxY = targetMaxY + step;
+                const int heightY = std::max(step, maxY - minY);
+                const int dimX = sizeXZ / step + 1;
+                const int dimZ = sizeXZ / step + 1;
+                const int dimY = heightY / step + 1;
+                const size_t count = static_cast<size_t>(dimX)
+                    * static_cast<size_t>(dimY)
+                    * static_cast<size_t>(dimZ);
+
+                const bool hasField = (g_caveField.ready || g_caveField.building);
+                const bool sameBounds = hasField
+                    && g_caveField.mode == mode
+                    && g_caveField.enabled == enabled
+                    && g_caveField.step == step
+                    && static_cast<int>(std::floor(g_caveField.origin.x)) == -halfXZ
+                    && static_cast<int>(std::floor(g_caveField.origin.y)) == minY
+                    && static_cast<int>(std::floor(g_caveField.origin.z)) == -halfXZ
+                    && g_caveField.dimX == dimX
+                    && g_caveField.dimY == dimY
+                    && g_caveField.dimZ == dimZ;
+                const bool sameSeeds = g_caveField.seedA == desiredSeedA
+                    && g_caveField.seedB == desiredSeedB
+                    && g_caveField.noiseA
+                    && g_caveField.noiseB;
+                const bool needsRebuild = !sameBounds || !sameSeeds;
+
+                if (!enabled) {
+                    g_caveField.ready = false;
+                    g_caveField.enabled = false;
+                    g_caveField.building = false;
+                    g_caveField.mode = mode;
+                    g_caveField.tiles.clear();
+                    return;
+                }
+
+                if (needsRebuild) {
+                    g_caveField.ready = false;
+                    g_caveField.enabled = enabled;
+                    g_caveField.building = true;
+                    g_caveField.mode = mode;
+                    g_caveField.step = step;
+                    g_caveField.origin = glm::vec3(-halfXZ, minY, -halfXZ);
+                    g_caveField.dimX = dimX;
+                    g_caveField.dimY = dimY;
+                    g_caveField.dimZ = dimZ;
+                    g_caveField.seedA = desiredSeedA;
+                    g_caveField.seedB = desiredSeedB;
+                    g_caveField.buildCursor = 0;
+                    g_caveField.totalCount = count;
+                    g_caveField.lastBuildFrame = std::numeric_limits<uint64_t>::max();
+                    g_caveField.noiseA = std::make_unique<PerlinNoise3DLocal>(desiredSeedA);
+                    g_caveField.noiseB = std::make_unique<PerlinNoise3DLocal>(desiredSeedB);
+                    g_caveField.a.assign(count, 0);
+                    g_caveField.b.assign(count, 0);
+                    g_caveField.tiles.clear();
+                    std::cout << "TerrainGeneration: started Perlin cave field precompute "
+                              << g_caveField.dimX << "x" << g_caveField.dimY << "x" << g_caveField.dimZ
+                              << " step=" << step << std::endl;
+                }
+
+                if (g_caveField.ready || !g_caveField.building) return;
+                if (g_caveField.lastBuildFrame == g_voxelStreaming.frameCounter) return;
+                g_caveField.lastBuildFrame = g_voxelStreaming.frameCounter;
+
+                const auto startTime = std::chrono::steady_clock::now();
+                const size_t cellsPerFrame = static_cast<size_t>(std::max(
+                    1024,
+                    getRegistryInt(baseSystem, "PerlinCaveFieldCellsPerFrame", 65536)
+                ));
+                const size_t start = g_caveField.buildCursor;
+                const size_t end = std::min(g_caveField.totalCount, start + cellsPerFrame);
+                for (size_t linear = start; linear < end; ++linear) {
+                    size_t t = linear;
+                    const int z = static_cast<int>(t % static_cast<size_t>(g_caveField.dimZ));
+                    t /= static_cast<size_t>(g_caveField.dimZ);
+                    const int y = static_cast<int>(t % static_cast<size_t>(g_caveField.dimY));
+                    const int x = static_cast<int>(t / static_cast<size_t>(g_caveField.dimY));
+                    const float wx = g_caveField.origin.x + static_cast<float>(x * step);
+                    const float wy = g_caveField.origin.y + static_cast<float>(y * step);
+                    const float wz = g_caveField.origin.z + static_cast<float>(z * step);
+                    if (!g_caveField.noiseA || !g_caveField.noiseB) break;
+                    const float v1 = (g_caveField.noiseA->noise(wx / 64.0f, wy / 48.0f, wz / 64.0f) + 1.0f) * 0.5f;
+                    const float v2 = (g_caveField.noiseB->noise(wx / 128.0f, wy / 128.0f, wz / 128.0f) + 1.0f) * 0.5f;
+                    g_caveField.a[linear] = quantizeNoise01(v1);
+                    g_caveField.b[linear] = quantizeNoise01(v2);
+                }
+                g_caveField.buildCursor = end;
+                g_caveFieldFrameMs += std::chrono::duration<float, std::milli>(
+                    std::chrono::steady_clock::now() - startTime
+                ).count();
+                g_caveFieldFrameCellsBuilt += static_cast<uint64_t>(end - start);
+                if (g_caveField.buildCursor >= g_caveField.totalCount) {
+                    g_caveField.ready = true;
+                    g_caveField.building = false;
+                    std::cout << "TerrainGeneration: precomputed Perlin cave field "
+                              << g_caveField.dimX << "x" << g_caveField.dimY << "x" << g_caveField.dimZ
+                              << " step=" << step << std::endl;
+                }
+                return;
+            }
+
             const bool changed = g_caveField.ready != enabled
                 || g_caveField.enabled != enabled
+                || g_caveField.mode != mode
                 || g_caveField.seedA != desiredSeedA
                 || g_caveField.seedB != desiredSeedB
                 || g_caveField.iterations != iterations
                 || g_caveField.fillPercent != fillPercent
                 || g_caveField.openThreshold != openThreshold
+                || g_caveField.cellScale != cellScale
                 || g_caveField.maxCachedTiles != maxCachedTiles;
             if (!changed) return;
 
             g_caveField.ready = enabled;
             g_caveField.enabled = enabled;
+            g_caveField.building = false;
+            g_caveField.mode = mode;
             g_caveField.seedA = desiredSeedA;
             g_caveField.seedB = desiredSeedB;
             g_caveField.iterations = iterations;
             g_caveField.fillPercent = fillPercent;
             g_caveField.openThreshold = openThreshold;
+            g_caveField.cellScale = cellScale;
             g_caveField.maxCachedTiles = maxCachedTiles;
             g_caveField.tiles.clear();
+            g_caveField.noiseA.reset();
+            g_caveField.noiseB.reset();
+            g_caveField.a.clear();
+            g_caveField.b.clear();
             if (enabled) {
                 std::cout << "TerrainGeneration: binary cave CA enabled "
                           << "tile=" << kBinaryCaveTileBits
+                          << " cellScale=" << cellScale
                           << " iterations=" << iterations
                           << " fill=" << fillPercent
                           << " threshold=" << openThreshold
@@ -435,11 +676,39 @@ namespace TerrainSystemLogic {
         }
 
         inline bool sampleCaveField(float worldX, float worldY, float worldZ, float& outA, float& outB) {
-            if (!g_caveField.ready || !g_caveField.enabled) return false;
+            if (!g_caveField.enabled) return false;
             g_caveFieldFrameSampleCount += 1;
-            const int x = static_cast<int>(std::floor(worldX));
-            const int y = static_cast<int>(std::floor(worldY));
-            const int z = static_cast<int>(std::floor(worldZ));
+            if (g_caveField.mode == 1) {
+                if (!g_caveField.ready) {
+                    return samplePerlinCaveNoiseDirect(worldX, worldY, worldZ, outA, outB);
+                }
+                const float fx = (worldX - g_caveField.origin.x) / static_cast<float>(g_caveField.step);
+                const float fy = (worldY - g_caveField.origin.y) / static_cast<float>(g_caveField.step);
+                const float fz = (worldZ - g_caveField.origin.z) / static_cast<float>(g_caveField.step);
+                const int ix = static_cast<int>(std::round(fx));
+                const int iy = static_cast<int>(std::round(fy));
+                const int iz = static_cast<int>(std::round(fz));
+                if (ix < 0 || iy < 0 || iz < 0
+                    || ix >= g_caveField.dimX
+                    || iy >= g_caveField.dimY
+                    || iz >= g_caveField.dimZ) {
+                    return samplePerlinCaveNoiseDirect(worldX, worldY, worldZ, outA, outB);
+                }
+                const size_t idx = (static_cast<size_t>(ix) * static_cast<size_t>(g_caveField.dimY)
+                    + static_cast<size_t>(iy)) * static_cast<size_t>(g_caveField.dimZ)
+                    + static_cast<size_t>(iz);
+                if (idx >= g_caveField.a.size() || idx >= g_caveField.b.size()) {
+                    return samplePerlinCaveNoiseDirect(worldX, worldY, worldZ, outA, outB);
+                }
+                outA = static_cast<float>(g_caveField.a[idx]) / 255.0f;
+                outB = static_cast<float>(g_caveField.b[idx]) / 255.0f;
+                return true;
+            }
+            if (!g_caveField.ready) return false;
+            const float invCellScale = 1.0f / static_cast<float>(std::max(1, g_caveField.cellScale));
+            const int x = static_cast<int>(std::floor(worldX * invCellScale));
+            const int y = static_cast<int>(std::floor(worldY * invCellScale));
+            const int z = static_cast<int>(std::floor(worldZ * invCellScale));
             const bool xyOpen = sampleBinaryCavePlane(0, x, y);
             const bool zyOpen = sampleBinaryCavePlane(1, z, y);
             const bool open = xyOpen && zyOpen;
@@ -747,6 +1016,12 @@ namespace TerrainSystemLogic {
                 // Island height uses a blended elevation + ridge term that can exceed islandNoiseAmp.
                 // Use a conservative bound so high ridges never clip top sections out of streaming.
                 maxY = static_cast<int>(std::ceil(cfg.waterSurface + cfg.islandMaxHeight + (cfg.islandNoiseAmp * 2.0f)));
+                if (cfg.jungleVolcanoEnabled) {
+                    maxY = std::max(
+                        maxY,
+                        static_cast<int>(std::ceil(cfg.waterSurface + cfg.islandMaxHeight + cfg.jungleVolcanoHeight))
+                    );
+                }
             }
             maxY = std::max(maxY, static_cast<int>(std::ceil(cfg.waterSurface)));
             if (worldCtx.leyLines.enabled && worldCtx.leyLines.loaded) {
@@ -759,7 +1034,10 @@ namespace TerrainSystemLogic {
             // Keep vertical streaming/generation range above terrain so tall pines can exist
             // on uplifted ridges without clipped tops or missing foliage passes.
             maxY += std::max(0, getRegistryInt(baseSystem, "ExpanseVerticalHeadroom", 48));
-            maxY = std::max(maxY, getRegistryInt(baseSystem, "ExpanseAbsoluteMaxY", 320));
+            maxY = std::max(maxY, getRegistryInt(baseSystem, "ExpanseAbsoluteMaxY", 334));
+            if (std::isfinite(cfg.maxSurfaceY)) {
+                maxY = std::min(maxY, static_cast<int>(std::ceil(cfg.maxSurfaceY)));
+            }
             return maxY;
         }
 
@@ -783,6 +1061,20 @@ namespace TerrainSystemLogic {
                                         bool& outCompleted,
                                         bool& outPostFeaturesCompleted);
 
+        bool GenerateExpanseColumnBase(BaseSystem& baseSystem,
+                                       std::vector<Entity>& prototypes,
+                                       WorldContext& worldCtx,
+                                       const ExpanseConfig& cfg,
+                                       const VoxelColumnKey& columnKey,
+                                       int minY,
+                                       int maxY,
+                                       int startColumn,
+                                       int maxColumns,
+                                       bool& inOutWroteAny,
+                                       int& outNextColumn,
+                                       bool& outCompleted,
+                                       bool& outPostFeaturesCompleted);
+
         bool RunExpanseSectionDecorators(BaseSystem& baseSystem,
                                          std::vector<Entity>& prototypes,
                                          WorldContext& worldCtx,
@@ -790,6 +1082,687 @@ namespace TerrainSystemLogic {
                                          const glm::ivec3& sectionCoord,
                                          bool& inOutWroteAny,
                                          bool& outPostFeaturesCompleted);
+
+        int computeExpanseMinY(const BaseSystem& baseSystem,
+                               const ExpanseConfig& cfg,
+                               const std::string& currentLevel) {
+            const bool isExpanseLevel = (currentLevel == "the_expanse");
+            const bool isDepthLevel = (currentLevel == "the_depths");
+            const int waterFloorY = static_cast<int>(std::floor(cfg.waterFloor));
+            const int streamPortalY = isDepthLevel ? (cfg.minY + 1) : (waterFloorY - 2);
+            int minY = std::min(std::min(cfg.minY, waterFloorY), streamPortalY);
+            if (isExpanseLevel && getRegistryBool(baseSystem, "UnifiedDepthsEnabled", true)) {
+                minY = getRegistryInt(baseSystem, "UnifiedDepthsMinY", -70);
+            }
+            return minY;
+        }
+
+        void pruneColumnSectionLifecycleOutsideProfile(VoxelWorldContext& voxelWorld, int size) {
+            std::vector<VoxelSectionKey> removeKeys;
+            removeKeys.reserve(voxelWorld.chunkStates.size());
+            for (const auto& [key, _] : voxelWorld.chunkStates) {
+                const int sectionMinY = key.coord.y * size;
+                const int sectionMaxY = sectionMinY + size - 1;
+                if (sectionMaxY < voxelWorld.columnMinY
+                    || sectionMinY >= voxelWorld.columnMaxYExclusive) {
+                    removeKeys.push_back(key);
+                }
+            }
+            for (const VoxelSectionKey& key : removeKeys) {
+                voxelWorld.releaseSection(key);
+                voxelWorld.eraseChunkState(key);
+                g_voxelTerrainGenerated.erase(key);
+            }
+        }
+
+        void clearGeneratedColumnSections(const VoxelColumnKey& columnKey, int minSectionY, int maxSectionY) {
+            for (int sy = minSectionY; sy <= maxSectionY; ++sy) {
+                g_voxelTerrainGenerated.erase(VoxelSectionKey{glm::ivec3(columnKey.coord.x, sy, columnKey.coord.y)});
+            }
+        }
+
+        void markColumnSectionLifecycle(VoxelWorldContext& voxelWorld,
+                                        const VoxelColumnKey& columnKey,
+                                        int minSectionY,
+                                        int maxSectionY,
+                                        bool needsDecorators,
+                                        bool needsSurfaceFoliage) {
+            for (int sy = minSectionY; sy <= maxSectionY; ++sy) {
+                const VoxelSectionKey sectionKey{glm::ivec3(columnKey.coord.x, sy, columnKey.coord.y)};
+                VoxelChunkLifecycleState& state = voxelWorld.ensureChunkState(sectionKey);
+                state.desired = true;
+                state.generated = true;
+                state.postFeaturesComplete = !needsDecorators;
+                state.hasSection = (voxelWorld.sections.count(sectionKey) > 0);
+                state.surfaceFoliageComplete = !needsSurfaceFoliage || !state.hasSection;
+                state.featureDependencyReadyMask = 0;
+                state.featureDependencyMaskInitialized = false;
+                state.touchFrame = g_voxelStreaming.frameCounter;
+                if (state.hasSection) {
+                    g_voxelTerrainGenerated.insert(sectionKey);
+                } else {
+                    g_voxelTerrainGenerated.erase(sectionKey);
+                }
+                if (needsDecorators) {
+                    state.stage = VoxelChunkLifecycleStage::FeatureQueued;
+                } else if (state.isFullyReady()) {
+                    state.stage = VoxelChunkLifecycleStage::Ready;
+                } else {
+                    state.stage = VoxelChunkLifecycleStage::BaseGenerated;
+                }
+            }
+        }
+
+        bool runColumnDecoratorStep(BaseSystem& baseSystem,
+                                    std::vector<Entity>& prototypes,
+                                    WorldContext& worldCtx,
+                                    const ExpanseConfig& cfg,
+                                    VoxelWorldContext& voxelWorld,
+                                    const VoxelColumnKey& columnKey,
+                                    VoxelColumnGenerationJob& job,
+                                    int minSectionY,
+                                    int maxSectionY,
+                                    bool needsSurfaceFoliage) {
+            if (job.nextFeatureSectionY == std::numeric_limits<int>::min()) {
+                job.nextFeatureSectionY = minSectionY;
+            }
+            const int sectionCount = std::max(1, maxSectionY - minSectionY + 1);
+            const int sectionsPerStep = std::clamp(
+                getRegistryInt(baseSystem, "voxelColumnFeatureSectionsPerStep", 4),
+                1,
+                sectionCount
+            );
+            int processed = 0;
+            while (job.nextFeatureSectionY <= maxSectionY && processed < sectionsPerStep) {
+                const int sy = job.nextFeatureSectionY;
+                const VoxelSectionKey sectionKey{glm::ivec3(columnKey.coord.x, sy, columnKey.coord.y)};
+                VoxelChunkLifecycleState& state = voxelWorld.ensureChunkState(sectionKey);
+                state.desired = true;
+                state.generated = true;
+                state.postFeaturesComplete = false;
+                state.surfaceFoliageComplete = false;
+                state.hasSection = (voxelWorld.sections.count(sectionKey) > 0);
+                state.stage = VoxelChunkLifecycleStage::FeatureInProgress;
+                state.touchFrame = g_voxelStreaming.frameCounter;
+                if (state.hasSection) {
+                    g_voxelTerrainGenerated.insert(sectionKey);
+                }
+
+                bool wroteAny = false;
+                bool postFeaturesCompleted = true;
+                const bool resolved = RunExpanseSectionDecorators(
+                    baseSystem,
+                    prototypes,
+                    worldCtx,
+                    cfg,
+                    sectionKey.coord,
+                    wroteAny,
+                    postFeaturesCompleted
+                );
+                job.wroteAny = job.wroteAny || wroteAny;
+                state.hasSection = (voxelWorld.sections.count(sectionKey) > 0);
+                if (state.hasSection) {
+                    g_voxelTerrainGenerated.insert(sectionKey);
+                } else {
+                    g_voxelTerrainGenerated.erase(sectionKey);
+                }
+
+                if (!resolved || !postFeaturesCompleted) {
+                    state.postFeaturesComplete = false;
+                    state.surfaceFoliageComplete = false;
+                    state.stage = VoxelChunkLifecycleStage::FeatureQueued;
+                    state.touchFrame = g_voxelStreaming.frameCounter;
+                    return false;
+                }
+
+                state.postFeaturesComplete = true;
+                state.surfaceFoliageComplete = !needsSurfaceFoliage || !state.hasSection;
+                state.stage = state.isFullyReady()
+                    ? VoxelChunkLifecycleStage::Ready
+                    : VoxelChunkLifecycleStage::BaseGenerated;
+                state.touchFrame = g_voxelStreaming.frameCounter;
+                job.nextFeatureSectionY += 1;
+                processed += 1;
+            }
+            return job.nextFeatureSectionY > maxSectionY;
+        }
+
+        bool runColumnSurfaceFoliageStep(BaseSystem& baseSystem,
+                                         std::vector<Entity>& prototypes,
+                                         VoxelWorldContext& voxelWorld,
+                                         const VoxelColumnKey& columnKey,
+                                         VoxelColumnGenerationJob& job,
+                                         int minSectionY,
+                                         int maxSectionY) {
+            if (job.nextSurfaceSectionY == std::numeric_limits<int>::min()) {
+                job.nextSurfaceSectionY = minSectionY;
+            }
+            const int sectionCount = std::max(1, maxSectionY - minSectionY + 1);
+            const int sectionsPerStep = std::clamp(
+                getRegistryInt(baseSystem, "voxelColumnSurfaceSectionsPerStep", 1),
+                1,
+                sectionCount
+            );
+            const int passesPerSection = std::max(
+                1,
+                getRegistryInt(baseSystem, "voxelColumnSurfaceFoliagePassesPerSection", 1)
+            );
+            int processed = 0;
+            while (job.nextSurfaceSectionY <= maxSectionY && processed < sectionsPerStep) {
+                const int sy = job.nextSurfaceSectionY;
+                const VoxelSectionKey sectionKey{glm::ivec3(columnKey.coord.x, sy, columnKey.coord.y)};
+                VoxelChunkLifecycleState& state = voxelWorld.ensureChunkState(sectionKey);
+                state.desired = true;
+                state.generated = true;
+                state.postFeaturesComplete = true;
+                state.hasSection = (voxelWorld.sections.count(sectionKey) > 0);
+                state.touchFrame = g_voxelStreaming.frameCounter;
+                if (!state.hasSection) {
+                    state.surfaceFoliageComplete = true;
+                    state.stage = VoxelChunkLifecycleStage::Ready;
+                    g_voxelTerrainGenerated.erase(sectionKey);
+                    job.nextSurfaceSectionY += 1;
+                    processed += 1;
+                    continue;
+                }
+
+                // TreeGeneration's immediate path requires terrain readiness before it will
+                // accept a section. Publish that readiness before asking it to decorate.
+                g_voxelTerrainGenerated.insert(sectionKey);
+                state.surfaceFoliageComplete = false;
+                state.stage = VoxelChunkLifecycleStage::BaseGenerated;
+                const bool surfaceReady = TreeGenerationSystemLogic::ProcessSectionSurfaceFoliageNow(
+                    baseSystem,
+                    prototypes,
+                    sectionKey,
+                    passesPerSection
+                );
+                state.hasSection = (voxelWorld.sections.count(sectionKey) > 0);
+                state.surfaceFoliageComplete = surfaceReady || !state.hasSection;
+                state.stage = state.isFullyReady()
+                    ? VoxelChunkLifecycleStage::Ready
+                    : VoxelChunkLifecycleStage::BaseGenerated;
+                state.touchFrame = g_voxelStreaming.frameCounter;
+                if (state.hasSection) {
+                    g_voxelTerrainGenerated.insert(sectionKey);
+                } else {
+                    g_voxelTerrainGenerated.erase(sectionKey);
+                }
+                if (!state.surfaceFoliageComplete) {
+                    return false;
+                }
+                job.nextSurfaceSectionY += 1;
+                processed += 1;
+            }
+            return job.nextSurfaceSectionY > maxSectionY;
+        }
+
+        void finalizeColumnRenderBridge(BaseSystem& baseSystem,
+                                        std::vector<Entity>& prototypes,
+                                        VoxelWorldContext& voxelWorld,
+                                        const VoxelColumnKey& columnKey,
+                                        int minSectionY,
+                                        int maxSectionY) {
+            (void)baseSystem;
+            (void)prototypes;
+            for (int sy = minSectionY; sy <= maxSectionY; ++sy) {
+                const VoxelSectionKey sectionKey{glm::ivec3(columnKey.coord.x, sy, columnKey.coord.y)};
+                VoxelChunkLifecycleState& state = voxelWorld.ensureChunkState(sectionKey);
+                state.desired = true;
+                state.generated = true;
+                state.postFeaturesComplete = true;
+                state.hasSection = (voxelWorld.sections.count(sectionKey) > 0);
+                state.touchFrame = g_voxelStreaming.frameCounter;
+                state.surfaceFoliageComplete = true;
+                state.stage = VoxelChunkLifecycleStage::Ready;
+                if (state.hasSection) {
+                    g_voxelTerrainGenerated.insert(sectionKey);
+                } else {
+                    g_voxelTerrainGenerated.erase(sectionKey);
+                }
+            }
+        }
+
+        bool stepColumnGenerationJob(BaseSystem& baseSystem,
+                                     std::vector<Entity>& prototypes,
+                                     WorldContext& worldCtx,
+                                     const ExpanseConfig& cfg,
+                                     const VoxelColumnKey& columnKey,
+                                     VoxelColumnGenerationJob& job,
+                                     int columnMinY,
+                                     int columnMaxY,
+                                     int minSectionY,
+                                     int maxSectionY,
+                                     int localColumnsPerStep,
+                                     int& outColumnSteps) {
+            if (!baseSystem.voxelWorld) return true;
+            VoxelWorldContext& voxelWorld = *baseSystem.voxelWorld;
+            VoxelChunkLifecycleState& columnState = voxelWorld.ensureColumnState(columnKey);
+            columnState.desired = true;
+            columnState.touchFrame = g_voxelStreaming.frameCounter;
+
+            if (job.phase == 0) {
+                columnState.stage = VoxelChunkLifecycleStage::BaseInProgress;
+                bool completed = false;
+                bool postFeaturesCompleted = true;
+                int nextColumn = job.nextColumn;
+                bool wroteAny = job.wroteAny;
+                (void)GenerateExpanseColumnBase(
+                    baseSystem,
+                    prototypes,
+                    worldCtx,
+                    cfg,
+                    columnKey,
+                    columnMinY,
+                    columnMaxY,
+                    nextColumn,
+                    localColumnsPerStep,
+                    wroteAny,
+                    nextColumn,
+                    completed,
+                    postFeaturesCompleted
+                );
+                outColumnSteps += 1;
+                job.nextColumn = nextColumn;
+                job.wroteAny = wroteAny;
+                if (!completed) return false;
+                const bool runDecorators =
+                    !postFeaturesCompleted
+                    && getRegistryBool(baseSystem, "VoxelColumnRunDeferredDecorators", false);
+                const bool runSurfaceFoliage =
+                    getRegistryBool(baseSystem, "VoxelColumnRunSurfaceFoliage", false);
+                markColumnSectionLifecycle(
+                    voxelWorld,
+                    columnKey,
+                    minSectionY,
+                    maxSectionY,
+                    runDecorators,
+                    runSurfaceFoliage
+                );
+                columnState.generated = true;
+                columnState.postFeaturesComplete = !runDecorators;
+                columnState.surfaceFoliageComplete = !runSurfaceFoliage;
+                columnState.hasSection = (voxelWorld.columns.count(columnKey) > 0);
+                columnState.stage = runDecorators
+                    ? VoxelChunkLifecycleStage::FeatureQueued
+                    : VoxelChunkLifecycleStage::BaseGenerated;
+                job.phase = runDecorators ? 1 : (runSurfaceFoliage ? 2 : 3);
+                return false;
+            }
+
+            if (job.phase == 1) {
+                columnState.stage = VoxelChunkLifecycleStage::FeatureInProgress;
+                const bool runSurfaceFoliage =
+                    getRegistryBool(baseSystem, "VoxelColumnRunSurfaceFoliage", false);
+                const bool completed = runColumnDecoratorStep(
+                    baseSystem,
+                    prototypes,
+                    worldCtx,
+                    cfg,
+                    voxelWorld,
+                    columnKey,
+                    job,
+                    minSectionY,
+                    maxSectionY,
+                    runSurfaceFoliage
+                );
+                outColumnSteps += 1;
+                if (!completed) return false;
+                columnState.postFeaturesComplete = true;
+                columnState.surfaceFoliageComplete = !runSurfaceFoliage;
+                columnState.stage = runSurfaceFoliage
+                    ? VoxelChunkLifecycleStage::BaseGenerated
+                    : VoxelChunkLifecycleStage::Ready;
+                columnState.touchFrame = g_voxelStreaming.frameCounter;
+                job.phase = runSurfaceFoliage ? 2 : 3;
+                return false;
+            }
+
+            if (job.phase == 2) {
+                columnState.stage = VoxelChunkLifecycleStage::BaseGenerated;
+                const bool completed = runColumnSurfaceFoliageStep(
+                    baseSystem,
+                    prototypes,
+                    voxelWorld,
+                    columnKey,
+                    job,
+                    minSectionY,
+                    maxSectionY
+                );
+                outColumnSteps += 1;
+                if (!completed) return false;
+                columnState.surfaceFoliageComplete = true;
+                columnState.stage = VoxelChunkLifecycleStage::Ready;
+                columnState.touchFrame = g_voxelStreaming.frameCounter;
+                job.phase = 3;
+                return false;
+            }
+
+            if (job.phase == 3) {
+                finalizeColumnRenderBridge(
+                    baseSystem,
+                    prototypes,
+                    voxelWorld,
+                    columnKey,
+                    minSectionY,
+                    maxSectionY
+                );
+                columnState.generated = true;
+                columnState.postFeaturesComplete = true;
+                columnState.surfaceFoliageComplete = true;
+                columnState.hasSection = (voxelWorld.columns.count(columnKey) > 0);
+                columnState.stage = VoxelChunkLifecycleStage::Ready;
+                columnState.touchFrame = g_voxelStreaming.frameCounter;
+                return true;
+            }
+
+            return false;
+        }
+
+        void rebuildDesiredColumns(BaseSystem& baseSystem,
+                                   VoxelWorldContext& voxelWorld,
+                                   const ExpanseConfig& cfg,
+                                   const glm::vec3& cameraPos,
+                                   const VoxelCpuStreamingView& cpuStreamingView,
+                                   int cpuViewYawBucket) {
+            const int radius = streamRadiusWorld(voxelWorld);
+            const int size = sectionSizeForSection(voxelWorld);
+            const glm::ivec2 cameraColumn(
+                floorDivInt(static_cast<int>(std::floor(cameraPos.x)), size),
+                floorDivInt(static_cast<int>(std::floor(cameraPos.z)), size)
+            );
+            const bool moved =
+                g_voxelColumnStreaming.lastCenterColumn != cameraColumn
+                || g_voxelColumnStreaming.lastRadius != radius
+                || g_voxelColumnStreaming.lastCpuViewYawBucket != cpuViewYawBucket
+                || g_voxelColumnStreaming.lastCpuViewCullingEnabled != cpuStreamingView.enabled;
+            if (!moved
+                && !g_voxelColumnStreaming.pendingDesiredRebuild
+                && !g_voxelColumnStreaming.desired.empty()) {
+                return;
+            }
+
+            g_voxelColumnStreaming.lastCenterColumn = cameraColumn;
+            g_voxelColumnStreaming.lastRadius = radius;
+            g_voxelColumnStreaming.lastCpuViewYawBucket = cpuViewYawBucket;
+            g_voxelColumnStreaming.lastCpuViewCullingEnabled = cpuStreamingView.enabled;
+            g_voxelColumnStreaming.pendingDesiredRebuild = false;
+
+            std::unordered_set<VoxelColumnKey, VoxelColumnKeyHash> nextDesired;
+            std::vector<VoxelColumnKey> nextOrder;
+            if (radius > 0) {
+                const int columnRadius = static_cast<int>(std::ceil(
+                    static_cast<float>(radius) / static_cast<float>(std::max(1, size))
+                ));
+                nextDesired.reserve(static_cast<size_t>((columnRadius * 2 + 1) * (columnRadius * 2 + 1)));
+                nextOrder.reserve(nextDesired.size());
+                const glm::vec2 camXZ(cameraPos.x, cameraPos.z);
+                for (int ring = 0; ring <= columnRadius; ++ring) {
+                    for (int dz = -ring; dz <= ring; ++dz) {
+                        for (int dx = -ring; dx <= ring; ++dx) {
+                            if (std::max(std::abs(dx), std::abs(dz)) != ring) continue;
+                            const glm::ivec2 coord = cameraColumn + glm::ivec2(dx, dz);
+                            const glm::ivec3 sectionCoord(coord.x, 0, coord.y);
+                            if (!sectionColumnPassesCpuStreamingView(cpuStreamingView, sectionCoord, size, 1)) {
+                                continue;
+                            }
+                            const glm::vec2 minB(coord.x * size, coord.y * size);
+                            const glm::vec2 maxB = minB + glm::vec2(size);
+                            float distX = 0.0f;
+                            if (camXZ.x < minB.x) distX = minB.x - camXZ.x;
+                            else if (camXZ.x > maxB.x) distX = camXZ.x - maxB.x;
+                            float distZ = 0.0f;
+                            if (camXZ.y < minB.y) distZ = minB.y - camXZ.y;
+                            else if (camXZ.y > maxB.y) distZ = camXZ.y - maxB.y;
+                            if (std::sqrt(distX * distX + distZ * distZ) > static_cast<float>(radius)) continue;
+                            const VoxelColumnKey key{coord};
+                            if (nextDesired.insert(key).second) {
+                                nextOrder.push_back(key);
+                            }
+                        }
+                    }
+                }
+            }
+
+            const int desiredHardCap = std::max(0, getRegistryInt(baseSystem, "voxelDesiredColumnHardCap", 0));
+            if (desiredHardCap > 0 && static_cast<int>(nextOrder.size()) > desiredHardCap) {
+                nextOrder.resize(static_cast<size_t>(desiredHardCap));
+                nextDesired.clear();
+                for (const VoxelColumnKey& key : nextOrder) {
+                    nextDesired.insert(key);
+                }
+            }
+
+            for (const VoxelColumnKey& key : nextOrder) {
+                if (g_voxelColumnStreaming.generated.count(key) > 0) continue;
+                if (g_voxelColumnStreaming.jobs.count(key) > 0) continue;
+                if (g_voxelColumnStreaming.pendingSet.insert(key).second) {
+                    g_voxelColumnStreaming.pending.push_back(key);
+                    voxelWorld.ensureColumnState(key).stage = VoxelChunkLifecycleStage::BaseQueued;
+                }
+            }
+
+            std::vector<VoxelColumnKey> releaseColumns;
+            releaseColumns.reserve(voxelWorld.columns.size());
+            for (const auto& [key, _] : voxelWorld.columns) {
+                if (nextDesired.count(key) == 0) {
+                    releaseColumns.push_back(key);
+                }
+            }
+            const int minSectionY = floorDivInt(voxelWorld.columnMinY, size);
+            const int maxSectionY = floorDivInt(voxelWorld.columnMaxYExclusive - 1, size);
+            for (const VoxelColumnKey& key : releaseColumns) {
+                voxelWorld.releaseColumn(key);
+                clearGeneratedColumnSections(key, minSectionY, maxSectionY);
+                g_voxelColumnStreaming.generated.erase(key);
+                g_voxelColumnStreaming.jobs.erase(key);
+                g_voxelColumnStreaming.pendingSet.erase(key);
+                g_voxelColumnStreaming.inProgress.erase(key);
+            }
+
+            if (!g_voxelColumnStreaming.pending.empty()) {
+                std::vector<VoxelColumnKey> filtered;
+                filtered.reserve(g_voxelColumnStreaming.pending.size());
+                for (const VoxelColumnKey& key : g_voxelColumnStreaming.pending) {
+                    if (nextDesired.count(key) > 0
+                        && g_voxelColumnStreaming.generated.count(key) == 0) {
+                        filtered.push_back(key);
+                    } else {
+                        g_voxelColumnStreaming.pendingSet.erase(key);
+                    }
+                }
+                g_voxelColumnStreaming.pending.swap(filtered);
+            }
+
+            g_voxelColumnStreaming.desired.swap(nextDesired);
+            g_voxelColumnStreaming.desiredOrder.swap(nextOrder);
+        }
+
+        void UpdateExpanseVoxelColumns(BaseSystem& baseSystem,
+                                       std::vector<Entity>& prototypes,
+                                       WorldContext& worldCtx,
+                                       const ExpanseConfig& cfg,
+                                       const std::string& currentLevel,
+                                       const VoxelCpuStreamingView& cpuStreamingView,
+                                       int cpuViewYawBucket) {
+            if (!baseSystem.voxelWorld || !baseSystem.player) return;
+            VoxelWorldContext& voxelWorld = *baseSystem.voxelWorld;
+            const int size = sectionSizeForSection(voxelWorld);
+            const int minY = computeExpanseMinY(baseSystem, cfg, currentLevel);
+            const int maxY = computeExpanseMaxY(baseSystem, worldCtx, cfg);
+            voxelWorld.columnMinY = minY;
+            voxelWorld.columnMaxYExclusive = maxY + 1;
+            const int minSectionY = floorDivInt(minY, size);
+            const int maxSectionY = floorDivInt(maxY, size);
+
+            glm::vec3 cameraPos = baseSystem.player->cameraPosition;
+            rebuildDesiredColumns(baseSystem, voxelWorld, cfg, cameraPos, cpuStreamingView, cpuViewYawBucket);
+
+            const int fullColumnsPerSection = size * size;
+            const int localColumnsPerStep = std::clamp(
+                getRegistryInt(
+                    baseSystem,
+                    "voxelColumnLocalColumnsPerStep",
+                    getRegistryInt(baseSystem, "voxelGenerationColumnsPerStep", fullColumnsPerSection)
+                ),
+                1,
+                std::max(1, fullColumnsPerSection)
+            );
+            const int generationBudget = std::max(
+                1,
+                getRegistryInt(baseSystem, "voxelColumnGenerationStepsPerFrame", 1)
+            );
+            const float generationTimeBudgetMs = std::max(
+                0.1f,
+                getRegistryFloat(baseSystem, "voxelColumnGenerationMaxMsPerFrame", 8.0f)
+            );
+            const auto genStart = std::chrono::steady_clock::now();
+            int columnSteps = 0;
+            int columnsBuilt = 0;
+            int columnsConsumed = 0;
+            int skipped = 0;
+
+            while (!g_voxelColumnStreaming.pending.empty() && columnSteps < generationBudget) {
+                if (columnsConsumed > 0 && generationTimeBudgetMs > 0.0f) {
+                    const float elapsedMs = std::chrono::duration<float, std::milli>(
+                        std::chrono::steady_clock::now() - genStart
+                    ).count();
+                    if (elapsedMs >= generationTimeBudgetMs) break;
+                }
+                const VoxelColumnKey key = g_voxelColumnStreaming.pending.front();
+                g_voxelColumnStreaming.pending.erase(g_voxelColumnStreaming.pending.begin());
+                g_voxelColumnStreaming.pendingSet.erase(key);
+                columnsConsumed += 1;
+
+                if (g_voxelColumnStreaming.desired.count(key) == 0) {
+                    skipped += 1;
+                    continue;
+                }
+                if (g_voxelColumnStreaming.generated.count(key) > 0) {
+                    skipped += 1;
+                    continue;
+                }
+
+                g_voxelColumnStreaming.inProgress.insert(key);
+
+                auto jobIt = g_voxelColumnStreaming.jobs.find(key);
+                if (jobIt == g_voxelColumnStreaming.jobs.end()) {
+                    voxelWorld.releaseColumn(key);
+                    VoxelColumnGenerationJob job;
+                    auto inserted = g_voxelColumnStreaming.jobs.emplace(key, job);
+                    jobIt = inserted.first;
+                }
+
+                VoxelChunkLifecycleState& columnState = voxelWorld.ensureColumnState(key);
+                columnState.desired = true;
+                columnState.stage = VoxelChunkLifecycleStage::BaseInProgress;
+                columnState.touchFrame = g_voxelStreaming.frameCounter;
+
+                bool completed = false;
+                while (columnSteps < generationBudget) {
+                    completed = stepColumnGenerationJob(
+                        baseSystem,
+                        prototypes,
+                        worldCtx,
+                        cfg,
+                        key,
+                        jobIt->second,
+                        minY,
+                        maxY,
+                        minSectionY,
+                        maxSectionY,
+                        localColumnsPerStep,
+                        columnSteps
+                    );
+                    if (completed) break;
+                    if (generationTimeBudgetMs > 0.0f) {
+                        const float elapsedMs = std::chrono::duration<float, std::milli>(
+                            std::chrono::steady_clock::now() - genStart
+                        ).count();
+                        if (elapsedMs >= generationTimeBudgetMs) break;
+                    }
+                }
+
+                g_voxelColumnStreaming.inProgress.erase(key);
+                if (completed) {
+                    g_voxelColumnStreaming.jobs.erase(key);
+                    g_voxelColumnStreaming.generated.insert(key);
+                    columnState.generated = true;
+                    columnState.postFeaturesComplete = true;
+                    columnState.surfaceFoliageComplete = true;
+                    columnState.hasSection = (voxelWorld.columns.count(key) > 0);
+                    columnState.stage = VoxelChunkLifecycleStage::Ready;
+                    columnState.touchFrame = g_voxelStreaming.frameCounter;
+                    columnsBuilt += 1;
+                } else if (g_voxelColumnStreaming.desired.count(key) > 0
+                           && g_voxelColumnStreaming.pendingSet.insert(key).second) {
+                    switch (jobIt->second.phase) {
+                        case 0:
+                            columnState.stage = VoxelChunkLifecycleStage::BaseQueued;
+                            break;
+                        case 1:
+                            columnState.stage = VoxelChunkLifecycleStage::FeatureQueued;
+                            break;
+                        case 2:
+                        case 3:
+                            columnState.stage = VoxelChunkLifecycleStage::BaseGenerated;
+                            break;
+                        default:
+                            columnState.stage = VoxelChunkLifecycleStage::Desired;
+                            break;
+                    }
+                    g_voxelColumnStreaming.pending.insert(g_voxelColumnStreaming.pending.begin(), key);
+                }
+            }
+
+            pruneColumnSectionLifecycleOutsideProfile(voxelWorld, size);
+
+            const auto end = std::chrono::steady_clock::now();
+            const float generationMs = std::chrono::duration<float, std::milli>(end - genStart).count();
+            g_voxelStreamingPerfStats.pending = g_voxelColumnStreaming.pending.size()
+                + g_voxelColumnStreaming.jobs.size()
+                + g_voxelColumnStreaming.inProgress.size();
+            g_voxelStreamingPerfStats.desired = g_voxelColumnStreaming.desired.size();
+            g_voxelStreamingPerfStats.generated = g_voxelColumnStreaming.generated.size();
+            g_voxelStreamingPerfStats.jobs = g_voxelColumnStreaming.jobs.size();
+            g_voxelStreamingPerfStats.stepped = columnSteps;
+            g_voxelStreamingPerfStats.built = columnsBuilt;
+            g_voxelStreamingPerfStats.consumed = columnsConsumed;
+            g_voxelStreamingPerfStats.skippedExisting = skipped;
+            g_voxelStreamingPerfStats.filteredOut = 0;
+            g_voxelStreamingPerfStats.rescueSurfaceQueued = 0;
+            g_voxelStreamingPerfStats.rescueMissingQueued = 0;
+            g_voxelStreamingPerfStats.droppedByCap = 0;
+            g_voxelStreamingPerfStats.reprioritized = 0;
+            g_voxelStreamingPerfStats.prepMs = 0.0f;
+            g_voxelStreamingPerfStats.generationMs = generationMs;
+            g_voxelStreamingPerfStats.desiredMs = 0.0f;
+            g_voxelStreamingPerfStats.baseGenMs = generationMs;
+            g_voxelStreamingPerfStats.featureMs = 0.0f;
+            g_voxelStreamingPerfStats.surfaceMs = 0.0f;
+            g_voxelStreamingPerfStats.caveFieldMs = g_caveFieldFrameMs;
+            g_voxelStreamingPerfStats.schedulerPressure = 0;
+            g_voxelStreamingPerfStats.desiredBudget = static_cast<int>(g_voxelColumnStreaming.desired.size());
+            g_voxelStreamingPerfStats.baseBudget = generationBudget;
+            g_voxelStreamingPerfStats.featureBudget = 0;
+            g_voxelStreamingPerfStats.surfaceBudget = 0;
+            g_voxelStreamingPerfStats.baseBudgetMs = generationTimeBudgetMs;
+            g_voxelStreamingPerfStats.featureBudgetMs = 0.0f;
+            g_voxelStreamingPerfStats.surfaceBudgetMs = 0.0f;
+            g_voxelStreamingPerfStats.downstreamDirty = voxelWorld.dirtySections.size();
+            g_voxelStreamingPerfStats.downstreamPrepared = baseSystem.voxelRender
+                ? baseSystem.voxelRender->preparedMeshes.size()
+                : 0u;
+            g_voxelStreamingPerfStats.downstreamUpload = baseSystem.voxelRender
+                ? baseSystem.voxelRender->renderBuffersDirty.size()
+                : 0u;
+            g_voxelStreamingPerfStats.caveFieldCellsBuilt = g_caveFieldFrameCellsBuilt;
+            g_voxelStreamingPerfStats.caveSamples = g_caveFieldFrameSampleCount;
+
+            g_voxelStreamingTotalStepped += static_cast<uint64_t>(std::max(0, columnSteps));
+            g_voxelStreamingTotalBuilt += static_cast<uint64_t>(std::max(0, columnsBuilt));
+            g_voxelStreamingTotalConsumed += static_cast<uint64_t>(std::max(0, columnsConsumed));
+        }
 
 
         void UpdateExpanseVoxelWorld(BaseSystem& baseSystem,
@@ -803,11 +1776,11 @@ namespace TerrainSystemLogic {
             const bool isExpanseLevel = (currentLevel == "the_expanse");
             const bool isDepthLevel = (currentLevel == "the_depths");
             const bool unifiedDepthsEnabled = isExpanseLevel && getRegistryBool(baseSystem, "UnifiedDepthsEnabled", true);
-            const int unifiedDepthsMinY = getRegistryInt(baseSystem, "UnifiedDepthsMinY", -200);
+            const int unifiedDepthsMinY = getRegistryInt(baseSystem, "UnifiedDepthsMinY", -70);
             const bool verticalDomainGateEnabled = isExpanseLevel
                 && unifiedDepthsEnabled
                 && getRegistryBool(baseSystem, "voxelVerticalDomainGateEnabled", true);
-            const int verticalDomainCutoffY = getRegistryInt(baseSystem, "voxelVerticalDomainCutoffY", -50);
+            const int verticalDomainCutoffY = getRegistryInt(baseSystem, "voxelVerticalDomainCutoffY", -20);
             const int verticalDomainSwitchHysteresisY = std::max(
                 0,
                 getRegistryInt(baseSystem, "voxelVerticalDomainSwitchHysteresisY", 8)
@@ -835,7 +1808,7 @@ namespace TerrainSystemLogic {
             const int streamPortalY = isDepthLevel ? (cfg.minY + 1) : (waterFloorY - 2);
             int streamMinYTier0 = std::min(std::min(cfg.minY, waterFloorY), streamPortalY);
             if (unifiedDepthsEnabled) {
-                streamMinYTier0 = std::min(streamMinYTier0, unifiedDepthsMinY);
+                streamMinYTier0 = unifiedDepthsMinY;
             }
             g_voxelStreaming.frameCounter += 1;
             const VoxelCpuStreamingView cpuStreamingView =
@@ -848,6 +1821,18 @@ namespace TerrainSystemLogic {
             const int cpuViewYawBucket = cpuStreamingView.enabled
                 ? angleBucket(baseSystem.player->cameraYaw, cpuViewYawBucketDegrees, 180.0f)
                 : 0;
+            if (getRegistryBool(baseSystem, "VoxelColumnStreamingEnabled", true)) {
+                UpdateExpanseVoxelColumns(
+                    baseSystem,
+                    prototypes,
+                    worldCtx,
+                    cfg,
+                    currentLevel,
+                    cpuStreamingView,
+                    cpuViewYawBucket
+                );
+                return;
+            }
 
             // Keep completion markers independent from section allocation.
             // Some generated sections are intentionally empty and never allocate voxel storage.
@@ -2746,6 +3731,7 @@ namespace TerrainSystemLogic {
             g_voxelStreaming.surfaceReady.clear();
             g_voxelStreaming.surfaceReadySet.clear();
             g_voxelStreaming.featureReadyHead = 0;
+            g_voxelColumnStreaming = VoxelColumnStreamingState{};
             g_pendingResortCursor = 0;
             g_tier0RescueScanList.clear();
             g_tier0RescueScanHead = 0;
@@ -2768,12 +3754,27 @@ namespace TerrainSystemLogic {
             g_voxelDesiredRebuild.desiredOrder.clear();
             g_caveField.ready = false;
             g_caveField.enabled = true;
+            g_caveField.building = false;
+            g_caveField.mode = 0;
             g_caveField.seedA = 0;
             g_caveField.seedB = 0;
             g_caveField.iterations = 3;
             g_caveField.fillPercent = 50;
             g_caveField.openThreshold = 5;
+            g_caveField.cellScale = 1;
             g_caveField.maxCachedTiles = 512;
+            g_caveField.origin = glm::vec3(0.0f);
+            g_caveField.step = 4;
+            g_caveField.dimX = 0;
+            g_caveField.dimY = 0;
+            g_caveField.dimZ = 0;
+            g_caveField.buildCursor = 0;
+            g_caveField.totalCount = 0;
+            g_caveField.lastBuildFrame = std::numeric_limits<uint64_t>::max();
+            g_caveField.noiseA.reset();
+            g_caveField.noiseB.reset();
+            g_caveField.a.clear();
+            g_caveField.b.clear();
             g_caveField.tiles.clear();
             g_lastVoxelPerf = std::chrono::steady_clock::now();
             g_lastTerrainSnapshot = std::chrono::steady_clock::now();
@@ -2816,7 +3817,7 @@ namespace TerrainSystemLogic {
         }
         if (!baseSystem.voxelWorld || !baseSystem.voxelWorld->enabled) return;
         if (baseSystem.registry) {
-            const std::string terrainSchemaVersion = "terrain_schema_portal_seabed_v21";
+            const std::string terrainSchemaVersion = "terrain_schema_column_chunks_v22";
             auto it = baseSystem.registry->find("TerrainSchemaVersion");
             bool needsReset = true;
             if (it != baseSystem.registry->end() && std::holds_alternative<std::string>(it->second)) {
@@ -2839,6 +3840,22 @@ namespace TerrainSystemLogic {
         }
         if (g_voxelLevelKey != levelKey) {
             g_voxelLevelKey = levelKey;
+            g_caveConfigKey.clear();
+            resetVoxelStreamingState();
+        }
+
+        const std::string caveConfigKey =
+            getRegistryString(baseSystem, "BinaryCaveMode", "binary")
+            + "|scale=" + std::to_string(getRegistryInt(baseSystem, "BinaryCaveCellScale", 3))
+            + "|iters=" + std::to_string(getRegistryInt(baseSystem, "BinaryCaveIterations", 3))
+            + "|fill=" + std::to_string(getRegistryInt(baseSystem, "BinaryCaveFillPercent", 50))
+            + "|threshold=" + std::to_string(getRegistryInt(baseSystem, "BinaryCaveOpenThreshold", 5))
+            + "|perlinStep=" + std::to_string(getRegistryInt(baseSystem, "PerlinCaveFieldStep", 4))
+            + "|perlinSize=" + std::to_string(getRegistryInt(baseSystem, "PerlinCaveFieldSizeXZ", 2304));
+        if (g_caveConfigKey.empty()) {
+            g_caveConfigKey = caveConfigKey;
+        } else if (g_caveConfigKey != caveConfigKey) {
+            g_caveConfigKey = caveConfigKey;
             resetVoxelStreamingState();
         }
 
