@@ -101,6 +101,7 @@ void VoxelWorldContext::reset() {
     dirtyTickets.clear();
     chunkStates.clear();
     columnStates.clear();
+    dirtyColumns.clear();
     nextDirtyTicket = 1;
 }
 
@@ -458,6 +459,7 @@ void VoxelWorldContext::setBlock(const glm::ivec3& worldPos, uint32_t id, uint32
 
     if (markDirty) {
         column.editVersion += 1;
+        dirtyColumns.insert(columnKey);
     }
 
     if (column.nonAirCount <= 0) {
@@ -613,6 +615,7 @@ void VoxelWorldContext::releaseSection(const VoxelSectionKey& key) {
     auto columnIt = columns.find(columnKey);
     if (columnIt != columns.end()) {
         VoxelColumn& column = columnIt->second;
+        bool changedColumn = false;
         const int sectionMinY = key.coord.y * size;
         const int sectionMaxYExclusive = sectionMinY + size;
         const int clearMinY = std::max(sectionMinY, column.minY);
@@ -628,9 +631,14 @@ void VoxelWorldContext::releaseSection(const VoxelSectionKey& key) {
                         oldId = 0u;
                         column.colors[static_cast<size_t>(idx)] = 0u;
                         column.nonAirCount = std::max(0, column.nonAirCount - 1);
+                        changedColumn = true;
                     }
                 }
             }
+        }
+        if (changedColumn) {
+            column.editVersion += 1;
+            dirtyColumns.insert(columnKey);
         }
         if (column.nonAirCount <= 0) {
             columns.erase(columnIt);

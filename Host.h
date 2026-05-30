@@ -157,9 +157,14 @@ struct ExpanseConfig {
     int continentalSeed = 1;
     int elevationSeed = 2;
     int ridgeSeed = 3;
+    int biomeSeed = 4;
     float continentalScale = 100.0f;
     float elevationScale = 50.0f;
     float ridgeScale = 25.0f;
+    float biomeScale = 180.0f;
+    float biomeWarpScale = 80.0f;
+    float biomeWarpStrength = 0.0f;
+    std::string biomeMode = "legacy";
     float landThreshold = 0.48f;
     float waterSurface = 0.0f;
     float waterFloor = -4.0f;
@@ -1942,6 +1947,42 @@ struct PerfContext {
     std::unordered_map<std::string, int> hitchCounts;
 };
 
+struct WorldSaveCatalogEntry {
+    std::string worldId;
+    std::string displayName;
+    std::string levelKey = "the_expanse";
+    int64_t createdAt = 0;
+    int64_t modifiedAt = 0;
+};
+
+struct WorldSaveDimensionState {
+    bool hasPlayerState = false;
+    glm::vec3 playerPosition = glm::vec3(0.0f, 1.0f, 5.0f);
+    float playerYaw = -90.0f;
+    float playerPitch = 0.0f;
+    int64_t modifiedAt = 0;
+};
+
+struct WorldSaveContext {
+    bool initialized = false;
+    bool activeWorldLoaded = false;
+    bool pendingDawLoad = false;
+    bool dawLoadedForActiveWorld = false;
+    bool menuBuilt = false;
+    bool catalogDirty = false;
+    double autosaveAccumulator = 0.0;
+    std::string saveRoot = "Saves";
+    std::string activeWorldId;
+    std::string activeDisplayName;
+    std::string activeLevelKey = "the_expanse";
+    std::string activeDimensionId = "overworld";
+    std::string terrainSchemaVersion = "terrain_schema_column_chunks_v22";
+    int64_t activeCreatedAt = 0;
+    int64_t activeModifiedAt = 0;
+    std::vector<WorldSaveCatalogEntry> catalog;
+    std::unordered_map<std::string, WorldSaveDimensionState> dimensionStates;
+};
+
 struct BaseSystem {
     std::unique_ptr<LevelContext> level;
     std::unique_ptr<AppContext> app;
@@ -1974,6 +2015,7 @@ struct BaseSystem {
     std::unique_ptr<DawContext> daw;
     std::unique_ptr<MidiContext> midi;
     std::unique_ptr<PerfContext> perf;
+    std::unique_ptr<WorldSaveContext> worldSave;
     IRenderBackend* renderBackend = nullptr;
     uint64_t frameIndex = 0;
     std::string gamemode = "creative";
@@ -2083,6 +2125,7 @@ namespace LeyLineSystemLogic { void LoadLeyLines(BaseSystem&, std::vector<Entity
 namespace TerrainSystemLogic {
     void GenerateTerrain(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle);
     void UpdateExpanseTerrain(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle);
+    void ResetExpanseVoxelStreaming(BaseSystem&, bool flushActiveWorld);
     void GetTerrainStreamingRunStats(uint64_t& totalStepped,
                                      uint64_t& totalBuilt,
                                      uint64_t& totalConsumed,
@@ -2100,6 +2143,18 @@ namespace TerrainSystemLogic {
                                      double& snapshotBuiltPerSecMax,
                                      float& lastPrepMs,
                                      float& lastGenerationMs);
+}
+namespace WorldSaveSystemLogic {
+    void InitializeWorldSave(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle);
+    void UpdateWorldSave(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle);
+    void CleanupWorldSave(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle);
+    std::string GetActiveDimensionId(const BaseSystem&);
+    void SetActiveDimensionId(BaseSystem&, const std::string&);
+    void CaptureActiveDimensionPlayerState(BaseSystem&, const glm::vec3* overridePosition = nullptr);
+    bool RestoreDimensionPlayerState(BaseSystem&, const std::string&);
+    bool TryLoadSavedColumn(BaseSystem&, const VoxelColumnKey&);
+    bool FlushColumnIfDirty(BaseSystem&, const VoxelColumnKey&);
+    void FlushActiveWorld(BaseSystem&, bool forceDawSave = false);
 }
 namespace TreeGenerationSystemLogic {
     void UpdateExpanseTrees(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle);

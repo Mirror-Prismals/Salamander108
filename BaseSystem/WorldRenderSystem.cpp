@@ -69,6 +69,29 @@ namespace {
         }
         return false;
     }
+
+    bool isNightworldDimensionForWorldRender(const BaseSystem& baseSystem) {
+        if (baseSystem.worldSave && baseSystem.worldSave->activeDimensionId == "nightworld") {
+            return true;
+        }
+        if (baseSystem.registry) {
+            auto it = baseSystem.registry->find("ActiveDimensionId");
+            if (it != baseSystem.registry->end()
+                && std::holds_alternative<std::string>(it->second)
+                && std::get<std::string>(it->second) == "nightworld") {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    float dimensionDayFractionForWorldRender(const BaseSystem& baseSystem, float dayFraction) {
+        if (isNightworldDimensionForWorldRender(baseSystem)) {
+            dayFraction += 0.5f;
+            dayFraction -= std::floor(dayFraction);
+        }
+        return dayFraction;
+    }
 }
 
 namespace WorldRenderSystemLogic {
@@ -135,6 +158,7 @@ namespace WorldRenderSystemLogic {
                           + static_cast<double>(lt.tm_sec)
                           + subSecond;
         float dayFraction = static_cast<float>(daySeconds / 86400.0);
+        dayFraction = dimensionDayFractionForWorldRender(baseSystem, dayFraction);
         const float hour = dayFraction * 24.0f;
         const float sunU = (hour - 6.0f) / 12.0f;
         const float moonHour = (hour < 6.0f) ? (hour + 24.0f) : hour;

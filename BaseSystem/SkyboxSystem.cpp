@@ -33,6 +33,23 @@ namespace SkyboxSystemLogic {
             };
             return keys;
         }
+
+        std::string activeDimensionId(const BaseSystem& baseSystem) {
+            if (baseSystem.worldSave && !baseSystem.worldSave->activeDimensionId.empty()) {
+                return baseSystem.worldSave->activeDimensionId;
+            }
+            if (baseSystem.registry) {
+                auto it = baseSystem.registry->find("ActiveDimensionId");
+                if (it != baseSystem.registry->end() && std::holds_alternative<std::string>(it->second)) {
+                    return std::get<std::string>(it->second);
+                }
+            }
+            return "overworld";
+        }
+
+        bool isNightworldDimension(const BaseSystem& baseSystem) {
+            return activeDimensionId(baseSystem) == "nightworld";
+        }
     }
 
     // Definition for getCurrentSkyColors now lives here
@@ -47,6 +64,10 @@ namespace SkyboxSystemLogic {
     }
 
     void getCurrentSkyColors(const BaseSystem& baseSystem, float dayFraction, const std::vector<SkyColorKey>& skyKeys, glm::vec3& top, glm::vec3& bottom) {
+        if (isNightworldDimension(baseSystem)) {
+            getCurrentSkyColors(dayFraction, skyKeys, top, bottom);
+            return;
+        }
         getCurrentSkyColors(dayFraction, useAlternatePalette(baseSystem) ? alternateSkyKeys() : skyKeys, top, bottom);
     }
 
@@ -64,6 +85,7 @@ namespace SkyboxSystemLogic {
         glm::vec3 sunDir, moonDir;
         { float u=(hour-6)/12.f; sunDir=glm::normalize(glm::vec3(0,sin(u*3.14159f),-cos(u*3.14159f))); }
         { float aH=(hour<6)?hour+24:hour; float u=(aH-18)/12.f; moonDir=glm::normalize(glm::vec3(0,sin(u*3.14159f),-cos(u*3.14159f))); }
+        const bool renderCelestials = true;
         outLightDir = (hour>=6 && hour<18) ? sunDir : moonDir;
 
         // Screen-space light position for godrays.
@@ -123,38 +145,42 @@ namespace SkyboxSystemLogic {
             renderBackend.setProgramPointSizeEnabled(enabled);
         };
 
-        // Occlusion pass (downsampled)
-        beginOffscreenPass(renderer.godrayOcclusionFBO, renderer.godrayWidth, renderer.godrayHeight, 0.0f, 0.0f, 0.0f, 0.0f);
-        setDepthTestEnabled(false);
-        setDepthWriteEnabled(false);
-        setBlendEnabled(false);
-        renderer.sunMoonShader->use(); renderer.sunMoonShader->setMat4("v", view); renderer.sunMoonShader->setMat4("p", projection); PaniniProjectionSystemLogic::ApplyProjectionWarpUniforms(player, *renderer.sunMoonShader); renderer.sunMoonShader->setFloat("time", time);
-        glm::mat4 sunM = billboard(playerPos + sunDir * 500.0f, 42.0f);
-        renderer.sunMoonShader->setMat4("m",sunM); renderer.sunMoonShader->setVec3("c",glm::vec3(1,1,0.8f));
-        renderBackend.bindVertexArray(renderer.sunMoonVAO); renderBackend.drawArraysTriangles(0, 6);
-        glm::mat4 moonM = billboard(playerPos + moonDir * 500.0f, 42.0f);
-        renderer.sunMoonShader->setMat4("m",moonM); renderer.sunMoonShader->setVec3("c",glm::vec3(0.9f,0.9f,1));
-        renderBackend.drawArraysTriangles(0, 6);
+        glm::mat4 sunM(1.0f);
+        glm::mat4 moonM(1.0f);
+        if (renderCelestials) {
+            // Occlusion pass (downsampled)
+            beginOffscreenPass(renderer.godrayOcclusionFBO, renderer.godrayWidth, renderer.godrayHeight, 0.0f, 0.0f, 0.0f, 0.0f);
+            setDepthTestEnabled(false);
+            setDepthWriteEnabled(false);
+            setBlendEnabled(false);
+            renderer.sunMoonShader->use(); renderer.sunMoonShader->setMat4("v", view); renderer.sunMoonShader->setMat4("p", projection); PaniniProjectionSystemLogic::ApplyProjectionWarpUniforms(player, *renderer.sunMoonShader); renderer.sunMoonShader->setFloat("time", time);
+            sunM = billboard(playerPos + sunDir * 500.0f, 42.0f);
+            renderer.sunMoonShader->setMat4("m",sunM); renderer.sunMoonShader->setVec3("c",glm::vec3(1,1,0.8f));
+            renderBackend.bindVertexArray(renderer.sunMoonVAO); renderBackend.drawArraysTriangles(0, 6);
+            moonM = billboard(playerPos + moonDir * 500.0f, 42.0f);
+            renderer.sunMoonShader->setMat4("m",moonM); renderer.sunMoonShader->setVec3("c",glm::vec3(0.9f,0.9f,1));
+            renderBackend.drawArraysTriangles(0, 6);
 
-        endOffscreenPass();
+            endOffscreenPass();
 
-        // Radial blur
-        beginOffscreenPass(renderer.godrayBlurFBO, renderer.godrayWidth, renderer.godrayHeight, 0.0f, 0.0f, 0.0f, 0.0f);
-        renderBackend.bindVertexArray(renderer.godrayQuadVAO);
-        renderer.godrayRadialShader->use();
-        renderer.godrayRadialShader->setInt("occlusionTex", 0);
-        renderer.godrayRadialShader->setVec2("lightPos", lightScreen);
-        renderer.godrayRadialShader->setFloat("exposure", 0.6f * godrayVisibility);
-        renderer.godrayRadialShader->setFloat("decay", 0.94f);
-        renderer.godrayRadialShader->setFloat("density", 0.96f);
-        renderer.godrayRadialShader->setFloat("weight", 0.3f);
-        renderer.godrayRadialShader->setFloat("time", time);
-        renderer.godrayRadialShader->setInt("samples", 64);
-        bindTexture2DUnit(0, renderer.godrayOcclusionTex);
-        renderBackend.drawArraysTriangles(0, 6);
+            // Radial blur
+            beginOffscreenPass(renderer.godrayBlurFBO, renderer.godrayWidth, renderer.godrayHeight, 0.0f, 0.0f, 0.0f, 0.0f);
+            renderBackend.bindVertexArray(renderer.godrayQuadVAO);
+            renderer.godrayRadialShader->use();
+            renderer.godrayRadialShader->setInt("occlusionTex", 0);
+            renderer.godrayRadialShader->setVec2("lightPos", lightScreen);
+            renderer.godrayRadialShader->setFloat("exposure", 0.6f * godrayVisibility);
+            renderer.godrayRadialShader->setFloat("decay", 0.94f);
+            renderer.godrayRadialShader->setFloat("density", 0.96f);
+            renderer.godrayRadialShader->setFloat("weight", 0.3f);
+            renderer.godrayRadialShader->setFloat("time", time);
+            renderer.godrayRadialShader->setInt("samples", 64);
+            bindTexture2DUnit(0, renderer.godrayOcclusionTex);
+            renderBackend.drawArraysTriangles(0, 6);
 
-        // Restore framebuffer/viewport
-        endOffscreenPass();
+            // Restore framebuffer/viewport
+            endOffscreenPass();
+        }
 
         // Skybox
         setDepthWriteEnabled(false);
@@ -194,27 +220,29 @@ namespace SkyboxSystemLogic {
             setProgramPointSizeEnabled(false);
         }
 
-        // Sun and moon main pass
-        setBlendEnabled(true);
-        setBlendModeAlpha();
-        renderer.sunMoonShader->use(); renderer.sunMoonShader->setMat4("v", view); renderer.sunMoonShader->setMat4("p", projection); PaniniProjectionSystemLogic::ApplyProjectionWarpUniforms(player, *renderer.sunMoonShader); renderer.sunMoonShader->setFloat("time", time);
-        renderer.sunMoonShader->setMat4("m", sunM); renderer.sunMoonShader->setVec3("c", glm::vec3(1,1,0.8f));
-        renderBackend.bindVertexArray(renderer.sunMoonVAO); renderBackend.drawArraysTriangles(0, 6);
-        renderer.sunMoonShader->setMat4("m", moonM); renderer.sunMoonShader->setVec3("c", glm::vec3(0.9f,0.9f,1));
-        renderBackend.drawArraysTriangles(0, 6);
-        setBlendEnabled(false);
+        if (renderCelestials) {
+            // Sun and moon main pass
+            setBlendEnabled(true);
+            setBlendModeAlpha();
+            renderer.sunMoonShader->use(); renderer.sunMoonShader->setMat4("v", view); renderer.sunMoonShader->setMat4("p", projection); PaniniProjectionSystemLogic::ApplyProjectionWarpUniforms(player, *renderer.sunMoonShader); renderer.sunMoonShader->setFloat("time", time);
+            renderer.sunMoonShader->setMat4("m", sunM); renderer.sunMoonShader->setVec3("c", glm::vec3(1,1,0.8f));
+            renderBackend.bindVertexArray(renderer.sunMoonVAO); renderBackend.drawArraysTriangles(0, 6);
+            renderer.sunMoonShader->setMat4("m", moonM); renderer.sunMoonShader->setVec3("c", glm::vec3(0.9f,0.9f,1));
+            renderBackend.drawArraysTriangles(0, 6);
+            setBlendEnabled(false);
 
-        // Composite godrays additively
-        setBlendEnabled(true);
-        setBlendModeAdditive();
-        renderBackend.bindVertexArray(renderer.godrayQuadVAO);
-        renderer.godrayCompositeShader->use();
-        renderer.godrayCompositeShader->setInt("godrayTex", 0);
-        renderer.godrayCompositeShader->setFloat("mapZoom", 1.0f);
-        renderer.godrayCompositeShader->setVec2("mapCenter", glm::vec2(0.5f, 0.5f));
-        bindTexture2DUnit(0, renderer.godrayBlurTex);
-        renderBackend.drawArraysTriangles(0, 6);
-        setBlendEnabled(false);
+            // Composite godrays additively
+            setBlendEnabled(true);
+            setBlendModeAdditive();
+            renderBackend.bindVertexArray(renderer.godrayQuadVAO);
+            renderer.godrayCompositeShader->use();
+            renderer.godrayCompositeShader->setInt("godrayTex", 0);
+            renderer.godrayCompositeShader->setFloat("mapZoom", 1.0f);
+            renderer.godrayCompositeShader->setVec2("mapCenter", glm::vec2(0.5f, 0.5f));
+            bindTexture2DUnit(0, renderer.godrayBlurTex);
+            renderBackend.drawArraysTriangles(0, 6);
+            setBlendEnabled(false);
+        }
 
         setDepthWriteEnabled(true);
         setDepthTestEnabled(true);

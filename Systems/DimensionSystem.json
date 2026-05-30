@@ -6,7 +6,9 @@
         "LevelContext",
         "WorldContext",
         "VoxelWorldContext",
-        "PlayerContext"
+        "PlayerContext",
+        "WorldSaveContext",
+        "RegistryContext"
       ]
     }
   },

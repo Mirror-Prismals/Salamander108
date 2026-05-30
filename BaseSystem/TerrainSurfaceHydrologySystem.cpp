@@ -176,6 +176,10 @@ namespace TerrainSystemLogic {
                 return value;
             };
             const std::string currentLevel = getRegistryString(baseSystem, "level", "the_expanse");
+            const std::string currentDimension = (baseSystem.worldSave && !baseSystem.worldSave->activeDimensionId.empty())
+                ? baseSystem.worldSave->activeDimensionId
+                : getRegistryString(baseSystem, "ActiveDimensionId", "overworld");
+            const bool isOverworldDimension = (currentDimension == "overworld");
             const bool isDepthLevel = (currentLevel == "the_depths");
             const bool isExpanseLevel = (currentLevel == "the_expanse");
             outNextColumn = startColumn;
@@ -313,7 +317,7 @@ namespace TerrainSystemLogic {
             if (isDepthLevel) {
                 caveMinY = std::min(caveMinY, cfg.minY);
             }
-            if (isExpanseLevel && getRegistryBool(baseSystem, "UnifiedDepthsEnabled", true)) {
+            if (isExpanseLevel && isOverworldDimension && getRegistryBool(baseSystem, "UnifiedDepthsEnabled", true)) {
                 caveMinY = std::min(
                     caveMinY,
                     getRegistryInt(baseSystem, "UnifiedDepthsMinY", -70)
@@ -701,7 +705,9 @@ namespace TerrainSystemLogic {
             const int waterFloorYLower = waterFloorY - 1;
             const int seabedPortalY = waterFloorY - 2;
             const int depthPortalY = cfg.minY + 1;
-            const bool unifiedDepthsEnabled = isExpanseLevel && getRegistryBool(baseSystem, "UnifiedDepthsEnabled", true);
+            const bool unifiedDepthsEnabled = isExpanseLevel
+                && isOverworldDimension
+                && getRegistryBool(baseSystem, "UnifiedDepthsEnabled", true);
             const int configuredUnifiedDepthsTopY = getRegistryInt(baseSystem, "UnifiedDepthsTopY", -20);
             const int configuredUnifiedDepthsMinY = getRegistryInt(baseSystem, "UnifiedDepthsMinY", -70);
             const int unifiedDepthsTopY = std::max(configuredUnifiedDepthsTopY, configuredUnifiedDepthsMinY);

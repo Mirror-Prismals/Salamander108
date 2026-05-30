@@ -1,5 +1,6 @@
 {
     "systems_order": [
+        "WorldSaveSystem.json",
         "SpawnSystem.json",
         "AudioSystem.json",
         "Vst3System.json",

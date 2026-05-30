@@ -18,6 +18,29 @@ namespace {
         return false;
     }
 
+    bool isNightworldDimensionForWaterRender(const BaseSystem& baseSystem) {
+        if (baseSystem.worldSave && baseSystem.worldSave->activeDimensionId == "nightworld") {
+            return true;
+        }
+        if (baseSystem.registry) {
+            auto it = baseSystem.registry->find("ActiveDimensionId");
+            if (it != baseSystem.registry->end()
+                && std::holds_alternative<std::string>(it->second)
+                && std::get<std::string>(it->second) == "nightworld") {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    float dimensionDayFractionForWaterRender(const BaseSystem& baseSystem, float dayFraction) {
+        if (isNightworldDimensionForWaterRender(baseSystem)) {
+            dayFraction += 0.5f;
+            dayFraction -= std::floor(dayFraction);
+        }
+        return dayFraction;
+    }
+
     void collectVisibleWaterSections(const BaseSystem& baseSystem,
                                      const glm::vec3& cameraPos,
                                      std::vector<VisibleWaterSection>& outSections) {
@@ -147,6 +170,7 @@ namespace WaterRenderSystemLogic {
                           + static_cast<double>(lt.tm_sec)
                           + subSecond;
         float dayFraction = static_cast<float>(daySeconds / 86400.0);
+        dayFraction = dimensionDayFractionForWaterRender(baseSystem, dayFraction);
         glm::vec3 skyTop(0.52f, 0.66f, 0.95f);
         glm::vec3 skyBottom(0.03f, 0.06f, 0.18f);
         SkyboxSystemLogic::getCurrentSkyColors(baseSystem, dayFraction, world.skyKeys, skyTop, skyBottom);

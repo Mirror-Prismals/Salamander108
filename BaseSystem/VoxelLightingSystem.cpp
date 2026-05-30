@@ -126,6 +126,29 @@ namespace VoxelLightingSystemLogic {
             return static_cast<float>(dayFraction);
         }
 
+        bool isNightworldDimensionForVoxelLighting(const BaseSystem& baseSystem) {
+            if (baseSystem.worldSave && baseSystem.worldSave->activeDimensionId == "nightworld") {
+                return true;
+            }
+            if (baseSystem.registry) {
+                auto it = baseSystem.registry->find("ActiveDimensionId");
+                if (it != baseSystem.registry->end()
+                    && std::holds_alternative<std::string>(it->second)
+                    && std::get<std::string>(it->second) == "nightworld") {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        float dimensionDayFractionForVoxelLighting(const BaseSystem& baseSystem, float dayFraction) {
+            if (isNightworldDimensionForVoxelLighting(baseSystem)) {
+                dayFraction += 0.5f;
+                dayFraction -= std::floor(dayFraction);
+            }
+            return dayFraction;
+        }
+
         uint8_t computeSkySeedLevel(float dayFraction,
                                     float moonlightStrength,
                                     float nightLevel,
@@ -275,7 +298,7 @@ namespace VoxelLightingSystemLogic {
             0.0f,
             skyDayLevel
         );
-        const float dayFraction = currentDayFractionFromLocalClock();
+        const float dayFraction = dimensionDayFractionForVoxelLighting(baseSystem, currentDayFractionFromLocalClock());
         const uint8_t skySeedLevel = useSkyLight
             ? computeSkySeedLevel(dayFraction, moonlightStrength, skyNightLevel, skyDayLevel)
             : static_cast<uint8_t>(0);

@@ -275,6 +275,7 @@ namespace TerrainSystemLogic {
         static size_t g_tier0RescueScanHead = 0;
         static int g_verticalDomainMode = 0; // 0=unset/off, 1=upper(expanse), 2=lower(depths)
         static std::string g_voxelLevelKey;
+        static std::string g_voxelDimensionKey;
         static std::string g_caveConfigKey;
         static CaveFieldLocal g_caveField;
         static float g_caveFieldFrameMs = 0.0f;
@@ -841,6 +842,13 @@ namespace TerrainSystemLogic {
             return std::get<std::string>(it->second);
         }
 
+        std::string activeDimensionId(const BaseSystem& baseSystem) {
+            if (baseSystem.worldSave && !baseSystem.worldSave->activeDimensionId.empty()) {
+                return baseSystem.worldSave->activeDimensionId;
+            }
+            return getRegistryString(baseSystem, "ActiveDimensionId", "overworld");
+        }
+
         bool levelContainsWorldNamed(const LevelContext& level, const std::string& worldName) {
             if (worldName.empty()) return false;
             for (const Entity& world : level.worlds) {
@@ -1088,10 +1096,11 @@ namespace TerrainSystemLogic {
                                const std::string& currentLevel) {
             const bool isExpanseLevel = (currentLevel == "the_expanse");
             const bool isDepthLevel = (currentLevel == "the_depths");
+            const bool isOverworldDimension = (activeDimensionId(baseSystem) == "overworld");
             const int waterFloorY = static_cast<int>(std::floor(cfg.waterFloor));
             const int streamPortalY = isDepthLevel ? (cfg.minY + 1) : (waterFloorY - 2);
             int minY = std::min(std::min(cfg.minY, waterFloorY), streamPortalY);
-            if (isExpanseLevel && getRegistryBool(baseSystem, "UnifiedDepthsEnabled", true)) {
+            if (isExpanseLevel && isOverworldDimension && getRegistryBool(baseSystem, "UnifiedDepthsEnabled", true)) {
                 minY = getRegistryInt(baseSystem, "UnifiedDepthsMinY", -70);
             }
             return minY;
@@ -1552,6 +1561,7 @@ namespace TerrainSystemLogic {
             const int minSectionY = floorDivInt(voxelWorld.columnMinY, size);
             const int maxSectionY = floorDivInt(voxelWorld.columnMaxYExclusive - 1, size);
             for (const VoxelColumnKey& key : releaseColumns) {
+                WorldSaveSystemLogic::FlushColumnIfDirty(baseSystem, key);
                 voxelWorld.releaseColumn(key);
                 clearGeneratedColumnSections(key, minSectionY, maxSectionY);
                 g_voxelColumnStreaming.generated.erase(key);
@@ -1647,6 +1657,29 @@ namespace TerrainSystemLogic {
 
                 auto jobIt = g_voxelColumnStreaming.jobs.find(key);
                 if (jobIt == g_voxelColumnStreaming.jobs.end()) {
+                    if (WorldSaveSystemLogic::TryLoadSavedColumn(baseSystem, key)) {
+                        finalizeColumnRenderBridge(
+                            baseSystem,
+                            prototypes,
+                            voxelWorld,
+                            key,
+                            minSectionY,
+                            maxSectionY
+                        );
+                        VoxelChunkLifecycleState& loadedState = voxelWorld.ensureColumnState(key);
+                        g_voxelColumnStreaming.generated.insert(key);
+                        loadedState.generated = true;
+                        loadedState.postFeaturesComplete = true;
+                        loadedState.surfaceFoliageComplete = true;
+                        loadedState.hasSection = (voxelWorld.columns.count(key) > 0);
+                        loadedState.stage = VoxelChunkLifecycleStage::Ready;
+                        loadedState.touchFrame = g_voxelStreaming.frameCounter;
+                        g_voxelColumnStreaming.inProgress.erase(key);
+                        columnSteps += 1;
+                        columnsBuilt += 1;
+                        continue;
+                    }
+                    WorldSaveSystemLogic::FlushColumnIfDirty(baseSystem, key);
                     voxelWorld.releaseColumn(key);
                     VoxelColumnGenerationJob job;
                     auto inserted = g_voxelColumnStreaming.jobs.emplace(key, job);
@@ -1775,7 +1808,10 @@ namespace TerrainSystemLogic {
             const std::string currentLevel = getRegistryString(baseSystem, "level", "the_expanse");
             const bool isExpanseLevel = (currentLevel == "the_expanse");
             const bool isDepthLevel = (currentLevel == "the_depths");
-            const bool unifiedDepthsEnabled = isExpanseLevel && getRegistryBool(baseSystem, "UnifiedDepthsEnabled", true);
+            const bool isOverworldDimension = (activeDimensionId(baseSystem) == "overworld");
+            const bool unifiedDepthsEnabled = isExpanseLevel
+                && isOverworldDimension
+                && getRegistryBool(baseSystem, "UnifiedDepthsEnabled", true);
             const int unifiedDepthsMinY = getRegistryInt(baseSystem, "UnifiedDepthsMinY", -70);
             const bool verticalDomainGateEnabled = isExpanseLevel
                 && unifiedDepthsEnabled
@@ -3587,6 +3623,92 @@ namespace TerrainSystemLogic {
 
     }
 
+    void ResetExpanseVoxelStreaming(BaseSystem& baseSystem, bool flushActiveWorld) {
+        if (flushActiveWorld) {
+            WorldSaveSystemLogic::FlushActiveWorld(baseSystem, false);
+        }
+        if (baseSystem.voxelWorld) {
+            baseSystem.voxelWorld->reset();
+        }
+        if (baseSystem.voxelRender) {
+            baseSystem.voxelRender->renderClusters.clear();
+            baseSystem.voxelRender->preparedMeshes.clear();
+            baseSystem.voxelRender->wireframeMeshes.clear();
+            baseSystem.voxelRender->renderBuffersDirty.clear();
+        }
+        if (baseSystem.farTerrain) {
+            baseSystem.farTerrain->initialized = false;
+            baseSystem.farTerrain->enabled = false;
+            baseSystem.farTerrain->visibleFaceCount = 0;
+            baseSystem.farTerrain->handoffVisibleFaceCount = 0;
+            baseSystem.farTerrain->bodyVisibleFaceCount = 0;
+            baseSystem.farTerrain->resolvedCellCache.clear();
+            baseSystem.farTerrain->handoffCells.clear();
+            baseSystem.farTerrain->bodyCells.clear();
+            for (auto& faces : baseSystem.farTerrain->handoffFaces) faces.clear();
+            for (auto& faces : baseSystem.farTerrain->bodyFaces) faces.clear();
+            for (auto& faces : baseSystem.farTerrain->handoffWaterSurfaceFaces) faces.clear();
+            for (auto& faces : baseSystem.farTerrain->bodyWaterSurfaceFaces) faces.clear();
+            baseSystem.farTerrain->handoffRenderClusters.clear();
+            baseSystem.farTerrain->bodyRenderClusters.clear();
+            baseSystem.farTerrain->handoffRenderBuffersValid = false;
+            baseSystem.farTerrain->handoffRenderBuffersDirty = false;
+            baseSystem.farTerrain->bodyRenderBuffersValid = false;
+            baseSystem.farTerrain->bodyRenderBuffersDirty = false;
+        }
+        g_voxelStreaming.baseReady.clear();
+        g_voxelStreaming.baseReadySet.clear();
+        g_voxelStreaming.baseInProgress.clear();
+        g_voxelStreaming.desired.clear();
+        g_voxelStreaming.pendingDesiredRebuild = true;
+        g_voxelSectionJobs.clear();
+        g_voxelTerrainGenerated.clear();
+        g_voxelStreaming.featureReady.clear();
+        g_voxelStreaming.featureReadySet.clear();
+        g_voxelStreaming.featureContinuationReady.clear();
+        g_voxelStreaming.featureContinuationReadySet.clear();
+        g_voxelStreaming.featureInProgress.clear();
+        g_voxelStreaming.surfaceReady.clear();
+        g_voxelStreaming.surfaceReadySet.clear();
+        g_voxelStreaming.featureReadyHead = 0;
+        g_voxelColumnStreaming = VoxelColumnStreamingState{};
+        g_pendingResortCursor = 0;
+        g_tier0RescueScanList.clear();
+        g_tier0RescueScanHead = 0;
+        g_voxelStreaming.lastCenterSection = glm::ivec3(std::numeric_limits<int>::min());
+        g_voxelStreaming.lastRadius = std::numeric_limits<int>::min();
+        g_voxelStreaming.lastCpuViewYawBucket = std::numeric_limits<int>::min();
+        g_voxelStreaming.lastCpuViewCullingEnabled = false;
+        g_voxelDesiredRebuild.active = false;
+        g_voxelDesiredRebuild.prevRadius = 0;
+        g_voxelDesiredRebuild.tierPrepared = false;
+        g_voxelDesiredRebuild.radius = 0;
+        g_voxelDesiredRebuild.size = 0;
+        g_voxelDesiredRebuild.scale = 1;
+        g_voxelDesiredRebuild.minSectionY = 0;
+        g_voxelDesiredRebuild.maxSectionY = -1;
+        g_voxelDesiredRebuild.tierSurfaceCenterY = 0;
+        g_voxelDesiredRebuild.sectionOrderXZ.clear();
+        g_voxelDesiredRebuild.orderCursor = 0;
+        g_voxelDesiredRebuild.desired.clear();
+        g_voxelDesiredRebuild.desiredOrder.clear();
+        g_lastSnapshotGeneratedCount = 0;
+        g_snapshotMaxPrepMs = 0.0f;
+        g_snapshotMaxGenerationMs = 0.0f;
+        g_snapshotLongGenerationCount = 0;
+        g_snapshotStallSeconds = 0.0;
+        g_snapshotMaxStallSeconds = 0.0;
+        g_snapshotCount = 0;
+        g_snapshotZeroBuildCount = 0;
+        g_snapshotStalledBuildCount = 0;
+        g_snapshotStallBurstCount = 0;
+        g_snapshotWasStalled = false;
+        g_snapshotBuiltPerSecMin = 0.0;
+        g_snapshotBuiltPerSecMax = 0.0;
+        g_verticalDomainMode = 0;
+        g_voxelStreamingPerfStats = {};
+    }
+
     void GetVoxelStreamingPerfStats(size_t& pending,
                                     size_t& desired,
                                     size_t& generated,
@@ -3715,6 +3837,7 @@ namespace TerrainSystemLogic {
         g_caveFieldFrameSampleCount = 0;
         auto resetVoxelStreamingState = [&]() {
             if (!baseSystem.voxelWorld) return;
+            WorldSaveSystemLogic::FlushActiveWorld(baseSystem, false);
             baseSystem.voxelWorld->reset();
             g_voxelStreaming.baseReady.clear();
             g_voxelStreaming.baseReadySet.clear();
@@ -3810,6 +3933,7 @@ namespace TerrainSystemLogic {
                 baseSystem.voxelWorld->enabled = false;
             }
             g_voxelLevelKey.clear();
+            g_voxelDimensionKey.clear();
             return;
         }
         if (baseSystem.voxelWorld) {
@@ -3838,8 +3962,10 @@ namespace TerrainSystemLogic {
                 levelKey = std::get<std::string>(it->second);
             }
         }
-        if (g_voxelLevelKey != levelKey) {
+        const std::string dimensionKey = activeDimensionId(baseSystem);
+        if (g_voxelLevelKey != levelKey || g_voxelDimensionKey != dimensionKey) {
             g_voxelLevelKey = levelKey;
+            g_voxelDimensionKey = dimensionKey;
             g_caveConfigKey.clear();
             resetVoxelStreamingState();
         }

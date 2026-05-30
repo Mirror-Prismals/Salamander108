@@ -29,12 +29,14 @@ namespace SoundtrackSystemLogic {
         };
 
         struct SoundtrackHeuristic {
+            std::string dimension = "overworld";
             std::string biome = "unknown";
             bool day = true;
             bool underground = false;
             bool underwater = false;
             bool raining = false;
             bool menu = false;
+            bool dimensionOverride = false;
             std::vector<std::string> folders;
         };
 
@@ -283,14 +285,31 @@ namespace SoundtrackSystemLogic {
             }
         }
 
+        std::string activeDimensionId(const BaseSystem& baseSystem) {
+            if (baseSystem.worldSave && !baseSystem.worldSave->activeDimensionId.empty()) {
+                return baseSystem.worldSave->activeDimensionId;
+            }
+            return getRegistryString(baseSystem, "ActiveDimensionId", "overworld");
+        }
+
         SoundtrackHeuristic buildHeuristic(const BaseSystem& baseSystem) {
             SoundtrackHeuristic h;
+            h.dimension = activeDimensionId(baseSystem);
             const std::string level = getRegistryString(baseSystem, "level", "");
             if (level == "menu") {
                 h.menu = true;
                 h.biome = "menu";
                 h.day = true;
                 h.folders.push_back(getRegistryString(baseSystem, "SoundtrackMenuFolder", "menu"));
+                return h;
+            }
+
+            if (h.dimension == "nightworld") {
+                h.dimensionOverride = true;
+                h.biome = "nightworld";
+                h.day = false;
+                h.raining = false;
+                h.folders.push_back(getRegistryString(baseSystem, "SoundtrackNightworldFolder", "nightworld"));
                 return h;
             }
 
@@ -379,6 +398,8 @@ namespace SoundtrackSystemLogic {
             if (!baseSystem.registry) return;
             (*baseSystem.registry)["SoundtrackDebugState"] = std::string("CTX: ")
                 + (h.menu ? "menu " : "")
+                + "dimension=" + h.dimension
+                + (h.dimensionOverride ? " override " : " ")
                 + (h.day ? "day" : "night")
                 + " biome=" + h.biome
                 + " underground=" + (h.underground ? "true" : "false")
@@ -412,8 +433,12 @@ namespace SoundtrackSystemLogic {
         static bool warnedNoTracks = false;
         static bool currentTrackMenuMode = false;
         static bool currentTrackRainMode = false;
+        static bool currentTrackDimensionOverride = false;
+        static std::string currentTrackDimension = "overworld";
         static bool lastModeMenu = false;
         static bool lastModeRaining = false;
+        static bool lastModeDimensionOverride = false;
+        static std::string lastModeDimension = "overworld";
         static size_t menuTrackCursor = 0;
         static std::mt19937 rng(std::random_device{}());
 
@@ -484,15 +509,24 @@ namespace SoundtrackSystemLogic {
             audio.soundtrackChuckGain = 0.0f;
         });
 
-        if (lastModeMenu != heuristic.menu || lastModeRaining != heuristic.raining) {
+        if (lastModeMenu != heuristic.menu
+            || lastModeRaining != heuristic.raining
+            || lastModeDimension != heuristic.dimension
+            || lastModeDimensionOverride != heuristic.dimensionOverride) {
             lastModeMenu = heuristic.menu;
             lastModeRaining = heuristic.raining;
+            lastModeDimension = heuristic.dimension;
+            lastModeDimensionOverride = heuristic.dimensionOverride;
             warnedNoTracks = false;
-            silenceRemainingSec = 0.0;
+            silenceRemainingSec = heuristic.menu ? 0.0 : randomRange(rng, gapMinSec, gapMaxSec);
             scanTimerSec = 0.0;
         }
 
-        if (playing && (currentTrackMenuMode != heuristic.menu || currentTrackRainMode != heuristic.raining)) {
+        if (playing
+            && (currentTrackMenuMode != heuristic.menu
+                || currentTrackRainMode != heuristic.raining
+                || currentTrackDimension != heuristic.dimension
+                || currentTrackDimensionOverride != heuristic.dimensionOverride)) {
             withAudioState([&]() {
                 audio.headTrackActive = false;
                 audio.headTrackGain = 0.0f;
@@ -501,7 +535,7 @@ namespace SoundtrackSystemLogic {
             playing = false;
             wasPlaying = false;
             currentTrack.clear();
-            silenceRemainingSec = 0.0;
+            silenceRemainingSec = heuristic.menu ? 0.0 : randomRange(rng, gapMinSec, gapMaxSec);
             scanTimerSec = 0.0;
         }
 
@@ -526,6 +560,8 @@ namespace SoundtrackSystemLogic {
             currentTrack.clear();
             currentTrackMenuMode = false;
             currentTrackRainMode = false;
+            currentTrackDimension = "overworld";
+            currentTrackDimensionOverride = false;
             silenceRemainingSec = -1.0;
             publishDebug(baseSystem, heuristic, 0.0, false, currentTrack, eligibleTracks, heuristic.folders);
             return;
@@ -618,6 +654,8 @@ namespace SoundtrackSystemLogic {
         currentTrack = chosenTrack;
         currentTrackMenuMode = heuristic.menu;
         currentTrackRainMode = heuristic.raining;
+        currentTrackDimension = heuristic.dimension;
+        currentTrackDimensionOverride = heuristic.dimensionOverride;
         std::cout << "SoundtrackSystem: playing opus '" << chosenTrack << "'." << std::endl;
         publishDebug(baseSystem, heuristic, silenceRemainingSec, true, currentTrack, eligibleTracks, heuristic.folders);
     }

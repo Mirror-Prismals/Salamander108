@@ -118,6 +118,7 @@ struct VoxelWorldContext {
     std::unordered_map<VoxelSectionKey, uint64_t, VoxelSectionKeyHash> dirtyTickets;
     std::unordered_map<VoxelSectionKey, VoxelChunkLifecycleState, VoxelSectionKeyHash> chunkStates;
     std::unordered_map<VoxelColumnKey, VoxelChunkLifecycleState, VoxelColumnKeyHash> columnStates;
+    std::unordered_set<VoxelColumnKey, VoxelColumnKeyHash> dirtyColumns;
     std::unordered_map<int, std::vector<VoxelSectionBuffers>> bufferPools;
     uint64_t nextDirtyTicket = 1;
 

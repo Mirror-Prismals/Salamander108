@@ -24,33 +24,6 @@
       "text": "CARDINAL",
       "textType": "UIOnly",
       "controlRole": "title"
-    },
-    {
-      "prototypeID": -1,
-      "name": "ActionButton",
-      "position": [960.0, 610.0, 0.0],
-      "color": "ButtonFront",
-      "topColor": "ButtonTopHighlight",
-      "sideColor": "ButtonSideShadow",
-      "size": [160.0, 34.0, 10.0],
-      "action": "SetRegistry",
-      "actionKey": "level",
-      "actionValue": "the_expanse",
-      "buttonMode": "managed",
-      "controlId": "title_new_game",
-      "controlRole": "button"
-    },
-    {
-      "prototypeID": -1,
-      "name": "Text",
-      "position": [960.0, 610.0, 0.0],
-      "color": "ButtonGlyph",
-      "size": 24.0,
-      "font": "AlegreyaSans-Regular.ttf",
-      "text": "NEW GAME",
-      "textType": "UIOnly",
-      "controlId": "title_new_game",
-      "controlRole": "label"
     }
   ]
 }

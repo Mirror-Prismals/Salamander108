@@ -100,6 +100,7 @@
 #include "BaseSystem/LeyLineSystem.cpp"
 #include "BaseSystem/FarTerrainClipmapSystem.cpp"
 #include "BaseSystem/TerrainGenerationSystem.cpp"
+#include "BaseSystem/WorldSaveSystem.cpp"
 #include "BaseSystem/TerrainStreamingPlannerSystem.cpp"
 #include "BaseSystem/TerrainSurfaceHydrologySystem.cpp"
 #include "BaseSystem/TerrainDepthFeaturesSystem.cpp"

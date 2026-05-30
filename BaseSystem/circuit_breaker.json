@@ -1,7 +1,7 @@
 {
   "level": "menu",
   "spawn": "frog_spawn",
-  "gamemode": "survival",
+  "gamemode": "spectator",
   "SpawnSecurityCameraCount": "2",
   "GraphicsAPI": "WebGPU",
   "ProjectionMode": "panini",
@@ -116,6 +116,7 @@
   "GravityFallRampMultiplier": "2.6",
   "SoundtrackFolder": "Procedures/soundtrack",
   "SoundtrackMenuFolder": "menu",
+  "SoundtrackNightworldFolder": "nightworld",
   "SoundtrackGapMinSeconds": "1200",
   "SoundtrackGapMaxSeconds": "3600",
   "SoundtrackFadeSeconds": "8.0",

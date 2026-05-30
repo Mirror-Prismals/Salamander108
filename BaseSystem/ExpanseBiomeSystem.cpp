@@ -78,9 +78,11 @@ namespace ExpanseBiomeSystemLogic {
         PerlinNoise3D continental;
         PerlinNoise3D elevation;
         PerlinNoise3D ridge;
+        PerlinNoise3D biome;
         int continentalSeed = std::numeric_limits<int>::min();
         int elevationSeed = std::numeric_limits<int>::min();
         int ridgeSeed = std::numeric_limits<int>::min();
+        int biomeSeed = std::numeric_limits<int>::min();
     };
 
     static NoiseState g_noise;
@@ -107,9 +109,33 @@ namespace ExpanseBiomeSystemLogic {
             g_noise.ridge.reseed(cfg.ridgeSeed);
             g_noise.ridgeSeed = cfg.ridgeSeed;
         }
+        if (g_noise.biomeSeed != cfg.biomeSeed) {
+            g_noise.biome.reseed(cfg.biomeSeed);
+            g_noise.biomeSeed = cfg.biomeSeed;
+        }
+    }
+
+    static std::string activeDimensionId(const BaseSystem& baseSystem) {
+        if (baseSystem.worldSave && !baseSystem.worldSave->activeDimensionId.empty()) {
+            return baseSystem.worldSave->activeDimensionId;
+        }
+        if (baseSystem.registry) {
+            auto it = baseSystem.registry->find("ActiveDimensionId");
+            if (it != baseSystem.registry->end() && std::holds_alternative<std::string>(it->second)) {
+                return std::get<std::string>(it->second);
+            }
+        }
+        return "overworld";
     }
 
     static std::string resolveTerrainConfigPath(const BaseSystem& baseSystem) {
+        const std::string dimensionId = activeDimensionId(baseSystem);
+        if (!dimensionId.empty() && dimensionId != "overworld") {
+            const std::string dimensionPath = "Procedures/expanse_terrain_" + dimensionId + ".json";
+            std::ifstream dimensionFile(dimensionPath);
+            if (dimensionFile.is_open()) return dimensionPath;
+        }
+
         std::string levelKey;
         if (baseSystem.registry) {
             auto it = baseSystem.registry->find("level");
@@ -204,6 +230,20 @@ namespace ExpanseBiomeSystemLogic {
         }
 
         // Legacy planar worlds keep their desert/snow split.
+        if (cfg.biomeMode == "noise") {
+            ensureNoise(cfg);
+            const float biomeScale = std::max(8.0f, cfg.biomeScale);
+            const float warpScale = std::max(8.0f, cfg.biomeWarpScale);
+            const float warpStrength = std::max(0.0f, cfg.biomeWarpStrength);
+            const float warpX = warpStrength * g_noise.ridge.noise(x / warpScale, 0.0f, z / warpScale);
+            const float warpZ = warpStrength * g_noise.elevation.noise((x + 97.0f) / warpScale, 0.0f, (z - 53.0f) / warpScale);
+            const float biomeValue = g_noise.biome.noise((x + warpX) / biomeScale, 0.0f, (z + warpZ) / biomeScale);
+            const float moisture = g_noise.continental.noise((x - 211.0f) / (biomeScale * 0.72f), 0.0f, (z + 131.0f) / (biomeScale * 0.72f));
+            if (biomeValue < -0.45f) return 4;       // winter bare
+            if (biomeValue < -0.12f) return moisture > 0.15f ? 1 : 0;
+            if (biomeValue < 0.24f) return moisture < -0.25f ? 2 : 1;
+            return moisture > 0.05f ? 3 : 2;         // jungle / desert
+        }
         if (x >= cfg.desertStartX) return 2; // desert
         if (z <= cfg.snowStartZ) return 3;   // snow
         return 0;                             // temperate/conifer default
@@ -237,9 +277,17 @@ namespace ExpanseBiomeSystemLogic {
                 cfg.continentalSeed = noise.value("continentalSeed", cfg.continentalSeed);
                 cfg.elevationSeed = noise.value("elevationSeed", cfg.elevationSeed);
                 cfg.ridgeSeed = noise.value("ridgeSeed", cfg.ridgeSeed);
+                cfg.biomeSeed = noise.value("biomeSeed", cfg.biomeSeed);
                 cfg.continentalScale = noise.value("continentalScale", cfg.continentalScale);
                 cfg.elevationScale = noise.value("elevationScale", cfg.elevationScale);
                 cfg.ridgeScale = noise.value("ridgeScale", cfg.ridgeScale);
+                cfg.biomeScale = noise.value("biomeScale", cfg.biomeScale);
+                cfg.biomeWarpScale = noise.value("biomeWarpScale", cfg.biomeWarpScale);
+                cfg.biomeWarpStrength = noise.value("biomeWarpStrength", cfg.biomeWarpStrength);
+            }
+            if (data.contains("biomes")) {
+                const auto& biomes = data["biomes"];
+                cfg.biomeMode = biomes.value("mode", cfg.biomeMode);
             }
             if (data.contains("terrain")) {
                 const auto& terrain = data["terrain"];

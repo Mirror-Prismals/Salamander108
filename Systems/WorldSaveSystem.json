@@ -1,0 +1,28 @@
+{
+    "init_steps": {
+        "InitializeWorldSave": {
+            "dependencies": [
+                "WorldSaveContext",
+                "RegistryContext"
+            ]
+        }
+    },
+    "update_steps": {
+        "UpdateWorldSave": {
+            "dependencies": [
+                "WorldSaveContext",
+                "RegistryContext",
+                "LevelContext",
+                "UIContext"
+            ]
+        }
+    },
+    "cleanup_steps": {
+        "CleanupWorldSave": {
+            "dependencies": [
+                "WorldSaveContext",
+                "RegistryContext"
+            ]
+        }
+    }
+}

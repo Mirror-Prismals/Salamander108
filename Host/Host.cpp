@@ -364,6 +364,9 @@ void Host::registerSystemFunctions() {
     functionRegistry["RenderOverlays"] = OverlayRenderSystemLogic::RenderOverlays;
     functionRegistry["GenerateTerrain"] = TerrainSystemLogic::GenerateTerrain;
     functionRegistry["UpdateExpanseTerrain"] = TerrainSystemLogic::UpdateExpanseTerrain;
+    functionRegistry["InitializeWorldSave"] = WorldSaveSystemLogic::InitializeWorldSave;
+    functionRegistry["UpdateWorldSave"] = WorldSaveSystemLogic::UpdateWorldSave;
+    functionRegistry["CleanupWorldSave"] = WorldSaveSystemLogic::CleanupWorldSave;
     functionRegistry["UpdateDepthsCrystals"] = DepthsCrystalSystemLogic::UpdateDepthsCrystals;
     functionRegistry["LoadExpanseConfig"] = ExpanseBiomeSystemLogic::LoadExpanseConfig;
     functionRegistry["LoadLeyLines"] = LeyLineSystemLogic::LoadLeyLines;
@@ -503,6 +506,7 @@ void Host::init() {
     baseSystem.daw = std::make_unique<DawContext>();
     baseSystem.midi = std::make_unique<MidiContext>();
     baseSystem.perf = std::make_unique<PerfContext>();
+    baseSystem.worldSave = std::make_unique<WorldSaveContext>();
     baseSystem.registry = &registry;
     baseSystem.reloadRequested = &reloadRequested;
     baseSystem.reloadTarget = &reloadTarget;
@@ -638,6 +642,7 @@ void Host::runCleanupSteps() {
 }
 
 void Host::reloadLevel(const std::string& levelName) {
+    WorldSaveSystemLogic::FlushActiveWorld(baseSystem, true);
     // In-place level reload: keep contexts alive, just reload worlds and reset caches/state.
     if (!baseSystem.level) baseSystem.level = std::make_unique<LevelContext>();
     baseSystem.level->worlds.clear();
@@ -1541,6 +1546,7 @@ void Host::mainLoop() {
 }
 
 void Host::cleanup() {
+    WorldSaveSystemLogic::FlushActiveWorld(baseSystem, true);
     runCleanupSteps();
     if (!renderBackend) return;
     renderBackend->shutdown(window);

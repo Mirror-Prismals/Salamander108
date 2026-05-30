@@ -212,8 +212,8 @@ namespace DawFaderSystemLogic {
                 ctx.pressAnim[i] = oldPress[i];
             }
 
-            // Aux startup defaults: keep head-follow strip up, keep speaker-block strip audible at a low level,
-            // and start the remaining aux strips down.
+            // Aux startup defaults: keep soundtrack/title music and head-follow audible,
+            // keep speaker-block strip audible at a low level, and start the remaining aux strips down.
             size_t auxStart = (target >= static_cast<size_t>(kAuxStripCount))
                 ? (target - static_cast<size_t>(kAuxStripCount))
                 : target;
@@ -227,10 +227,9 @@ namespace DawFaderSystemLogic {
                     continue;
                 }
                 size_t auxIndex = i - auxStart;
-                if (auxIndex == static_cast<size_t>(kAuxStripPlayerHead)) {
+                if (auxIndex == static_cast<size_t>(kAuxStripSoundtrack)
+                    || auxIndex == static_cast<size_t>(kAuxStripPlayerHead)) {
                     ctx.values[i] = unityFaderValue;
-                } else if (auxIndex == static_cast<size_t>(kAuxStripSoundtrack)) {
-                    ctx.values[i] = downFaderValue;
                 } else if (auxIndex == static_cast<size_t>(kAuxStripSpeakerBlock)) {
                     ctx.values[i] = speakerBlockFaderValue;
                 } else {

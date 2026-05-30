@@ -406,6 +406,21 @@ namespace LeyLineSystemLogic {
         }
 
         std::string resolveTerrainConfigPath(const BaseSystem& baseSystem) {
+            std::string dimensionKey = "overworld";
+            if (baseSystem.worldSave && !baseSystem.worldSave->activeDimensionId.empty()) {
+                dimensionKey = baseSystem.worldSave->activeDimensionId;
+            } else if (baseSystem.registry) {
+                auto dimIt = baseSystem.registry->find("ActiveDimensionId");
+                if (dimIt != baseSystem.registry->end() && std::holds_alternative<std::string>(dimIt->second)) {
+                    dimensionKey = std::get<std::string>(dimIt->second);
+                }
+            }
+            if (!dimensionKey.empty() && dimensionKey != "overworld") {
+                const std::string dimensionPath = "Procedures/expanse_terrain_" + dimensionKey + ".json";
+                std::ifstream dimensionFile(dimensionPath);
+                if (dimensionFile.is_open()) return dimensionPath;
+            }
+
             std::string levelKey;
             if (baseSystem.registry) {
                 auto it = baseSystem.registry->find("level");

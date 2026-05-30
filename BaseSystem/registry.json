@@ -1,4 +1,12 @@
 {
+  "WorldSaveSystem": true,
+  "WorldSaveEnabled": true,
+  "WorldSaveRoot": "Saves",
+  "WorldAutosaveSeconds": "30",
+  "WorldAutosaveDaw": true,
+  "ActiveWorldId": "",
+  "ActiveWorldDisplayName": "",
+  "ActiveDimensionId": "overworld",
   "BookSystem": true,
   "DepthsCrystalSystem": true,
   "VoxelLightingSystem": true,
@@ -133,7 +141,7 @@
   "BlockTextureSystem": true,
   "PerfSystem": true,
   "DebugWireframeSystem": false,
-  "DimensionSystem": false,
+  "DimensionSystem": true,
   "FontSystem": true,
   "CloudSystem": false,
   "AuroraSystem": false
