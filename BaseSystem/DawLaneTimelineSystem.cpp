@@ -15,6 +15,9 @@ namespace MidiLaneSystemLogic {
 namespace AutomationLaneSystemLogic {
     void OnTimelineRebased(uint64_t shiftSamples);
 }
+namespace ChuckLaneSystemLogic {
+    void OnTimelineRebased(uint64_t shiftSamples);
+}
 
 namespace DawLaneTimelineSystemLogic {
     namespace {
@@ -171,6 +174,11 @@ namespace DawLaneTimelineSystemLogic {
                 maxSamples = std::max<uint64_t>(maxSamples, clip.startSample + clip.length);
             }
         }
+        for (const auto& track : daw.chuckTracks) {
+            for (const auto& event : track.events) {
+                maxSamples = std::max<uint64_t>(maxSamples, event.startSample + 1);
+            }
+        }
         return maxSamples;
     }
 
@@ -288,6 +296,12 @@ namespace DawTimelineRebaseLogic {
                 }
             }
 
+            for (auto& track : daw.chuckTracks) {
+                for (auto& event : track.events) {
+                    addWithSaturation(event.startSample, shiftSamples);
+                }
+            }
+
             addWithSaturation(daw.playheadSample, shiftSamples);
             addWithSaturation(daw.clipDragTargetStart, shiftSamples);
             addWithSaturation(daw.clipTrimOriginalStart, shiftSamples);
@@ -300,6 +314,9 @@ namespace DawTimelineRebaseLogic {
             addWithSaturation(daw.metronomeNextSample, shiftSamples);
             addWithSaturation(daw.loopStartSamples, shiftSamples);
             addWithSaturation(daw.loopEndSamples, shiftSamples);
+            addWithSaturation(daw.chuckEventDragStartSample, shiftSamples);
+            addWithSaturation(daw.chuckEventDragTargetSample, shiftSamples);
+            addWithSaturation(daw.chuckLastSchedulerSample, shiftSamples);
 
             const int64_t signedShift = static_cast<int64_t>(std::min<uint64_t>(
                 shiftSamples, static_cast<uint64_t>(std::numeric_limits<int64_t>::max())));
@@ -316,6 +333,7 @@ namespace DawTimelineRebaseLogic {
 
             MidiLaneSystemLogic::OnTimelineRebased(shiftSamples);
             AutomationLaneSystemLogic::OnTimelineRebased(shiftSamples);
+            ChuckLaneSystemLogic::OnTimelineRebased(shiftSamples);
             return;
         }
 
@@ -339,6 +357,12 @@ namespace DawTimelineRebaseLogic {
             }
         }
 
+        for (auto& track : daw.chuckTracks) {
+            for (auto& event : track.events) {
+                addWithSaturation(event.startSample, shiftSamples);
+            }
+        }
+
         addWithSaturation(daw.playheadSample, shiftSamples);
         addWithSaturation(daw.clipDragTargetStart, shiftSamples);
         addWithSaturation(daw.clipTrimOriginalStart, shiftSamples);
@@ -351,6 +375,9 @@ namespace DawTimelineRebaseLogic {
         addWithSaturation(daw.metronomeNextSample, shiftSamples);
         addWithSaturation(daw.loopStartSamples, shiftSamples);
         addWithSaturation(daw.loopEndSamples, shiftSamples);
+        addWithSaturation(daw.chuckEventDragStartSample, shiftSamples);
+        addWithSaturation(daw.chuckEventDragTargetSample, shiftSamples);
+        addWithSaturation(daw.chuckLastSchedulerSample, shiftSamples);
 
         const int64_t signedShift = static_cast<int64_t>(std::min<uint64_t>(
             shiftSamples, static_cast<uint64_t>(std::numeric_limits<int64_t>::max())));
@@ -367,5 +394,6 @@ namespace DawTimelineRebaseLogic {
 
         MidiLaneSystemLogic::OnTimelineRebased(shiftSamples);
         AutomationLaneSystemLogic::OnTimelineRebased(shiftSamples);
+        ChuckLaneSystemLogic::OnTimelineRebased(shiftSamples);
     }
 }

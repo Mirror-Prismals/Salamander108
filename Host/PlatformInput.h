@@ -133,5 +133,7 @@ namespace PlatformInput {
     void SetCursorMode(PlatformWindowHandle window, CursorMode mode);
     void SetWindowShouldClose(PlatformWindowHandle window, bool shouldClose);
     bool WindowShouldClose(PlatformWindowHandle window);
+    const char* GetClipboardText(PlatformWindowHandle window);
+    void SetClipboardText(PlatformWindowHandle window, const char* text);
     void PollEvents();
 }

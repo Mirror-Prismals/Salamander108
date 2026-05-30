@@ -105,7 +105,9 @@ namespace ChucKSystemLogic {
     static bool is_transient_gameplay_path(const std::string& path) {
         return path.find("Procedures/chuck/gameplay/") != std::string::npos
             || path.find("Procedures/chuck/fishing/") != std::string::npos
-            || path.find("Procedures/chuck/daw/") != std::string::npos;
+            || path.find("Procedures/chuck/daw/") != std::string::npos
+            || path.find(".salamander_chuck_lane_") != std::string::npos
+            || path.find("salamander_chuck_lanes/") != std::string::npos;
     }
 
     static int read_registry_int(const BaseSystem& baseSystem, const std::string& key, int fallback) {
@@ -222,6 +224,10 @@ namespace ChucKSystemLogic {
         if (audio.chuckBypass) {
             std::unique_lock<std::mutex> chuckLock(audio.chuck_vm_mutex, std::try_to_lock);
             if (!chuckLock.owns_lock()) return;
+            {
+                std::lock_guard<std::mutex> oneShotLock(audio.chuckOneShotMutex);
+                audio.chuckOneShotScriptQueue.clear();
+            }
             if (audio.chuckMainShredId) {
                 if (auto* sh = audio.chuck->vm()->shreduler()->lookup(audio.chuckMainShredId)) {
                     audio.chuck->vm()->shreduler()->remove(sh);
@@ -280,6 +286,7 @@ namespace ChucKSystemLogic {
         bool sparkleActive = false;
         bool sparkleEnabled = false;
         std::string sparkleScriptPath;
+        bool oneShotQueued = false;
         {
             std::lock_guard<std::mutex> audioStateLock(audio.audio_state_mutex);
             soundtrackStopRequested = audio.soundtrackChuckStopRequested;
@@ -291,6 +298,10 @@ namespace ChucKSystemLogic {
             sparkleActive = audio.sparkleRayChuckActive;
             sparkleEnabled = audio.sparkleRayEnabled;
             sparkleScriptPath = audio.sparkleRayChuckScriptPath;
+        }
+        {
+            std::lock_guard<std::mutex> oneShotLock(audio.chuckOneShotMutex);
+            oneShotQueued = !audio.chuckOneShotScriptQueue.empty();
         }
 
         using Clock = std::chrono::steady_clock;
@@ -307,6 +318,7 @@ namespace ChucKSystemLogic {
             || soundtrackStartRequested
             || sparkleStopRequested
             || sparkleStartRequested
+            || oneShotQueued
             || maintenanceDue;
         if (!needsVmWork) return;
 
@@ -314,6 +326,12 @@ namespace ChucKSystemLogic {
         if (!chuckLock.owns_lock()) return;
         if (maintenanceDue) {
             lastMaintenanceTime = now;
+        }
+
+        std::vector<std::string> oneShotScripts;
+        {
+            std::lock_guard<std::mutex> oneShotLock(audio.chuckOneShotMutex);
+            oneShotScripts.swap(audio.chuckOneShotScriptQueue);
         }
 
         // Compile main script on request
@@ -337,6 +355,15 @@ namespace ChucKSystemLogic {
             }
             compile_script(audio, audio.chuckHeadScript, audio.chuckHeadShredId);
             audio.chuckHeadCompileRequested = false;
+        }
+
+        for (const auto& scriptPath : oneShotScripts) {
+            t_CKUINT oneShotShredId = 0;
+            if (compile_script(audio, scriptPath, oneShotShredId)) {
+                audio.chuckOneShotCompileCount.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                audio.chuckOneShotCompileFailures.fetch_add(1, std::memory_order_relaxed);
+            }
         }
 
         // Manage noise script based on flag

@@ -27,6 +27,7 @@ namespace DawClipSystemLogic {
 }
 namespace MidiTrackSystemLogic { bool InsertTrackAt(BaseSystem& baseSystem, int trackIndex); }
 namespace AutomationTrackSystemLogic { bool InsertTrackAt(BaseSystem& baseSystem, int trackIndex); }
+namespace ChuckLaneSystemLogic { bool InsertTrackAt(BaseSystem& baseSystem, int trackIndex); }
 namespace DawTimelineRebaseLogic { void ShiftTimelineRight(BaseSystem& baseSystem, uint64_t shiftSamples); }
 
 namespace Vst3BrowserSystemLogic {
@@ -55,7 +56,7 @@ namespace Vst3BrowserSystemLogic {
         constexpr float kGhostOffsetX = 12.0f;
         constexpr float kGhostOffsetY = 8.0f;
         constexpr float kHitPadX = 12.0f;
-        constexpr int kComponentCount = 3;
+        constexpr int kComponentCount = 4;
 
         struct WavInfo {
             uint16_t audioFormat = 0;
@@ -379,7 +380,8 @@ namespace Vst3BrowserSystemLogic {
         int totalLaneSlotCount(const DawContext& daw, int audioTrackCount, int midiTrackCount) {
             if (!daw.laneOrder.empty()) return static_cast<int>(daw.laneOrder.size());
             int automationTrackCount = static_cast<int>(daw.automationTracks.size());
-            return audioTrackCount + midiTrackCount + automationTrackCount;
+            int chuckTrackCount = static_cast<int>(daw.chuckTracks.size());
+            return audioTrackCount + midiTrackCount + automationTrackCount + chuckTrackCount;
         }
 
         const char* componentLabel(int index) {
@@ -387,6 +389,7 @@ namespace Vst3BrowserSystemLogic {
                 case 0: return "Audio Track";
                 case 1: return "Midi Track";
                 case 2: return "Automation Track";
+                case 3: return "ChucK Track";
                 default: return "";
             }
         }
@@ -663,6 +666,10 @@ namespace Vst3BrowserSystemLogic {
                     if (AutomationTrackSystemLogic::InsertTrackAt(baseSystem, dropSlot)) {
                         ui.consumeClick = true;
                     }
+                } else if (ctx.componentsDragIndex == 3) {
+                    if (ChuckLaneSystemLogic::InsertTrackAt(baseSystem, dropSlot)) {
+                        ui.consumeClick = true;
+                    }
                 }
             }
             ctx.componentsDragging = false;
@@ -853,6 +860,10 @@ namespace Vst3BrowserSystemLogic {
                 baseSystem.daw->externalDropActive = dropSlot >= 0;
                 baseSystem.daw->externalDropIndex = dropSlot;
                 baseSystem.daw->externalDropType = 2;
+            } else if (ctx.componentsDragIndex == 3 && baseSystem.daw) {
+                baseSystem.daw->externalDropActive = dropSlot >= 0;
+                baseSystem.daw->externalDropIndex = dropSlot;
+                baseSystem.daw->externalDropType = 3;
             }
         }
         if (!ctx.componentsDragging && baseSystem.daw) {

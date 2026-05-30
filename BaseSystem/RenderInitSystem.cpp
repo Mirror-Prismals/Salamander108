@@ -704,6 +704,8 @@ namespace RenderInitSystemLogic {
         renderer.packedTerrainOcclusionFaceShader.reset();
         renderer.waterShader.reset();
         renderer.waterCompositeShader.reset();
+        renderer.rainFullscreenShader.reset();
+        renderer.rainRippleShader.reset();
         renderer.grass3DShader.reset();
         renderer.fontShader.reset();
         renderer.uiShader.reset();

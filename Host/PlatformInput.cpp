@@ -268,6 +268,16 @@ namespace PlatformInput {
         return window && glfwWindowShouldClose(window);
     }
 
+    const char* GetClipboardText(PlatformWindowHandle window) {
+        if (!window) return nullptr;
+        return glfwGetClipboardString(window);
+    }
+
+    void SetClipboardText(PlatformWindowHandle window, const char* text) {
+        if (!window || !text) return;
+        glfwSetClipboardString(window, text);
+    }
+
     void PollEvents() {
         glfwPollEvents();
     }

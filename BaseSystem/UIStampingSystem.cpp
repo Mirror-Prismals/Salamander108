@@ -253,6 +253,8 @@ namespace UIStampingSystemLogic {
                 path = "Entities/Worlds/midi_track_controls_world.json";
             } else if (worldName == "AutomationTrackRowWorld") {
                 path = "Entities/Worlds/automation_track_controls_world.json";
+            } else if (worldName == "ChuckTrackRowWorld") {
+                path = "Entities/Worlds/chuck_track_controls_world.json";
             } else {
                 return;
             }
@@ -329,12 +331,14 @@ namespace UIStampingSystemLogic {
             for (auto& world : level.worlds) {
                 bool isTrackWorld = (world.name.rfind("TrackRowWorld", 0) == 0)
                     || (world.name.rfind("MidiTrackRowWorld", 0) == 0)
-                    || (world.name.rfind("AutomationTrackRowWorld", 0) == 0);
+                    || (world.name.rfind("AutomationTrackRowWorld", 0) == 0)
+                    || (world.name.rfind("ChuckTrackRowWorld", 0) == 0);
                 if (!isTrackWorld) continue;
                 for (auto& inst : world.instances) {
                     bool isTrackControl = (inst.controlId.rfind("track_", 0) == 0)
                         || (inst.controlId.rfind("midi_track_", 0) == 0)
-                        || (inst.controlId.rfind("auto_track_", 0) == 0);
+                        || (inst.controlId.rfind("auto_track_", 0) == 0)
+                        || (inst.controlId.rfind("chuck_track_", 0) == 0);
                     if (!isTrackControl) continue;
                     if (inst.instanceID <= 0 || seen.find(inst.instanceID) != seen.end()) {
                         inst.instanceID = baseSystem.instance->nextInstanceID++;
@@ -359,9 +363,10 @@ namespace UIStampingSystemLogic {
             int audioCount = static_cast<int>(daw.tracks.size());
             int midiCount = baseSystem.midi ? static_cast<int>(baseSystem.midi->tracks.size()) : 0;
             int automationCount = static_cast<int>(daw.automationTracks.size());
-            if (audioCount + midiCount + automationCount > 0) {
+            int chuckCount = static_cast<int>(daw.chuckTracks.size());
+            if (audioCount + midiCount + automationCount + chuckCount > 0) {
                 daw.laneOrder.clear();
-                daw.laneOrder.reserve(static_cast<size_t>(audioCount + midiCount + automationCount));
+                daw.laneOrder.reserve(static_cast<size_t>(audioCount + midiCount + automationCount + chuckCount));
                 for (int i = 0; i < audioCount; ++i) {
                     daw.laneOrder.push_back({0, i});
                 }
@@ -370,6 +375,9 @@ namespace UIStampingSystemLogic {
                 }
                 for (int i = 0; i < automationCount; ++i) {
                     daw.laneOrder.push_back({2, i});
+                }
+                for (int i = 0; i < chuckCount; ++i) {
+                    daw.laneOrder.push_back({3, i});
                 }
             }
         }
@@ -409,6 +417,8 @@ namespace UIStampingSystemLogic {
                 if (stamp.midiSourceInstances.empty() || !instancesHaveTrackTokens(stamp.midiSourceInstances)) {
                     loadFallbackSource(stamp.midiSourceWorldName, stamp.midiSourceInstances, stamp.midiSourceBaseY);
                 }
+            } else {
+                loadFallbackSource(stamp.midiSourceWorldName, stamp.midiSourceInstances, stamp.midiSourceBaseY);
             }
             stamp.automationSourceWorldIndex = findWorldIndex(level, stamp.automationSourceWorldName);
             stamp.automationSourceInstances.clear();
@@ -426,6 +436,31 @@ namespace UIStampingSystemLogic {
                                        stamp.automationSourceInstances,
                                        stamp.automationSourceBaseY);
                 }
+            } else {
+                loadFallbackSource(stamp.automationSourceWorldName,
+                                   stamp.automationSourceInstances,
+                                   stamp.automationSourceBaseY);
+            }
+            stamp.chuckSourceWorldIndex = findWorldIndex(level, stamp.chuckSourceWorldName);
+            stamp.chuckSourceInstances.clear();
+            stamp.chuckSourceBaseY.clear();
+            if (stamp.chuckSourceWorldIndex >= 0
+                && stamp.chuckSourceWorldIndex < static_cast<int>(level.worlds.size())) {
+                Entity& chuckWorld = level.worlds[stamp.chuckSourceWorldIndex];
+                stamp.chuckSourceInstances = chuckWorld.instances;
+                stamp.chuckSourceBaseY.reserve(stamp.chuckSourceInstances.size());
+                for (const auto& inst : stamp.chuckSourceInstances) {
+                    stamp.chuckSourceBaseY.push_back(inst.position.y);
+                }
+                if (stamp.chuckSourceInstances.empty() || !instancesHaveTrackTokens(stamp.chuckSourceInstances)) {
+                    loadFallbackSource(stamp.chuckSourceWorldName,
+                                       stamp.chuckSourceInstances,
+                                       stamp.chuckSourceBaseY);
+                }
+            } else {
+                loadFallbackSource(stamp.chuckSourceWorldName,
+                                   stamp.chuckSourceInstances,
+                                   stamp.chuckSourceBaseY);
             }
             stamp.rowSpacing = kRowSpacing;
             stamp.rowWorldIndices.clear();
@@ -454,6 +489,7 @@ namespace UIStampingSystemLogic {
                     size_t srcCount = stamp.sourceInstances.size();
                     if (type == 1) srcCount = stamp.midiSourceInstances.size();
                     else if (type == 2) srcCount = stamp.automationSourceInstances.size();
+                    else if (type == 3) srcCount = stamp.chuckSourceInstances.size();
                     std::cerr << "  row " << row << " type=" << type << " srcCount=" << srcCount << std::endl;
                 }
             }
@@ -461,21 +497,25 @@ namespace UIStampingSystemLogic {
         auto sourceInstancesForType = [&](int type) -> const std::vector<EntityInstance>& {
             if (type == 1) return stamp.midiSourceInstances;
             if (type == 2) return stamp.automationSourceInstances;
+            if (type == 3) return stamp.chuckSourceInstances;
             return stamp.sourceInstances;
         };
         auto sourceBaseYForType = [&](int type) -> const std::vector<float>& {
             if (type == 1) return stamp.midiSourceBaseY;
             if (type == 2) return stamp.automationSourceBaseY;
+            if (type == 3) return stamp.chuckSourceBaseY;
             return stamp.sourceBaseY;
         };
         auto sourceWorldNameForType = [&](int type) -> const std::string& {
             if (type == 1) return stamp.midiSourceWorldName;
             if (type == 2) return stamp.automationSourceWorldName;
+            if (type == 3) return stamp.chuckSourceWorldName;
             return stamp.sourceWorldName;
         };
         auto sourceWorldIndexForType = [&](int type) -> int {
             if (type == 1) return stamp.midiSourceWorldIndex;
             if (type == 2) return stamp.automationSourceWorldIndex;
+            if (type == 3) return stamp.chuckSourceWorldIndex;
             return stamp.sourceWorldIndex;
         };
 
@@ -516,6 +556,11 @@ namespace UIStampingSystemLogic {
                 && stamp.automationSourceWorldIndex < static_cast<int>(level.worlds.size())
                 && stamp.automationSourceWorldIndex != row0WorldIndex) {
                 level.worlds[stamp.automationSourceWorldIndex].instances.clear();
+            }
+            if (stamp.chuckSourceWorldIndex >= 0
+                && stamp.chuckSourceWorldIndex < static_cast<int>(level.worlds.size())
+                && stamp.chuckSourceWorldIndex != row0WorldIndex) {
+                level.worlds[stamp.chuckSourceWorldIndex].instances.clear();
             }
         }
         if (stamp.sourceWorldIndex >= 0 && stamp.sourceWorldIndex < static_cast<int>(level.worlds.size())) {

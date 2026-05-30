@@ -33,6 +33,8 @@ namespace SoundtrackSystemLogic {
             bool day = true;
             bool underground = false;
             bool underwater = false;
+            bool raining = false;
+            bool menu = false;
             std::vector<std::string> folders;
         };
 
@@ -283,6 +285,15 @@ namespace SoundtrackSystemLogic {
 
         SoundtrackHeuristic buildHeuristic(const BaseSystem& baseSystem) {
             SoundtrackHeuristic h;
+            const std::string level = getRegistryString(baseSystem, "level", "");
+            if (level == "menu") {
+                h.menu = true;
+                h.biome = "menu";
+                h.day = true;
+                h.folders.push_back(getRegistryString(baseSystem, "SoundtrackMenuFolder", "menu"));
+                return h;
+            }
+
             h.day = isDayFromRegistry(baseSystem);
             const std::string phase = h.day ? "day" : "night";
 
@@ -300,6 +311,7 @@ namespace SoundtrackSystemLogic {
             if (baseSystem.colorEmotion && baseSystem.colorEmotion->underwater) {
                 h.underwater = true;
             }
+            h.raining = getRegistryBool(baseSystem, "WeatherRaining", false);
 
             h.folders.push_back("all_day_night");
             h.folders.push_back(std::string("all_") + phase);
@@ -309,6 +321,7 @@ namespace SoundtrackSystemLogic {
             }
             if (h.underground) h.folders.push_back("underground");
             if (h.underwater) h.folders.push_back("underwater");
+            if (h.raining) h.folders.push_back("rain");
             return h;
         }
 
@@ -365,10 +378,12 @@ namespace SoundtrackSystemLogic {
                           const std::vector<std::string>& activeFolders) {
             if (!baseSystem.registry) return;
             (*baseSystem.registry)["SoundtrackDebugState"] = std::string("CTX: ")
+                + (h.menu ? "menu " : "")
                 + (h.day ? "day" : "night")
                 + " biome=" + h.biome
                 + " underground=" + (h.underground ? "true" : "false")
-                + " underwater=" + (h.underwater ? "true" : "false");
+                + " underwater=" + (h.underwater ? "true" : "false")
+                + " raining=" + (h.raining ? "true" : "false");
             (*baseSystem.registry)["SoundtrackDebugTimer"] = playing
                 ? "MUSIC: playing"
                 : "MUSIC: waiting " + formatTimer(silenceRemaining);
@@ -395,6 +410,11 @@ namespace SoundtrackSystemLogic {
         static double silenceRemainingSec = -1.0;
         static bool wasPlaying = false;
         static bool warnedNoTracks = false;
+        static bool currentTrackMenuMode = false;
+        static bool currentTrackRainMode = false;
+        static bool lastModeMenu = false;
+        static bool lastModeRaining = false;
+        static size_t menuTrackCursor = 0;
         static std::mt19937 rng(std::random_device{}());
 
         auto withAudioState = [&](auto&& fn) {
@@ -450,6 +470,10 @@ namespace SoundtrackSystemLogic {
 
         const double dtSec = (std::isfinite(dt) && dt > 0.0f) ? static_cast<double>(dt) : 0.0;
         SoundtrackHeuristic heuristic = buildHeuristic(baseSystem);
+        if (heuristic.menu) {
+            gapMinSec = 0.0;
+            gapMaxSec = 0.0;
+        }
 
         bool playing = false;
         withAudioState([&]() {
@@ -459,6 +483,27 @@ namespace SoundtrackSystemLogic {
             audio.soundtrackChuckActive = false;
             audio.soundtrackChuckGain = 0.0f;
         });
+
+        if (lastModeMenu != heuristic.menu || lastModeRaining != heuristic.raining) {
+            lastModeMenu = heuristic.menu;
+            lastModeRaining = heuristic.raining;
+            warnedNoTracks = false;
+            silenceRemainingSec = 0.0;
+            scanTimerSec = 0.0;
+        }
+
+        if (playing && (currentTrackMenuMode != heuristic.menu || currentTrackRainMode != heuristic.raining)) {
+            withAudioState([&]() {
+                audio.headTrackActive = false;
+                audio.headTrackGain = 0.0f;
+                audio.headTrackPos = static_cast<double>(audio.headTrackBuffer.size());
+            });
+            playing = false;
+            wasPlaying = false;
+            currentTrack.clear();
+            silenceRemainingSec = 0.0;
+            scanTimerSec = 0.0;
+        }
 
         if (skipRequested) {
             withAudioState([&]() {
@@ -479,6 +524,8 @@ namespace SoundtrackSystemLogic {
                 audio.headTrackGain = 0.0f;
             });
             currentTrack.clear();
+            currentTrackMenuMode = false;
+            currentTrackRainMode = false;
             silenceRemainingSec = -1.0;
             publishDebug(baseSystem, heuristic, 0.0, false, currentTrack, eligibleTracks, heuristic.folders);
             return;
@@ -486,12 +533,12 @@ namespace SoundtrackSystemLogic {
 
         if (wasPlaying && !playing) {
             currentTrack.clear();
-            silenceRemainingSec = randomRange(rng, gapMinSec, gapMaxSec);
+            silenceRemainingSec = heuristic.menu ? 0.0 : randomRange(rng, gapMinSec, gapMaxSec);
         }
         wasPlaying = playing;
 
         if (silenceRemainingSec < 0.0) {
-            silenceRemainingSec = randomRange(rng, gapMinSec, gapMaxSec);
+            silenceRemainingSec = heuristic.menu ? 0.0 : randomRange(rng, gapMinSec, gapMaxSec);
         }
 
         const std::filesystem::path soundtrackRoot = getRegistryString(baseSystem, "SoundtrackFolder", "Procedures/soundtrack");
@@ -523,16 +570,22 @@ namespace SoundtrackSystemLogic {
                           << joinStrings(heuristic.folders, ", ") << "." << std::endl;
                 warnedNoTracks = true;
             }
-            silenceRemainingSec = 60.0;
+            silenceRemainingSec = heuristic.menu ? 5.0 : 60.0;
             publishDebug(baseSystem, heuristic, silenceRemainingSec, false, currentTrack, eligibleTracks, heuristic.folders);
             return;
         }
         warnedNoTracks = false;
 
-        std::uniform_int_distribution<size_t> dist(0, eligibleTracks.size() - 1);
-        size_t pickIndex = dist(rng);
-        if (eligibleTracks.size() > 1 && eligibleTracks[pickIndex] == lastTrackPath) {
-            pickIndex = (pickIndex + 1 + (dist(rng) % (eligibleTracks.size() - 1))) % eligibleTracks.size();
+        size_t pickIndex = 0;
+        if (heuristic.menu) {
+            pickIndex = menuTrackCursor % eligibleTracks.size();
+            menuTrackCursor = (pickIndex + 1) % eligibleTracks.size();
+        } else {
+            std::uniform_int_distribution<size_t> dist(0, eligibleTracks.size() - 1);
+            pickIndex = dist(rng);
+            if (eligibleTracks.size() > 1 && eligibleTracks[pickIndex] == lastTrackPath) {
+                pickIndex = (pickIndex + 1 + (dist(rng) % (eligibleTracks.size() - 1))) % eligibleTracks.size();
+            }
         }
 
         const std::string chosenTrack = eligibleTracks[pickIndex];
@@ -563,6 +616,8 @@ namespace SoundtrackSystemLogic {
         lastHeadPath = chosenTrack;
         lastTrackPath = chosenTrack;
         currentTrack = chosenTrack;
+        currentTrackMenuMode = heuristic.menu;
+        currentTrackRainMode = heuristic.raining;
         std::cout << "SoundtrackSystem: playing opus '" << chosenTrack << "'." << std::endl;
         publishDebug(baseSystem, heuristic, silenceRemainingSec, true, currentTrack, eligibleTracks, heuristic.folders);
     }

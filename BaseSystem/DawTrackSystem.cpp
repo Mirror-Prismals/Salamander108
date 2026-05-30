@@ -23,6 +23,9 @@ namespace MidiTrackSystemLogic {
 namespace AutomationTrackSystemLogic {
     bool RemoveTrackAt(BaseSystem& baseSystem, int trackIndex);
 }
+namespace ChuckLaneSystemLogic {
+    bool RemoveTrackAt(BaseSystem& baseSystem, int trackIndex);
+}
 namespace DawIOSystemLogic {
     bool ResolveMirrorPath(DawContext& daw);
     void LoadTracksIfAvailable(DawContext& daw);
@@ -132,9 +135,13 @@ namespace DawTrackSystemLogic {
             return static_cast<int>(daw.automationTracks.size());
         }
 
-        void rebuildLaneOrder(DawContext& daw, int audioCount, int midiCount, int automationCount) {
+        int getChuckTrackCount(const DawContext& daw) {
+            return static_cast<int>(daw.chuckTracks.size());
+        }
+
+        void rebuildLaneOrder(DawContext& daw, int audioCount, int midiCount, int automationCount, int chuckCount) {
             daw.laneOrder.clear();
-            daw.laneOrder.reserve(static_cast<size_t>(audioCount + midiCount + automationCount));
+            daw.laneOrder.reserve(static_cast<size_t>(audioCount + midiCount + automationCount + chuckCount));
             for (int i = 0; i < audioCount; ++i) {
                 daw.laneOrder.push_back({0, i});
             }
@@ -144,15 +151,19 @@ namespace DawTrackSystemLogic {
             for (int i = 0; i < automationCount; ++i) {
                 daw.laneOrder.push_back({2, i});
             }
+            for (int i = 0; i < chuckCount; ++i) {
+                daw.laneOrder.push_back({3, i});
+            }
         }
 
-        void ensureLaneOrder(DawContext& daw, int audioCount, int midiCount, int automationCount) {
-            int total = audioCount + midiCount + automationCount;
+        void ensureLaneOrder(DawContext& daw, int audioCount, int midiCount, int automationCount, int chuckCount) {
+            int total = audioCount + midiCount + automationCount + chuckCount;
             bool rebuild = daw.laneOrder.empty() || static_cast<int>(daw.laneOrder.size()) != total;
             if (!rebuild) {
                 std::vector<int> audioSeen(audioCount, 0);
                 std::vector<int> midiSeen(midiCount, 0);
                 std::vector<int> automationSeen(automationCount, 0);
+                std::vector<int> chuckSeen(chuckCount, 0);
                 for (const auto& entry : daw.laneOrder) {
                     if (entry.type == 0) {
                         if (entry.trackIndex < 0 || entry.trackIndex >= audioCount) { rebuild = true; break; }
@@ -163,6 +174,9 @@ namespace DawTrackSystemLogic {
                     } else if (entry.type == 2) {
                         if (entry.trackIndex < 0 || entry.trackIndex >= automationCount) { rebuild = true; break; }
                         automationSeen[entry.trackIndex] += 1;
+                    } else if (entry.type == 3) {
+                        if (entry.trackIndex < 0 || entry.trackIndex >= chuckCount) { rebuild = true; break; }
+                        chuckSeen[entry.trackIndex] += 1;
                     } else {
                         rebuild = true;
                         break;
@@ -176,10 +190,13 @@ namespace DawTrackSystemLogic {
                     if (!rebuild) {
                         for (int c : automationSeen) { if (c != 1) { rebuild = true; break; } }
                     }
+                    if (!rebuild) {
+                        for (int c : chuckSeen) { if (c != 1) { rebuild = true; break; } }
+                    }
                 }
             }
             if (rebuild) {
-                rebuildLaneOrder(daw, audioCount, midiCount, automationCount);
+                rebuildLaneOrder(daw, audioCount, midiCount, automationCount, chuckCount);
             }
             if (daw.selectedLaneIndex >= total) {
                 daw.selectedLaneIndex = total - 1;
@@ -523,7 +540,9 @@ namespace DawTrackSystemLogic {
         daw.trackCount = getTrackCount(daw);
         int midiCount = getMidiTrackCount(baseSystem);
         int automationCount = getAutomationTrackCount(daw);
-        ensureLaneOrder(daw, daw.trackCount, midiCount, automationCount);
+        int chuckCount = getChuckTrackCount(daw);
+        daw.chuckTrackCount = chuckCount;
+        ensureLaneOrder(daw, daw.trackCount, midiCount, automationCount, chuckCount);
         if (daw.selectedLaneIndex >= 0 && daw.selectedLaneIndex < static_cast<int>(daw.laneOrder.size())) {
             const auto& entry = daw.laneOrder[static_cast<size_t>(daw.selectedLaneIndex)];
             daw.selectedLaneType = entry.type;
@@ -715,6 +734,16 @@ namespace DawTrackSystemLogic {
                 } else if (daw.selectedLaneType == 0 && daw.selectedLaneTrack >= 0) {
                     int idx = daw.selectedLaneTrack;
                     if (RemoveTrackAt(baseSystem, idx)) {
+                        daw.dragActive = false;
+                        daw.dragPending = false;
+                        daw.dragLaneIndex = -1;
+                        daw.dragLaneType = -1;
+                        daw.dragLaneTrack = -1;
+                        daw.dragDropIndex = -1;
+                    }
+                } else if (daw.selectedLaneType == 3 && daw.selectedLaneTrack >= 0) {
+                    int idx = daw.selectedLaneTrack;
+                    if (ChuckLaneSystemLogic::RemoveTrackAt(baseSystem, idx)) {
                         daw.dragActive = false;
                         daw.dragPending = false;
                         daw.dragLaneIndex = -1;

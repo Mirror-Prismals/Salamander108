@@ -1,5 +1,10 @@
 {
   "worlds": [
+    "expanse_terrain_world.json",
+    "expanse_water_world.json",
+    "expanse_trees_world.json",
+    "three_d_grass_expanse_test_world.json",
+    "star_world.json",
     "menu_sky_world.json"
   ],
   "mirrors": [

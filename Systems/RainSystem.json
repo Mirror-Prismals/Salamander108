@@ -1,0 +1,9 @@
+{
+    "init_steps": {},
+    "update_steps": {
+        "RenderRain": {
+            "dependencies": ["RendererContext", "WorldContext", "PlayerContext", "RegistryContext"]
+        }
+    },
+    "cleanup_steps": {}
+}

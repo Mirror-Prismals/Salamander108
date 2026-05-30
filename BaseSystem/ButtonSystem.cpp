@@ -106,7 +106,8 @@ namespace ButtonSystemLogic {
         bool isSidePanelButton(const EntityInstance& inst) {
             return inst.controlId.rfind("track_", 0) == 0
                 || inst.controlId.rfind("midi_track_", 0) == 0
-                || inst.controlId.rfind("auto_track_", 0) == 0;
+                || inst.controlId.rfind("auto_track_", 0) == 0
+                || inst.controlId.rfind("chuck_track_", 0) == 0;
         }
 
         int parseTrackIndexFromControlId(const EntityInstance& inst) {
@@ -141,6 +142,16 @@ namespace ButtonSystemLogic {
                     return -1;
                 }
             }
+            if (id.rfind("chuck_track_", 0) == 0) {
+                size_t start = 12;
+                size_t end = id.find('_', start);
+                if (end == std::string::npos) return -1;
+                try {
+                    return std::stoi(id.substr(start, end - start));
+                } catch (...) {
+                    return -1;
+                }
+            }
             return -1;
         }
 
@@ -157,9 +168,11 @@ namespace ButtonSystemLogic {
         int expectedLaneTypeForTrackControl(const EntityInstance& inst) {
             if (inst.actionType == "DawMidiTrack") return 1;
             if (inst.actionType == "DawAutomationTrack") return 2;
+            if (inst.actionType == "DawChuckTrack") return 3;
             if (inst.actionType == "DawTrack") return 0;
             if (inst.controlId.rfind("midi_track_", 0) == 0) return 1;
             if (inst.controlId.rfind("auto_track_", 0) == 0) return 2;
+            if (inst.controlId.rfind("chuck_track_", 0) == 0) return 3;
             if (inst.controlId.rfind("track_", 0) == 0) return 0;
             return -1;
         }
@@ -167,7 +180,8 @@ namespace ButtonSystemLogic {
         bool isTrackRowWorldName(const std::string& worldName) {
             return worldName.rfind("TrackRowWorld", 0) == 0
                 || worldName.rfind("MidiTrackRowWorld", 0) == 0
-                || worldName.rfind("AutomationTrackRowWorld", 0) == 0;
+                || worldName.rfind("AutomationTrackRowWorld", 0) == 0
+                || worldName.rfind("ChuckTrackRowWorld", 0) == 0;
         }
 
         void buildActiveTrackWorldSet(const BaseSystem& baseSystem, std::unordered_set<int>& out) {
@@ -217,7 +231,8 @@ namespace ButtonSystemLogic {
                 for (auto& inst : world.instances) {
                     if (inst.controlId.rfind("track_", 0) != 0
                         && inst.controlId.rfind("midi_track_", 0) != 0
-                        && inst.controlId.rfind("auto_track_", 0) != 0) {
+                        && inst.controlId.rfind("auto_track_", 0) != 0
+                        && inst.controlId.rfind("chuck_track_", 0) != 0) {
                         continue;
                     }
                     int index = -1;
@@ -243,7 +258,8 @@ namespace ButtonSystemLogic {
         const char* fallbackTrackButtonName(const EntityInstance& inst) {
             if (inst.actionType != "DawTrack"
                 && inst.actionType != "DawMidiTrack"
-                && inst.actionType != "DawAutomationTrack") return nullptr;
+                && inst.actionType != "DawAutomationTrack"
+                && inst.actionType != "DawChuckTrack") return nullptr;
             if (inst.actionKey == "clear") return "TrackClearButton";
             if (inst.actionKey == "input") return "TrackInputButton";
             if (inst.actionKey == "arm") return "TrackArmButton";
@@ -262,7 +278,8 @@ namespace ButtonSystemLogic {
             if (inst.controlRole != "button") return nullptr;
             if (inst.controlId.rfind("track_", 0) != 0
                 && inst.controlId.rfind("midi_track_", 0) != 0
-                && inst.controlId.rfind("auto_track_", 0) != 0) return nullptr;
+                && inst.controlId.rfind("auto_track_", 0) != 0
+                && inst.controlId.rfind("chuck_track_", 0) != 0) return nullptr;
             if (inst.controlId.find("_clear") != std::string::npos) return "TrackClearButton";
             if (inst.controlId.find("_input") != std::string::npos) return "TrackInputButton";
             if (inst.controlId.find("_arm") != std::string::npos) return "TrackArmButton";
@@ -388,7 +405,8 @@ namespace ButtonSystemLogic {
                             }
                             if (inst.actionType == "DawTrack"
                                 || inst.actionType == "DawMidiTrack"
-                                || inst.actionType == "DawAutomationTrack") {
+                                || inst.actionType == "DawAutomationTrack"
+                                || inst.actionType == "DawChuckTrack") {
                                 int trackIndex = parseNonNegativeInt(inst.actionValue);
                                 if (trackIndex < 0) {
                                     trackIndex = parseTrackIndexFromControlId(inst);
@@ -439,13 +457,15 @@ namespace ButtonSystemLogic {
                 if (shouldSkipTrackWorldByIndex(baseSystem, worldIndex, world, activeTrackWorlds)) continue;
                 if (world.name.rfind("TrackRowWorld", 0) == 0
                     || world.name.rfind("MidiTrackRowWorld", 0) == 0
-                    || world.name.rfind("AutomationTrackRowWorld", 0) == 0) {
+                    || world.name.rfind("AutomationTrackRowWorld", 0) == 0
+                    || world.name.rfind("ChuckTrackRowWorld", 0) == 0) {
                     rawTrackWorldCount += 1;
                 }
                 for (auto& inst : world.instances) {
                     if (inst.controlId.rfind("track_", 0) == 0
                         || inst.controlId.rfind("midi_track_", 0) == 0
-                        || inst.controlId.rfind("auto_track_", 0) == 0) {
+                        || inst.controlId.rfind("auto_track_", 0) == 0
+                        || inst.controlId.rfind("chuck_track_", 0) == 0) {
                         rawTrackControlCount += 1;
                     }
                     if (inst.actionType == "DawTrack") {
@@ -453,7 +473,8 @@ namespace ButtonSystemLogic {
                     }
                     if (inst.actionType == "DawTrack"
                         || inst.actionType == "DawMidiTrack"
-                        || inst.actionType == "DawAutomationTrack") {
+                        || inst.actionType == "DawAutomationTrack"
+                        || inst.actionType == "DawChuckTrack") {
                         if (inst.prototypeID < 0 || inst.prototypeID >= static_cast<int>(prototypes.size())
                             || !prototypes[inst.prototypeID].isUIButton) {
                             if (const char* fallback = fallbackTrackButtonName(inst)) {
@@ -482,6 +503,7 @@ namespace ButtonSystemLogic {
                     if (inst.controlId.rfind("track_", 0) == 0) trackButtonCount += 1;
                     if (inst.controlId.rfind("midi_track_", 0) == 0) midiButtonCount += 1;
                     if (inst.controlId.rfind("auto_track_", 0) == 0) midiButtonCount += 1;
+                    if (inst.controlId.rfind("chuck_track_", 0) == 0) midiButtonCount += 1;
                 }
             }
             std::cerr << "[ButtonCache] buttons=" << ui.buttonInstances.size()
@@ -499,7 +521,8 @@ namespace ButtonSystemLogic {
                     if (shouldSkipTrackWorldByIndex(baseSystem, worldIndex, world, activeTrackWorlds)) continue;
                     if (world.name.rfind("TrackRowWorld", 0) != 0
                         && world.name.rfind("MidiTrackRowWorld", 0) != 0
-                        && world.name.rfind("AutomationTrackRowWorld", 0) != 0) {
+                        && world.name.rfind("AutomationTrackRowWorld", 0) != 0
+                        && world.name.rfind("ChuckTrackRowWorld", 0) != 0) {
                         continue;
                     }
                     std::cerr << "  [ButtonCache] world='" << world.name
@@ -507,7 +530,8 @@ namespace ButtonSystemLogic {
                     for (const auto& inst : world.instances) {
                         if (inst.controlId.rfind("track_", 0) != 0
                             && inst.controlId.rfind("midi_track_", 0) != 0
-                            && inst.controlId.rfind("auto_track_", 0) != 0) {
+                            && inst.controlId.rfind("auto_track_", 0) != 0
+                            && inst.controlId.rfind("chuck_track_", 0) != 0) {
                             continue;
                         }
                         std::cerr << "  [ButtonCache] inst controlId='" << inst.controlId

@@ -269,6 +269,32 @@
     },
     {
       "prototypeID": -1,
+      "name": "Button",
+      "position": [497.5, 56.0, 0.0],
+      "color": "ButtonFront",
+      "topColor": "ButtonTopHighlight",
+      "sideColor": "ButtonSideShadow",
+      "size": [18.0, 18.0, 6.0],
+      "action": "DawChuckTrack",
+      "actionKey": "add",
+      "buttonMode": "momentary",
+      "controlId": "chuck_track_add",
+      "controlRole": "button"
+    },
+    {
+      "prototypeID": -1,
+      "name": "Text",
+      "position": [497.5, 56.0, 0.0],
+      "color": "ButtonGlyph",
+      "size": 8.0,
+      "font": "AlegreyaSans-Regular.ttf",
+      "text": "CK",
+      "textType": "UIOnly",
+      "controlId": "chuck_track_add",
+      "controlRole": "label"
+    },
+    {
+      "prototypeID": -1,
       "name": "Text",
       "position": [540.0, 56.0, 0.0],
       "color": "MiraText",

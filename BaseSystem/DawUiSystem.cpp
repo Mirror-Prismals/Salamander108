@@ -25,6 +25,9 @@ namespace DawUiSystemLogic {
         int getAutomationTrackCount(const DawContext& daw) {
             return static_cast<int>(daw.automationTracks.size());
         }
+        int getChuckTrackCount(const DawContext& daw) {
+            return static_cast<int>(daw.chuckTracks.size());
+        }
 
         int getMidiTrackCount(const BaseSystem& baseSystem) {
             if (!baseSystem.midi) return 0;
@@ -127,6 +130,11 @@ namespace DawUiSystemLogic {
             for (const auto& track : daw.tracks) {
                 maxSamples = std::max<uint64_t>(maxSamples, static_cast<uint64_t>(track.audio.size()));
             }
+            for (const auto& track : daw.chuckTracks) {
+                for (const auto& event : track.events) {
+                    maxSamples = std::max<uint64_t>(maxSamples, event.startSample + 1);
+                }
+            }
             return maxSamples;
         }
 
@@ -150,8 +158,12 @@ namespace DawUiSystemLogic {
         bool isTrackRowWorld(const std::string& name) {
             if (name == "TrackRowWorld") return true;
             if (name.rfind("TrackRowWorld_", 0) == 0) return true;
+            if (name == "MidiTrackRowWorld") return true;
+            if (name.rfind("MidiTrackRowWorld_", 0) == 0) return true;
             if (name == "AutomationTrackRowWorld") return true;
-            return name.rfind("AutomationTrackRowWorld_", 0) == 0;
+            if (name.rfind("AutomationTrackRowWorld_", 0) == 0) return true;
+            if (name == "ChuckTrackRowWorld") return true;
+            return name.rfind("ChuckTrackRowWorld_", 0) == 0;
         }
 
         int parseTrackIndexFromControlIdWithPrefix(const std::string& controlId,
@@ -231,9 +243,31 @@ namespace DawUiSystemLogic {
             (void)baseSystem;
             int trackCount = getTrackCount(daw);
             int automationTrackCount = getAutomationTrackCount(daw);
+            int chuckTrackCount = getChuckTrackCount(daw);
             for (auto* instPtr : daw.trackInstances) {
                 if (!instPtr) continue;
                 EntityInstance& inst = *instPtr;
+                if (inst.actionType == "DawChuckTrack") {
+                    int trackIndex = parseTrackIndex(inst.actionValue, chuckTrackCount);
+                    if (trackIndex < 0) {
+                        trackIndex = parseTrackIndexFromControlIdWithPrefix(inst.controlId,
+                                                                            "chuck_track_",
+                                                                            chuckTrackCount);
+                    }
+                    if (trackIndex < 0 || trackIndex >= chuckTrackCount) continue;
+                    ChuckTrack& track = daw.chuckTracks[static_cast<size_t>(trackIndex)];
+                    if (inst.actionKey == "mute") {
+                        inst.uiState = track.mute ? "active" : "idle";
+                        ButtonSystemLogic::SetButtonToggled(inst.instanceID, track.mute);
+                    } else if (inst.actionKey == "clear") {
+                        inst.uiState = "idle";
+                        ButtonSystemLogic::SetButtonToggled(inst.instanceID, false);
+                    } else if (inst.actionKey == "add") {
+                        inst.uiState = "idle";
+                        ButtonSystemLogic::SetButtonToggled(inst.instanceID, false);
+                    }
+                    continue;
+                }
                 if (inst.actionType == "DawAutomationTrack") {
                     int trackIndex = parseTrackIndex(inst.actionValue, automationTrackCount);
                     if (trackIndex < 0) {
@@ -471,6 +505,12 @@ namespace DawUiSystemLogic {
                     } else if (inst.actionKey == "target_param") {
                         inst.position.x = autoParamX;
                     }
+                } else if (inst.actionType == "DawChuckTrack") {
+                    if (inst.actionKey == "clear") {
+                        inst.position.x = clearX;
+                    } else if (inst.actionKey == "mute") {
+                        inst.position.x = muteX;
+                    }
                 } else {
                     if (inst.actionKey == "clear") {
                         inst.position.x = clearX;
@@ -565,7 +605,11 @@ namespace DawUiSystemLogic {
                     if (inst.actionType == "DawTrack") {
                         daw.trackInstances.push_back(&inst);
                         dawTrackActionCount += 1;
+                    } else if (inst.actionType == "DawMidiTrack") {
+                        daw.trackInstances.push_back(&inst);
                     } else if (inst.actionType == "DawAutomationTrack") {
+                        daw.trackInstances.push_back(&inst);
+                    } else if (inst.actionType == "DawChuckTrack") {
                         daw.trackInstances.push_back(&inst);
                     } else if (inst.actionType == "DawTransport") {
                         daw.transportInstances.push_back(&inst);
@@ -694,6 +738,18 @@ namespace DawUiSystemLogic {
             }
         }
 
+        void updateChuckLabels(BaseSystem& baseSystem, DawContext& daw) {
+            if (!baseSystem.font) return;
+            FontContext& fontCtx = *baseSystem.font;
+            int trackCount = getChuckTrackCount(daw);
+            for (int i = 0; i < trackCount; ++i) {
+                const ChuckTrack& track = daw.chuckTracks[static_cast<size_t>(i)];
+                fontCtx.variables["chuck_lane_" + std::to_string(i + 1)] = "CK" + std::to_string(i + 1);
+                fontCtx.variables["chuck_events_" + std::to_string(i + 1)] = std::to_string(track.events.size());
+            }
+            fontCtx.variables["chuck_status"] = daw.chuckStatusMessage;
+        }
+
         void updateTimelineLabels(BaseSystem& baseSystem, DawContext& daw, PlatformWindowHandle win) {
             if (!baseSystem.font || !win) return;
             if (daw.timelineLabelInstances.empty()) return;
@@ -722,7 +778,10 @@ namespace DawUiSystemLogic {
             float labelY = startY - laneHalfH - 18.0f;
             int laneCount = static_cast<int>(daw.laneOrder.size());
             if (laneCount == 0) {
-                laneCount = getTrackCount(daw) + getMidiTrackCount(baseSystem);
+                laneCount = getTrackCount(daw)
+                    + getMidiTrackCount(baseSystem)
+                    + getAutomationTrackCount(daw)
+                    + getChuckTrackCount(daw);
             }
             float rowSpan = laneHeight + 12.0f;
             float laneBottomBound = (laneCount > 0)
@@ -918,6 +977,7 @@ namespace DawUiSystemLogic {
             updateTrackButtonVisuals(baseSystem, daw);
             updateInputLabels(baseSystem, daw, audio);
             updateAutomationLabels(baseSystem, daw);
+            updateChuckLabels(baseSystem, daw);
             updateTimelineLabels(baseSystem, daw, win);
             updateBpmLabel(baseSystem, daw);
             updateShaderReloadStatusLabel(baseSystem);

@@ -42,6 +42,10 @@ namespace AutomationTrackSystemLogic {
     bool InsertTrackAt(BaseSystem& baseSystem, int trackIndex);
     bool RemoveTrackAt(BaseSystem& baseSystem, int trackIndex);
 }
+namespace ChuckLaneSystemLogic {
+    bool InsertTrackAt(BaseSystem& baseSystem, int trackIndex);
+    bool RemoveTrackAt(BaseSystem& baseSystem, int trackIndex);
+}
 
 namespace Vst3SystemLogic {
     bool ProcessEffectChainStereo(Vst3Context& ctx, Vst3TrackChain& chain,
@@ -858,6 +862,24 @@ namespace DawIOSystemLogic {
             return clip;
         }
 
+        json serializeChuckEvent(const ChuckEvent& event) {
+            json out = json::object();
+            out["event_id"] = event.eventId;
+            out["start_sample"] = event.startSample;
+            out["code"] = event.code;
+            out["enabled"] = event.enabled;
+            return out;
+        }
+
+        ChuckEvent deserializeChuckEvent(const json& in) {
+            ChuckEvent event{};
+            event.eventId = readInt(in, "event_id", 0);
+            event.startSample = readU64(in, "start_sample", 0);
+            event.code = readString(in, "code", "");
+            event.enabled = readBool(in, "enabled", true);
+            return event;
+        }
+
         json serializePlugin(const Vst3Plugin* plugin) {
             json out = json::object();
             if (!plugin) return out;
@@ -962,8 +984,12 @@ namespace DawIOSystemLogic {
             }
         }
 
-        bool setTrackCountsForSession(BaseSystem& baseSystem, int audioTracks, int midiTracks, int automationTracks) {
-            if (audioTracks < 0 || midiTracks < 0 || automationTracks < 0) return false;
+        bool setTrackCountsForSession(BaseSystem& baseSystem,
+                                      int audioTracks,
+                                      int midiTracks,
+                                      int automationTracks,
+                                      int chuckTracks) {
+            if (audioTracks < 0 || midiTracks < 0 || automationTracks < 0 || chuckTracks < 0) return false;
             if (!baseSystem.daw || !baseSystem.midi) return false;
             DawContext& daw = *baseSystem.daw;
             MidiContext& midi = *baseSystem.midi;
@@ -988,12 +1014,23 @@ namespace DawIOSystemLogic {
             while (daw.automationTrackCount < automationTracks) {
                 if (!AutomationTrackSystemLogic::InsertTrackAt(baseSystem, daw.automationTrackCount)) return false;
             }
+
+            while (static_cast<int>(daw.chuckTracks.size()) > chuckTracks) {
+                if (!ChuckLaneSystemLogic::RemoveTrackAt(baseSystem, static_cast<int>(daw.chuckTracks.size()) - 1)) return false;
+            }
+            while (static_cast<int>(daw.chuckTracks.size()) < chuckTracks) {
+                if (!ChuckLaneSystemLogic::InsertTrackAt(baseSystem, static_cast<int>(daw.chuckTracks.size()))) return false;
+            }
             return true;
         }
 
-        void rebuildDefaultLaneOrder(DawContext& daw, int audioTrackCount, int midiTrackCount, int automationTrackCount) {
+        void rebuildDefaultLaneOrder(DawContext& daw,
+                                     int audioTrackCount,
+                                     int midiTrackCount,
+                                     int automationTrackCount,
+                                     int chuckTrackCount) {
             daw.laneOrder.clear();
-            daw.laneOrder.reserve(static_cast<size_t>(audioTrackCount + midiTrackCount + automationTrackCount));
+            daw.laneOrder.reserve(static_cast<size_t>(audioTrackCount + midiTrackCount + automationTrackCount + chuckTrackCount));
             for (int i = 0; i < audioTrackCount; ++i) {
                 daw.laneOrder.push_back({0, i});
             }
@@ -1003,11 +1040,19 @@ namespace DawIOSystemLogic {
             for (int i = 0; i < automationTrackCount; ++i) {
                 daw.laneOrder.push_back({2, i});
             }
+            for (int i = 0; i < chuckTrackCount; ++i) {
+                daw.laneOrder.push_back({3, i});
+            }
         }
 
-        void restoreLaneOrder(DawContext& daw, const json& laneOrder, int audioTrackCount, int midiTrackCount, int automationTrackCount) {
+        void restoreLaneOrder(DawContext& daw,
+                              const json& laneOrder,
+                              int audioTrackCount,
+                              int midiTrackCount,
+                              int automationTrackCount,
+                              int chuckTrackCount) {
             if (!laneOrder.is_array()) {
-                rebuildDefaultLaneOrder(daw, audioTrackCount, midiTrackCount, automationTrackCount);
+                rebuildDefaultLaneOrder(daw, audioTrackCount, midiTrackCount, automationTrackCount, chuckTrackCount);
                 return;
             }
             std::vector<DawContext::LaneEntry> restored;
@@ -1021,6 +1066,7 @@ namespace DawIOSystemLogic {
                 if (type == 0) valid = trackIndex >= 0 && trackIndex < audioTrackCount;
                 if (type == 1) valid = trackIndex >= 0 && trackIndex < midiTrackCount;
                 if (type == 2) valid = trackIndex >= 0 && trackIndex < automationTrackCount;
+                if (type == 3) valid = trackIndex >= 0 && trackIndex < chuckTrackCount;
                 if (!valid) continue;
                 auto& seen = seenByType[type];
                 if (seen.find(trackIndex) != seen.end()) continue;
@@ -1028,7 +1074,7 @@ namespace DawIOSystemLogic {
                 restored.push_back({type, trackIndex});
             }
             if (restored.empty()) {
-                rebuildDefaultLaneOrder(daw, audioTrackCount, midiTrackCount, automationTrackCount);
+                rebuildDefaultLaneOrder(daw, audioTrackCount, midiTrackCount, automationTrackCount, chuckTrackCount);
                 return;
             }
             auto appendMissing = [&](int type, int count) {
@@ -1041,6 +1087,7 @@ namespace DawIOSystemLogic {
             appendMissing(0, audioTrackCount);
             appendMissing(1, midiTrackCount);
             appendMissing(2, automationTrackCount);
+            appendMissing(3, chuckTrackCount);
             daw.laneOrder = std::move(restored);
         }
 
@@ -1728,6 +1775,7 @@ namespace DawIOSystemLogic {
         json audioTracks = json::array();
         json midiTracks = json::array();
         json automationTracks = json::array();
+        json chuckTracks = json::array();
 
         std::lock_guard<std::mutex> dawLock(daw.trackMutex);
         std::lock_guard<std::mutex> midiLock(midi.trackMutex);
@@ -1820,6 +1868,17 @@ namespace DawIOSystemLogic {
             automationTracks.push_back(std::move(trackJson));
         }
 
+        for (const auto& track : daw.chuckTracks) {
+            json trackJson = json::object();
+            trackJson["mute"] = track.mute;
+            trackJson["next_event_id"] = track.nextEventId;
+            trackJson["events"] = json::array();
+            for (const auto& event : track.events) {
+                trackJson["events"].push_back(serializeChuckEvent(event));
+            }
+            chuckTracks.push_back(std::move(trackJson));
+        }
+
         if (baseSystem.vst3) {
             Vst3Context& vst3 = *baseSystem.vst3;
             for (size_t i = 0; i < audioTracks.size(); ++i) {
@@ -1851,6 +1910,7 @@ namespace DawIOSystemLogic {
         root["audio_tracks"] = std::move(audioTracks);
         root["midi_tracks"] = std::move(midiTracks);
         root["automation_tracks"] = std::move(automationTracks);
+        root["chuck_tracks"] = std::move(chuckTracks);
         root["lane_order"] = json::array();
         for (const auto& lane : daw.laneOrder) {
             root["lane_order"].push_back({
@@ -1937,17 +1997,21 @@ namespace DawIOSystemLogic {
             ? root["midi_tracks"] : json::array();
         const auto& automationTracksJson = root.contains("automation_tracks") && root["automation_tracks"].is_array()
             ? root["automation_tracks"] : json::array();
+        const auto& chuckTracksJson = root.contains("chuck_tracks") && root["chuck_tracks"].is_array()
+            ? root["chuck_tracks"] : json::array();
 
         if (!setTrackCountsForSession(baseSystem,
                                       static_cast<int>(audioTracksJson.size()),
                                       static_cast<int>(midiTracksJson.size()),
-                                      static_cast<int>(automationTracksJson.size()))) {
+                                      static_cast<int>(automationTracksJson.size()),
+                                      static_cast<int>(chuckTracksJson.size()))) {
             std::cerr << "Session load failed: could not apply track counts." << std::endl;
             return false;
         }
 
         daw.trackCount = static_cast<int>(daw.tracks.size());
         daw.automationTrackCount = static_cast<int>(daw.automationTracks.size());
+        daw.chuckTrackCount = static_cast<int>(daw.chuckTracks.size());
         midi.trackCount = static_cast<int>(midi.tracks.size());
 
         {
@@ -1986,6 +2050,12 @@ namespace DawIOSystemLogic {
                 track.meterLevel.store(0.0f, std::memory_order_relaxed);
                 track.recordingActive = false;
                 track.activeRecordNote = -1;
+            }
+            for (auto& track : daw.chuckTracks) {
+                track.events.clear();
+                track.clearPending = false;
+                track.mute = false;
+                track.nextEventId = 1;
             }
 
             const auto& audioPoolJson = root.contains("audio_pool") && root["audio_pool"].is_array()
@@ -2135,11 +2205,37 @@ namespace DawIOSystemLogic {
                 }
             }
 
+            for (size_t i = 0; i < daw.chuckTracks.size() && i < chuckTracksJson.size(); ++i) {
+                ChuckTrack& track = daw.chuckTracks[i];
+                const json& trackJson = chuckTracksJson[i];
+                track.mute = readBool(trackJson, "mute", false);
+                track.nextEventId = std::max(1, readInt(trackJson, "next_event_id", 1));
+                auto itEvents = trackJson.find("events");
+                if (itEvents != trackJson.end() && itEvents->is_array()) {
+                    track.events.reserve(itEvents->size());
+                    int maxEventId = 0;
+                    for (const auto& eventJson : *itEvents) {
+                        ChuckEvent event = deserializeChuckEvent(eventJson);
+                        if (event.eventId <= 0) {
+                            event.eventId = track.nextEventId++;
+                        }
+                        maxEventId = std::max(maxEventId, event.eventId);
+                        track.events.push_back(std::move(event));
+                    }
+                    std::sort(track.events.begin(), track.events.end(), [](const ChuckEvent& a, const ChuckEvent& b) {
+                        if (a.startSample == b.startSample) return a.eventId < b.eventId;
+                        return a.startSample < b.startSample;
+                    });
+                    track.nextEventId = std::max(track.nextEventId, maxEventId + 1);
+                }
+            }
+
             restoreLaneOrder(daw,
                              root.contains("lane_order") ? root["lane_order"] : json::array(),
                              static_cast<int>(daw.tracks.size()),
                              static_cast<int>(midi.tracks.size()),
-                             static_cast<int>(daw.automationTracks.size()));
+                             static_cast<int>(daw.automationTracks.size()),
+                             static_cast<int>(daw.chuckTracks.size()));
         }
 
         if (baseSystem.vst3) {
@@ -2198,6 +2294,21 @@ namespace DawIOSystemLogic {
         daw.selectedClipIndex = -1;
         daw.selectedAutomationClipTrack = -1;
         daw.selectedAutomationClipIndex = -1;
+        daw.selectedChuckTrack = -1;
+        daw.selectedChuckEvent = -1;
+        daw.chuckEventEditorOpen = false;
+        daw.chuckEditorTrack = -1;
+        daw.chuckEditorEvent = -1;
+        daw.chuckEditorBuffer.clear();
+        daw.chuckStatusMessage.clear();
+        daw.chuckEventDragActive = false;
+        daw.chuckEventDragTrack = -1;
+        daw.chuckEventDragIndex = -1;
+        daw.chuckEventDragStartSample = 0;
+        daw.chuckEventDragTargetSample = 0;
+        daw.chuckEventDragOffsetSamples = 0;
+        daw.chuckLastSchedulerSample = loadedPlayhead;
+        daw.chuckSchedulerWasPlaying = false;
         midi.selectedTrackIndex = -1;
         midi.selectedClipTrack = -1;
         midi.selectedClipIndex = -1;

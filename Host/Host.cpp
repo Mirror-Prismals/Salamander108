@@ -191,7 +191,7 @@ namespace {
             const char* vertexKey = nullptr;
             const char* fragmentKey = nullptr;
         };
-        const std::array<ShaderBinding, 23> bindings = {{
+        const std::array<ShaderBinding, 25> bindings = {{
             {"blockShader", &renderer.blockShader, "BLOCK_VERTEX_SHADER", "BLOCK_FRAGMENT_SHADER"},
             {"faceShader", &renderer.faceShader, "FACE_VERTEX_SHADER", "FACE_FRAGMENT_SHADER"},
             {"packedTerrainFaceShader", &renderer.packedTerrainFaceShader, "PACKED_TERRAIN_FACE_VERTEX_SHADER", "FACE_FRAGMENT_SHADER"},
@@ -199,6 +199,8 @@ namespace {
             {"packedTerrainOcclusionFaceShader", &renderer.packedTerrainOcclusionFaceShader, "PACKED_TERRAIN_OCCLUSION_FACE_VERTEX_SHADER", "OCCLUSION_FACE_FRAGMENT_SHADER"},
             {"waterShader", &renderer.waterShader, "WATER_VERTEX_SHADER", "WATER_FRAGMENT_SHADER"},
             {"waterCompositeShader", &renderer.waterCompositeShader, "WATER_COMPOSITE_VERTEX_SHADER", "WATER_COMPOSITE_FRAGMENT_SHADER"},
+            {"rainFullscreenShader", &renderer.rainFullscreenShader, "RAIN_FULLSCREEN_VERTEX_SHADER", "RAIN_FULLSCREEN_FRAGMENT_SHADER"},
+            {"rainRippleShader", &renderer.rainRippleShader, "RAIN_RIPPLE_VERTEX_SHADER", "RAIN_RIPPLE_FRAGMENT_SHADER"},
             {"grass3DShader", &renderer.grass3DShader, "GRASS3D_VERTEX_SHADER", "GRASS3D_FRAGMENT_SHADER"},
             {"skyboxShader", &renderer.skyboxShader, "SKYBOX_VERTEX_SHADER", "SKYBOX_FRAGMENT_SHADER"},
             {"sunMoonShader", &renderer.sunMoonShader, "SUNMOON_VERTEX_SHADER", "SUNMOON_FRAGMENT_SHADER"},
@@ -338,6 +340,7 @@ void Host::registerSystemFunctions() {
     functionRegistry["ProcessWalkMovement"] = WalkModeSystemLogic::ProcessWalkMovement;
     functionRegistry["ApplyGravity"] = GravitySystemLogic::ApplyGravity;
     functionRegistry["UpdateCameraMatrices"] = CameraSystemLogic::UpdateCameraMatrices;
+    functionRegistry["UpdateIslandFlyover"] = IslandFlyoverSystemLogic::UpdateIslandFlyover;
     functionRegistry["UpdatePaniniProjection"] = PaniniProjectionSystemLogic::UpdatePaniniProjection;
     functionRegistry["ProcessKeyboardInput"] = KeyboardInputSystemLogic::ProcessKeyboardInput;
     functionRegistry["UpdateBookSystem"] = BookSystemLogic::UpdateBookSystem;
@@ -356,6 +359,7 @@ void Host::registerSystemFunctions() {
     functionRegistry["UpdateOcclusionCulling"] = OcclusionCullingSystemLogic::UpdateOcclusionCulling;
     functionRegistry["RenderWorld"] = WorldRenderSystemLogic::RenderWorld;
     functionRegistry["RenderWater"] = WaterRenderSystemLogic::RenderWater;
+    functionRegistry["RenderRain"] = RainSystemLogic::RenderRain;
     functionRegistry["Render3DGrass"] = ThreeDGrassSystemLogic::Render3DGrass;
     functionRegistry["RenderOverlays"] = OverlayRenderSystemLogic::RenderOverlays;
     functionRegistry["GenerateTerrain"] = TerrainSystemLogic::GenerateTerrain;
@@ -454,6 +458,7 @@ void Host::registerSystemFunctions() {
     functionRegistry["UpdateMidiIO"] = MidiIOSystemLogic::UpdateMidiIO;
     functionRegistry["UpdateMidiLane"] = MidiLaneSystemLogic::UpdateMidiLane;
     functionRegistry["UpdateAutomationLane"] = AutomationLaneSystemLogic::UpdateAutomationLane;
+    functionRegistry["UpdateChuckLane"] = ChuckLaneSystemLogic::UpdateChuckLane;
     functionRegistry["UpdateMicrophoneBlocks"] = MicrophoneBlockSystemLogic::UpdateMicrophoneBlocks;
     functionRegistry["UpdatePerf"] = PerfSystemLogic::UpdatePerf;
     functionRegistry["UpdateBootSequence"] = BootSequenceSystemLogic::UpdateBootSequence;

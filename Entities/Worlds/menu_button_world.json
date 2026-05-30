@@ -5,15 +5,52 @@
   "instances": [
     {
       "prototypeID": -1,
+      "name": "Text",
+      "position": [960.0, 230.0, 0.0],
+      "color": "White",
+      "size": 72.0,
+      "font": "AlegreyaSans-Regular.ttf",
+      "text": "SALAMANDER",
+      "textType": "UIOnly",
+      "controlRole": "title"
+    },
+    {
+      "prototypeID": -1,
+      "name": "Text",
+      "position": [960.0, 310.0, 0.0],
+      "color": "White",
+      "size": 26.0,
+      "font": "AlegreyaSans-Regular.ttf",
+      "text": "CARDINAL",
+      "textType": "UIOnly",
+      "controlRole": "title"
+    },
+    {
+      "prototypeID": -1,
       "name": "ActionButton",
-      "position": [960.0, 540.0, 0.0],
+      "position": [960.0, 610.0, 0.0],
       "color": "ButtonFront",
       "topColor": "ButtonTopHighlight",
       "sideColor": "ButtonSideShadow",
-      "size": [90.0, 90.0, 18.0],
+      "size": [160.0, 34.0, 10.0],
       "action": "SetRegistry",
       "actionKey": "level",
-      "actionValue": "frog"
+      "actionValue": "the_expanse",
+      "buttonMode": "managed",
+      "controlId": "title_new_game",
+      "controlRole": "button"
+    },
+    {
+      "prototypeID": -1,
+      "name": "Text",
+      "position": [960.0, 610.0, 0.0],
+      "color": "ButtonGlyph",
+      "size": 24.0,
+      "font": "AlegreyaSans-Regular.ttf",
+      "text": "NEW GAME",
+      "textType": "UIOnly",
+      "controlId": "title_new_game",
+      "controlRole": "label"
     }
   ]
 }

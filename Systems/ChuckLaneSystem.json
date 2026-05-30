@@ -1,0 +1,15 @@
+{
+    "update_steps": {
+        "UpdateChuckLane": {
+            "dependencies": [
+                "DawContext",
+                "AudioContext",
+                "UIContext",
+                "RendererContext",
+                "WorldContext",
+                "LevelContext",
+                "PanelContext"
+            ]
+        }
+    }
+}

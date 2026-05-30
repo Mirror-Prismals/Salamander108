@@ -646,6 +646,8 @@ struct RendererContext {
     std::unique_ptr<Shader> packedTerrainOcclusionFaceShader;
     std::unique_ptr<Shader> waterShader;
     std::unique_ptr<Shader> waterCompositeShader;
+    std::unique_ptr<Shader> rainFullscreenShader;
+    std::unique_ptr<Shader> rainRippleShader;
     std::unique_ptr<Shader> grass3DShader;
     RenderHandle grass3DVolumeVAO = 0;
     RenderHandle grass3DVolumeVBO = 0;
@@ -915,6 +917,10 @@ struct AudioContext {
     bool soundtrackChuckStopRequested = false;
     bool soundtrackChuckActive = false;
     float soundtrackChuckGain = 0.0f;
+    std::mutex chuckOneShotMutex;
+    std::vector<std::string> chuckOneShotScriptQueue;
+    std::atomic<uint64_t> chuckOneShotCompileCount{0};
+    std::atomic<uint64_t> chuckOneShotCompileFailures{0};
     int sparkleRayChuckChannel = 4;
     std::string sparkleRayChuckScriptPath;
     t_CKUINT sparkleRayChuckShredId = 0;
@@ -1274,6 +1280,8 @@ struct UIStampingContext {
     int midiSourceWorldIndex = -1;
     std::string automationSourceWorldName = "AutomationTrackRowWorld";
     int automationSourceWorldIndex = -1;
+    std::string chuckSourceWorldName = "ChuckTrackRowWorld";
+    int chuckSourceWorldIndex = -1;
     int stampedRows = 0;
     float rowSpacing = 72.0f;
     float scrollY = 0.0f;
@@ -1284,6 +1292,8 @@ struct UIStampingContext {
     std::vector<float> midiSourceBaseY;
     std::vector<EntityInstance> automationSourceInstances;
     std::vector<float> automationSourceBaseY;
+    std::vector<EntityInstance> chuckSourceInstances;
+    std::vector<float> chuckSourceBaseY;
     std::vector<int> rowWorldIndices;
     std::vector<struct MirrorRowOverride> rowOverrides;
 };
@@ -1446,6 +1456,18 @@ struct AutomationTrack {
     std::string targetDeviceLabel = "NONE";
     std::string targetParameterLabel = "NONE";
 };
+struct ChuckEvent {
+    uint64_t startSample = 0;
+    std::string code;
+    bool enabled = true;
+    int eventId = 0;
+};
+struct ChuckTrack {
+    std::vector<ChuckEvent> events;
+    bool clearPending = false;
+    bool mute = false;
+    int nextEventId = 1;
+};
 struct DawTrack {
     std::vector<float> audio;
     std::vector<float> audioRight;
@@ -1552,12 +1574,17 @@ struct DawThemePreset {
 
 struct DawContext {
     static constexpr int kBusCount = 4;
+    static constexpr int kLaneAudio = 0;
+    static constexpr int kLaneMidi = 1;
+    static constexpr int kLaneAutomation = 2;
+    static constexpr int kLaneChuck = 3;
     struct LaneEntry {
-        int type = 0; // 0 = audio, 1 = midi, 2 = automation
+        int type = 0; // 0 = audio, 1 = midi, 2 = automation, 3 = ChucK event
         int trackIndex = 0;
     };
     int trackCount = 0;
     int automationTrackCount = 0;
+    int chuckTrackCount = 0;
     double timelineSecondsPerScreen = 10.0;
     int64_t timelineOffsetSamples = 0;
     int64_t timelineZeroSample = 0;
@@ -1566,6 +1593,7 @@ struct DawContext {
     std::string mirrorPath;
     std::vector<DawTrack> tracks;
     std::vector<AutomationTrack> automationTracks;
+    std::vector<ChuckTrack> chuckTracks;
     std::vector<DawClipAudio> clipAudio;
     std::mutex trackMutex;
     std::atomic<bool> transportPlaying{false};
@@ -1603,6 +1631,21 @@ struct DawContext {
     int selectedClipIndex = -1;
     int selectedAutomationClipTrack = -1;
     int selectedAutomationClipIndex = -1;
+    int selectedChuckTrack = -1;
+    int selectedChuckEvent = -1;
+    bool chuckEventEditorOpen = false;
+    int chuckEditorTrack = -1;
+    int chuckEditorEvent = -1;
+    std::string chuckEditorBuffer;
+    std::string chuckStatusMessage;
+    bool chuckEventDragActive = false;
+    int chuckEventDragTrack = -1;
+    int chuckEventDragIndex = -1;
+    uint64_t chuckEventDragStartSample = 0;
+    uint64_t chuckEventDragTargetSample = 0;
+    int64_t chuckEventDragOffsetSamples = 0;
+    uint64_t chuckLastSchedulerSample = 0;
+    bool chuckSchedulerWasPlaying = false;
     bool automationParamMenuOpen = false;
     int automationParamMenuTrack = -1;
     int automationParamMenuHoverIndex = -1;
@@ -2016,6 +2059,7 @@ namespace OcclusionCullingSystemLogic {
     bool IsDebugFrozen(const BaseSystem&);
 }
 namespace WorldRenderSystemLogic { void RenderWorld(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
+namespace RainSystemLogic { void RenderRain(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
 namespace MiniVoxelParticleSystemLogic {
     void SpawnFromBlock(BaseSystem& baseSystem,
                         const std::vector<Entity>& prototypes,
@@ -2207,6 +2251,7 @@ namespace DawLaneRenderSystemLogic { void UpdateDawLaneRender(BaseSystem&, std::
 namespace DawTimelineRebaseLogic { void ShiftTimelineRight(BaseSystem& baseSystem, uint64_t shiftSamples); }
 namespace MidiLaneSystemLogic { void OnTimelineRebased(uint64_t shiftSamples); }
 namespace AutomationLaneSystemLogic { void UpdateAutomationLane(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); void OnTimelineRebased(uint64_t shiftSamples); }
+namespace ChuckLaneSystemLogic { void UpdateChuckLane(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); void OnTimelineRebased(uint64_t shiftSamples); bool InsertTrackAt(BaseSystem&, int trackIndex); bool RemoveTrackAt(BaseSystem&, int trackIndex); bool MoveTrack(BaseSystem&, int fromIndex, int toIndex); }
 namespace PianoRollResourceSystemLogic { void UpdatePianoRollResources(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
 namespace PianoRollLayoutSystemLogic { void UpdatePianoRollLayout(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
 namespace PianoRollInputSystemLogic { void UpdatePianoRollInput(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
