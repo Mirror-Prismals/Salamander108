@@ -362,6 +362,10 @@ void Host::registerSystemFunctions() {
     functionRegistry["RenderRain"] = RainSystemLogic::RenderRain;
     functionRegistry["Render3DGrass"] = ThreeDGrassSystemLogic::Render3DGrass;
     functionRegistry["RenderOverlays"] = OverlayRenderSystemLogic::RenderOverlays;
+    functionRegistry["RenderTitleLogo"] = TitleLogoSystemLogic::RenderTitleLogo;
+    functionRegistry["CleanupTitleLogo"] = TitleLogoSystemLogic::CleanupTitleLogo;
+    functionRegistry["RenderScopeText"] = ScopeTextSystemLogic::RenderScopeText;
+    functionRegistry["CleanupScopeText"] = ScopeTextSystemLogic::CleanupScopeText;
     functionRegistry["GenerateTerrain"] = TerrainSystemLogic::GenerateTerrain;
     functionRegistry["UpdateExpanseTerrain"] = TerrainSystemLogic::UpdateExpanseTerrain;
     functionRegistry["InitializeWorldSave"] = WorldSaveSystemLogic::InitializeWorldSave;

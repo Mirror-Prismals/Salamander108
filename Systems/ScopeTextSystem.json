@@ -1,0 +1,19 @@
+{
+    "update_steps": {
+        "RenderScopeText": {
+            "dependencies": [
+                "RendererContext",
+                "WorldContext",
+                "LevelContext",
+                "UIContext"
+            ]
+        }
+    },
+    "cleanup_steps": {
+        "CleanupScopeText": {
+            "dependencies": [
+                "RendererContext"
+            ]
+        }
+    }
+}

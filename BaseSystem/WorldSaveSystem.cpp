@@ -885,11 +885,21 @@ namespace WorldSaveSystemLogic {
             return inst;
         }
 
+        float menuCenterX(PlatformWindowHandle win) {
+            if (!win) return 960.0f;
+            int width = 0;
+            int height = 0;
+            PlatformInput::GetWindowSize(win, width, height);
+            (void)height;
+            return width > 0 ? static_cast<float>(width) * 0.5f : 960.0f;
+        }
+
         void addMenuButton(BaseSystem& baseSystem,
                            std::vector<Entity>& prototypes,
                            Entity& menuWorld,
                            const std::string& controlId,
                            const std::string& label,
+                           float centerX,
                            float y,
                            const std::string& actionKey,
                            const std::string& actionValue,
@@ -902,7 +912,7 @@ namespace WorldSaveSystemLogic {
                 baseSystem,
                 buttonProto->prototypeID,
                 "ActionButton",
-                glm::vec3(960.0f, y, 0.0f),
+                glm::vec3(centerX, y, 0.0f),
                 glm::vec3(halfWidth, 34.0f, 10.0f),
                 controlId,
                 "button"
@@ -919,7 +929,7 @@ namespace WorldSaveSystemLogic {
                 baseSystem,
                 textProto->prototypeID,
                 "Text",
-                glm::vec3(960.0f, y, 0.0f),
+                glm::vec3(centerX, y, 0.0f),
                 glm::vec3(24.0f),
                 controlId,
                 "label"
@@ -938,6 +948,7 @@ namespace WorldSaveSystemLogic {
                          Entity& menuWorld,
                          const std::string& controlId,
                          const std::string& textValue,
+                         float centerX,
                          float y,
                          float size,
                          const std::string& colorName = "White") {
@@ -947,7 +958,7 @@ namespace WorldSaveSystemLogic {
                 baseSystem,
                 textProto->prototypeID,
                 "Text",
-                glm::vec3(960.0f, y, 0.0f),
+                glm::vec3(centerX, y, 0.0f),
                 glm::vec3(size),
                 controlId,
                 "label"
@@ -959,7 +970,7 @@ namespace WorldSaveSystemLogic {
             menuWorld.instances.push_back(std::move(text));
         }
 
-        void rebuildMenuWorld(BaseSystem& baseSystem, std::vector<Entity>& prototypes) {
+        void rebuildMenuWorld(BaseSystem& baseSystem, std::vector<Entity>& prototypes, PlatformWindowHandle win) {
             if (!baseSystem.worldSave || !baseSystem.level) return;
             if (!isMenuLevel(baseSystem)) {
                 baseSystem.worldSave->menuBuilt = false;
@@ -977,6 +988,7 @@ namespace WorldSaveSystemLogic {
             }
             if (!menuWorld) return;
 
+            const float centerX = menuCenterX(win);
             menuWorld->instances.erase(
                 std::remove_if(menuWorld->instances.begin(), menuWorld->instances.end(), [](const EntityInstance& inst) {
                     return inst.controlId.rfind("world_menu_", 0) == 0
@@ -988,6 +1000,7 @@ namespace WorldSaveSystemLogic {
             addMenuButton(baseSystem, prototypes, *menuWorld,
                           "world_menu_create",
                           "CREATE NEW WORLD",
+                          centerX,
                           540.0f,
                           "create",
                           "");
@@ -996,6 +1009,7 @@ namespace WorldSaveSystemLogic {
                 addMenuText(baseSystem, prototypes, *menuWorld,
                             "world_menu_empty",
                             "NO SAVED WORLDS",
+                            centerX,
                             625.0f,
                             22.0f,
                             "ButtonGlyph");
@@ -1003,6 +1017,7 @@ namespace WorldSaveSystemLogic {
                 addMenuText(baseSystem, prototypes, *menuWorld,
                             "world_menu_load_heading",
                             "LOAD EXISTING WORLD",
+                            centerX,
                             610.0f,
                             22.0f,
                             "White");
@@ -1012,6 +1027,7 @@ namespace WorldSaveSystemLogic {
                     addMenuButton(baseSystem, prototypes, *menuWorld,
                                   "world_menu_load_" + std::to_string(i),
                                   entry.displayName,
+                                  centerX,
                                   660.0f + static_cast<float>(i) * 54.0f,
                                   "load",
                                   entry.worldId,
@@ -1213,14 +1229,14 @@ namespace WorldSaveSystemLogic {
         }
     }
 
-    void UpdateWorldSave(BaseSystem& baseSystem, std::vector<Entity>& prototypes, float dt, PlatformWindowHandle) {
+    void UpdateWorldSave(BaseSystem& baseSystem, std::vector<Entity>& prototypes, float dt, PlatformWindowHandle win) {
         if (!baseSystem.worldSave || !registryBool(baseSystem, "WorldSaveEnabled", true)) return;
         if (!baseSystem.worldSave->initialized) {
             InitializeWorldSave(baseSystem, prototypes, 0.0f, nullptr);
         }
 
         processMenuAction(baseSystem);
-        rebuildMenuWorld(baseSystem, prototypes);
+        rebuildMenuWorld(baseSystem, prototypes, win);
         loadDawSessionIfNeeded(baseSystem);
 
         if (!shouldPersistRuntimeState(baseSystem)) return;

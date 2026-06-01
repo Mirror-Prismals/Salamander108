@@ -129,6 +129,7 @@ namespace TerrainSystemLogic {
                 outPostFeaturesCompleted = true;
                 return false;
             }
+            const auto workerStartTime = std::chrono::steady_clock::now();
             VoxelWorldContext& voxelWorld = *baseSystem.voxelWorld;
             int size = sectionSizeForSection(voxelWorld);
             int scale = 1;
@@ -141,6 +142,10 @@ namespace TerrainSystemLogic {
             std::unordered_map<std::string, bool> registryBoolCache;
             std::unordered_map<std::string, float> registryFloatCache;
             std::unordered_map<std::string, std::string> registryStringCache;
+            registryIntCache.reserve(128);
+            registryBoolCache.reserve(96);
+            registryFloatCache.reserve(96);
+            registryStringCache.reserve(16);
             auto getRegistryInt = [&](const BaseSystem& system, const std::string& key, int fallback) -> int {
                 const std::string cacheKey = key + "\n" + std::to_string(fallback);
                 auto it = registryIntCache.find(cacheKey);
@@ -949,11 +954,47 @@ namespace TerrainSystemLogic {
             bool wroteAny = false;
             VoxelColumn* directColumn = nullptr;
             const VoxelColumnKey directColumnKey{glm::ivec2(sectionCoord.x, sectionCoord.z)};
+            auto findDirectColumn = [&]() -> VoxelColumn* {
+                if (directColumn) return directColumn;
+                auto it = voxelWorld.columns.find(directColumnKey);
+                if (it == voxelWorld.columns.end()) return nullptr;
+                directColumn = &it->second;
+                return directColumn;
+            };
             auto ensureDirectColumn = [&]() -> VoxelColumn* {
                 if (!directColumn) {
                     directColumn = voxelWorld.ensureColumnForWrite(directColumnKey);
                 }
                 return directColumn;
+            };
+            auto readColumnBlockFast = [](const VoxelColumn& column,
+                                          int localX,
+                                          int worldY,
+                                          int localZ) -> uint32_t {
+                if (localX < 0 || localX >= column.chunkSize) return 0u;
+                if (localZ < 0 || localZ >= column.chunkSize) return 0u;
+                if (worldY < column.minY || worldY >= column.maxYExclusive) return 0u;
+                const int height = column.maxYExclusive - column.minY;
+                if (height <= 0) return 0u;
+                const int idx = localX
+                    + (worldY - column.minY) * column.chunkSize
+                    + localZ * column.chunkSize * height;
+                if (idx < 0 || idx >= static_cast<int>(column.ids.size())) return 0u;
+                return column.ids[static_cast<size_t>(idx)];
+            };
+            auto readLocalVoxel = [&](int localX, int worldY, int localZ) -> uint32_t {
+                if (columnMode && !runPostFeatures
+                    && localX >= 0 && localX < size
+                    && localZ >= 0 && localZ < size) {
+                    const VoxelColumn* column = findDirectColumn();
+                    if (!column) return 0u;
+                    return readColumnBlockFast(*column, localX, worldY, localZ);
+                }
+                return voxelWorld.getBlockWorld(glm::ivec3(
+                    sectionCoord.x * size + localX,
+                    worldY,
+                    sectionCoord.z * size + localZ
+                ));
             };
             auto writeVoxel = [&](const glm::ivec3& worldCoord,
                                   uint32_t id,
@@ -1054,6 +1095,10 @@ namespace TerrainSystemLogic {
             };
             std::vector<glm::ivec3> pendingChalkPlacements;
             pendingChalkPlacements.reserve(static_cast<size_t>(totalColumns));
+            const auto columnLoopStartTime = std::chrono::steady_clock::now();
+            g_terrainWorkerSetupFrameMs += std::chrono::duration<float, std::milli>(
+                columnLoopStartTime - workerStartTime
+            ).count();
             for (int column = clampedStartColumn; column < clampedEndColumn; ++column) {
                 int z = column / size;
                 int x = column - z * size;
@@ -1497,28 +1542,60 @@ namespace TerrainSystemLogic {
                         return false;
                     };
                     auto isOpenOrWaterNeighbor = [&](const glm::ivec3& cell) {
-                        static const std::array<glm::ivec3, 6> offsets = {{
-                            glm::ivec3(1, 0, 0),
-                            glm::ivec3(-1, 0, 0),
-                            glm::ivec3(0, 1, 0),
-                            glm::ivec3(0, -1, 0),
-                            glm::ivec3(0, 0, 1),
-                            glm::ivec3(0, 0, -1)
-                        }};
-                        for (const glm::ivec3& offset : offsets) {
-                            const uint32_t neighborId = voxelWorld.getBlockWorld(cell + offset);
-                            if (neighborId == 0u || neighborId == static_cast<uint32_t>(waterProto->prototypeID)) {
-                                return true;
-                            }
-                        }
-                        return false;
+                        const uint32_t waterId = static_cast<uint32_t>(waterProto->prototypeID);
+                        auto isOpen = [&](uint32_t neighborId) {
+                            return neighborId == 0u || neighborId == waterId;
+                        };
+                        const int y = cell.y;
+                        return isOpen(readLocalVoxel(x + 1, y, z))
+                            || isOpen(readLocalVoxel(x - 1, y, z))
+                            || isOpen(readLocalVoxel(x, y + 1, z))
+                            || isOpen(readLocalVoxel(x, y - 1, z))
+                            || isOpen(readLocalVoxel(x, y, z + 1))
+                            || isOpen(readLocalVoxel(x, y, z - 1));
                     };
+                    int verticalStartY = sectionMinY;
+                    int verticalEndY = sectionMaxY;
+                    if (columnMode && !runPostFeatures) {
+                        const int depthBandTopY = (isExpanseLevel && unifiedDepthsEnabled)
+                            ? (expanseDepthSplitY - 1)
+                            : std::numeric_limits<int>::min();
+                        if (terrainDetailPass) {
+                            if (isLand) {
+                                verticalEndY = std::min(sectionMaxY, std::max(surfaceY, depthBandTopY));
+                            } else if (depthBandTopY != std::numeric_limits<int>::min()) {
+                                verticalEndY = std::min(sectionMaxY, depthBandTopY);
+                            } else {
+                                continue;
+                            }
+                        } else if (terrainFillPass) {
+                            int fillTopY = isLand ? surfaceY : waterSurfaceY;
+                            if (isLand && waterFeatureColumn && waterFeatureWaterY > fillTopY) {
+                                fillTopY = waterFeatureWaterY;
+                            }
+                            if (depthBandTopY != std::numeric_limits<int>::min()) {
+                                fillTopY = std::max(fillTopY, depthBandTopY);
+                            }
+                            if (voidPortalProto && voidPortalProto->prototypeID > 0) {
+                                if (portalColumnExpanse) {
+                                    fillTopY = std::max(fillTopY, seabedPortalY);
+                                }
+                                if (isDepthLevel) {
+                                    fillTopY = std::max(fillTopY, depthPortalY);
+                                }
+                            }
+                            verticalEndY = std::min(sectionMaxY, fillTopY);
+                        }
+                        if (verticalEndY < verticalStartY) {
+                            continue;
+                        }
+                    }
                     const int verticalCellCount = columnMode
-                        ? std::max(0, sectionMaxY - sectionMinY + 1)
+                        ? std::max(0, verticalEndY - verticalStartY + 1)
                         : size;
                     for (int y = 0; y < verticalCellCount; ++y) {
                         int worldY = columnMode
-                            ? (sectionMinY + y)
+                            ? (verticalStartY + y)
                             : ((sectionCoord.y * size + y) * scale);
                         glm::ivec3 worldCoord(sectionCoord.x * size + x,
                                             worldY,
@@ -1533,7 +1610,7 @@ namespace TerrainSystemLogic {
                         };
 
                         if (terrainDetailPass) {
-                            const uint32_t currentId = voxelWorld.getBlockWorld(worldCoord);
+                            const uint32_t currentId = readLocalVoxel(x, worldY, z);
                             if (currentId == 0u) continue;
 
                             if (isExpanseLevel && worldY < expanseDepthSplitY) {
@@ -1691,7 +1768,7 @@ namespace TerrainSystemLogic {
                         }
 
                         bool carve = false;
-                        if (inIsland && worldY <= (isLand ? surfaceY : waterFloorY)) {
+                        if (isLand && inIsland && worldY <= surfaceY) {
                             float v1 = 0.0f;
                             float v2 = 0.0f;
                             if (!sampleCaveField(worldX, static_cast<float>(worldY), worldZ, v1, v2)) {
@@ -1910,6 +1987,9 @@ namespace TerrainSystemLogic {
                         }
                     }
             }
+            g_terrainWorkerColumnFrameMs += std::chrono::duration<float, std::milli>(
+                std::chrono::steady_clock::now() - columnLoopStartTime
+            ).count();
             if (runPostFeatures) {
                 outNextColumn = totalColumns;
                 outCompleted = true;
@@ -2042,7 +2122,11 @@ namespace TerrainSystemLogic {
             const bool hadAnyWrites = (inOutWroteAny || wroteAny);
             inOutWroteAny = hadAnyWrites;
             // Keep terrain writes hidden from meshing until the terrain phases are fully done.
-            const bool publishSectionNow = runPostFeatures ? wroteAny : (outCompleted && hadAnyWrites);
+            const bool columnWorkerPublishesSections =
+                !columnMode || getRegistryBool(baseSystem, "VoxelColumnWorkerPublishesSections", false);
+            const bool publishSectionNow = runPostFeatures
+                ? wroteAny
+                : (outCompleted && hadAnyWrites && columnWorkerPublishesSections);
             if (publishSectionNow) {
                 auto markSectionDirty = [&](const glm::ivec3& coord, bool bumpVersion) {
                     VoxelSectionKey dirtyKey{coord};

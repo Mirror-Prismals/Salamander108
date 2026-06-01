@@ -5,25 +5,25 @@
   "instances": [
     {
       "prototypeID": -1,
-      "name": "Text",
-      "position": [960.0, 230.0, 0.0],
+      "name": "TitleLogo",
+      "position": [960.0, 200.0, 0.0],
       "color": "White",
-      "size": 72.0,
-      "font": "AlegreyaSans-Regular.ttf",
-      "text": "SALAMANDER",
+      "size": [1690.0, 0.0, 0.0],
+      "text": "Procedures/assets/title_logo.png",
       "textType": "UIOnly",
-      "controlRole": "title"
+      "controlId": "title_logo",
+      "controlRole": "title_logo"
     },
     {
       "prototypeID": -1,
-      "name": "Text",
-      "position": [960.0, 310.0, 0.0],
-      "color": "White",
-      "size": 26.0,
-      "font": "AlegreyaSans-Regular.ttf",
-      "text": "CARDINAL",
+      "name": "ScopeText",
+      "position": [960.0, 415.0, 0.0],
+      "color": [0.18, 1.0, 0.32],
+      "size": [1060.0, 530.0, 0.0],
+      "text": "prismals",
       "textType": "UIOnly",
-      "controlRole": "title"
+      "controlId": "scope_text_prismals",
+      "controlRole": "scope_text"
     }
   ]
 }

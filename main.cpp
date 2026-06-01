@@ -72,6 +72,8 @@
 #include "BaseSystem/RainSystem.cpp"
 #include "BaseSystem/3DGrassSystem.cpp"
 #include "BaseSystem/OverlayRenderSystem.cpp"
+#include "BaseSystem/TitleLogoSystem.cpp"
+#include "BaseSystem/ScopeTextSystem.cpp"
 #include "BaseSystem/VolumeFillSystem.cpp"
 #include "BaseSystem/GlyphSystem.cpp"
 #include "BaseSystem/DebugHudSystem.cpp"

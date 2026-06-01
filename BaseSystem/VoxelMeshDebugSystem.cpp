@@ -121,6 +121,24 @@ namespace TerrainSystemLogic {
                                     size_t& downstreamUpload,
                                     uint64_t& caveFieldCellsBuilt,
                                     uint64_t& caveSamples);
+    void GetVoxelTerrainDetailedPerfStats(float& workerSetupMs,
+                                          float& workerColumnMs,
+                                          float& publishMs);
+    void GetVoxelColumnStreamingPerfStats(size_t& resident,
+                                          size_t& retained,
+                                          size_t& evictable,
+                                          int& started,
+                                          int& loaded,
+                                          int& completed,
+                                          int& released,
+                                          int& releasedBeforeComplete,
+                                          int& releasedAfterComplete,
+                                          int& activeRequeued,
+                                          int& pendingFiltered,
+                                          int& phase0,
+                                          int& phase1,
+                                          int& phase2,
+                                          int& phase3);
 }
 namespace TreeGenerationSystemLogic {
     void GetTreeFoliagePerfStats(size_t& pendingSections,
@@ -130,6 +148,15 @@ namespace TreeGenerationSystemLogic {
                                  int& processedSections,
                                  int& deferredByTimeBudget,
                                  int& backfillAppended,
+                                 int& scannedColumns,
+                                 int& candidateColumns,
+                                 int& placedTrees,
+                                 int& skippedOutOfSection,
+                                 int& skippedNonLand,
+                                 int& skippedMissingGround,
+                                 int& blockedByDependencies,
+                                 int& blockedByColumn,
+                                 int& blockedBySpacing,
                                  bool& backfillRan,
                                  float& updateMs);
 }
@@ -177,6 +204,9 @@ namespace VoxelMeshDebugSystemLogic {
             size_t terrainDownstreamUpload = 0;
             uint64_t terrainCaveFieldCellsBuilt = 0;
             uint64_t terrainCaveSamples = 0;
+            float terrainWorkerSetupMs = 0.0f;
+            float terrainWorkerColumnMs = 0.0f;
+            float terrainPublishMs = 0.0f;
             TerrainSystemLogic::GetVoxelStreamingPerfStats(
                 terrainPending,
                 terrainDesired,
@@ -212,8 +242,47 @@ namespace VoxelMeshDebugSystemLogic {
                 terrainCaveFieldCellsBuilt,
                 terrainCaveSamples
             );
+            TerrainSystemLogic::GetVoxelTerrainDetailedPerfStats(
+                terrainWorkerSetupMs,
+                terrainWorkerColumnMs,
+                terrainPublishMs
+            );
+            size_t columnResident = 0;
+            size_t columnRetained = 0;
+            size_t columnEvictable = 0;
+            int columnStarted = 0;
+            int columnLoaded = 0;
+            int columnCompleted = 0;
+            int columnReleased = 0;
+            int columnReleasedBeforeComplete = 0;
+            int columnReleasedAfterComplete = 0;
+            int columnActiveRequeued = 0;
+            int columnPendingFiltered = 0;
+            int columnPhase0 = 0;
+            int columnPhase1 = 0;
+            int columnPhase2 = 0;
+            int columnPhase3 = 0;
+            TerrainSystemLogic::GetVoxelColumnStreamingPerfStats(
+                columnResident,
+                columnRetained,
+                columnEvictable,
+                columnStarted,
+                columnLoaded,
+                columnCompleted,
+                columnReleased,
+                columnReleasedBeforeComplete,
+                columnReleasedAfterComplete,
+                columnActiveRequeued,
+                columnPendingFiltered,
+                columnPhase0,
+                columnPhase1,
+                columnPhase2,
+                columnPhase3
+            );
             size_t treePending = 0, treePendingDeps = 0, treeVisited = 0;
             int treeSelected = 0, treeProcessed = 0, treeDeferred = 0, treeBackfillAppended = 0;
+            int treeScanned = 0, treeCandidates = 0, treePlaced = 0, treeSkipRange = 0, treeSkipNonLand = 0;
+            int treeSkipGround = 0, treeBlockDeps = 0, treeBlockColumn = 0, treeBlockSpacing = 0;
             bool treeBackfillRan = false;
             float treeMs = 0.0f;
             TreeGenerationSystemLogic::GetTreeFoliagePerfStats(
@@ -224,6 +293,15 @@ namespace VoxelMeshDebugSystemLogic {
                 treeProcessed,
                 treeDeferred,
                 treeBackfillAppended,
+                treeScanned,
+                treeCandidates,
+                treePlaced,
+                treeSkipRange,
+                treeSkipNonLand,
+                treeSkipGround,
+                treeBlockDeps,
+                treeBlockColumn,
+                treeBlockSpacing,
                 treeBackfillRan,
                 treeMs
             );
@@ -469,6 +547,9 @@ namespace VoxelMeshDebugSystemLogic {
                       << " terrainCaveFieldMs=" << terrainCaveFieldMs
                       << " terrainCaveFieldCells=" << terrainCaveFieldCellsBuilt
                       << " terrainCaveSamples=" << terrainCaveSamples
+                      << " terrainWorkerSetupMs=" << terrainWorkerSetupMs
+                      << " terrainWorkerColumnMs=" << terrainWorkerColumnMs
+                      << " terrainPublishMs=" << terrainPublishMs
                       << " terrainSched=pressure:" << terrainSchedulerPressure
                       << ",bud:" << terrainDesiredBudget
                       << "/" << terrainBaseBudget
@@ -480,6 +561,21 @@ namespace VoxelMeshDebugSystemLogic {
                       << ",down:" << terrainDownstreamDirty
                       << "/" << terrainDownstreamPrepared
                       << "/" << terrainDownstreamUpload
+                      << " columnResident=" << columnResident
+                      << " columnRetained=" << columnRetained
+                      << " columnEvictable=" << columnEvictable
+                      << " columnStarted=" << columnStarted
+                      << " columnLoaded=" << columnLoaded
+                      << " columnCompleted=" << columnCompleted
+                      << " columnReleased=" << columnReleased
+                      << " columnReleasedBefore=" << columnReleasedBeforeComplete
+                      << " columnReleasedAfter=" << columnReleasedAfterComplete
+                      << " columnRequeued=" << columnActiveRequeued
+                      << " columnPendingFiltered=" << columnPendingFiltered
+                      << " columnPhases=" << columnPhase0
+                      << "/" << columnPhase1
+                      << "/" << columnPhase2
+                      << "/" << columnPhase3
                       << " treePending=" << treePending
                       << " treePendingDeps=" << treePendingDeps
                       << " treeVisited=" << treeVisited
@@ -487,6 +583,15 @@ namespace VoxelMeshDebugSystemLogic {
                       << " treeProcessed=" << treeProcessed
                       << " treeDeferred=" << treeDeferred
                       << " treeBackfill=" << (treeBackfillRan ? treeBackfillAppended : 0)
+                      << " treeScanned=" << treeScanned
+                      << " treeCandidates=" << treeCandidates
+                      << " treePlaced=" << treePlaced
+                      << " treeSkipRange=" << treeSkipRange
+                      << " treeSkipNonLand=" << treeSkipNonLand
+                      << " treeSkipGround=" << treeSkipGround
+                      << " treeBlockDeps=" << treeBlockDeps
+                      << " treeBlockColumn=" << treeBlockColumn
+                      << " treeBlockSpacing=" << treeBlockSpacing
                       << " treeMs=" << treeMs
                       << " sections=" << voxelWorld.sections.size()
                       << " renderMeshes=" << (baseSystem.voxelRender ? baseSystem.voxelRender->renderBuffers.size() : 0)

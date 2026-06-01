@@ -2268,6 +2268,8 @@ namespace PanelRenderSystemLogic {
     void CleanupFonts(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle);
 }
 namespace UIStampingSystemLogic { void UpdateUIStamping(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
+namespace TitleLogoSystemLogic { void RenderTitleLogo(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); void CleanupTitleLogo(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
+namespace ScopeTextSystemLogic { void RenderScopeText(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); void CleanupScopeText(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
 namespace GlyphSystemLogic { void UpdateGlyphs(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
 namespace DecibelMeterSystemLogic { void UpdateDecibelMeters(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); void RenderDecibelMeters(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
 namespace DawFaderSystemLogic { void UpdateDawFaders(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); void RenderDawFaders(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }

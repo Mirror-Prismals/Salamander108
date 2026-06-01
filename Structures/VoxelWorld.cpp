@@ -78,7 +78,22 @@ namespace {
 
     void releaseRenderSectionOnly(VoxelWorldContext& world, const VoxelSectionKey& key);
 
-    bool hasAirNeighbor(const VoxelWorldContext& world, const glm::ivec3& worldPos) {
+    uint32_t getColumnBlockLocal(const VoxelColumn& column, int localX, int worldY, int localZ) {
+        if (localX < 0 || localX >= column.chunkSize) return 0u;
+        if (localZ < 0 || localZ >= column.chunkSize) return 0u;
+        if (worldY < column.minY || worldY >= column.maxYExclusive) return 0u;
+        const int idx = columnVoxelIndex(column, glm::ivec3(localX, worldY - column.minY, localZ));
+        if (idx < 0 || idx >= static_cast<int>(column.ids.size())) return 0u;
+        return column.ids[static_cast<size_t>(idx)];
+    }
+
+    bool hasAirNeighborInColumnOrWorld(const VoxelWorldContext& world,
+                                       const VoxelColumn& column,
+                                       const VoxelColumnKey& columnKey,
+                                       int localX,
+                                       int worldY,
+                                       int localZ,
+                                       int size) {
         static const std::array<glm::ivec3, 6> kDirs = {{
             glm::ivec3( 1,  0,  0),
             glm::ivec3(-1,  0,  0),
@@ -88,7 +103,22 @@ namespace {
             glm::ivec3( 0,  0, -1)
         }};
         for (const glm::ivec3& dir : kDirs) {
-            if (world.getBlockWorld(worldPos + dir) == 0u) return true;
+            const int nx = localX + dir.x;
+            const int ny = worldY + dir.y;
+            const int nz = localZ + dir.z;
+            if (nx >= 0 && nx < size
+                && nz >= 0 && nz < size
+                && ny >= column.minY
+                && ny < column.maxYExclusive) {
+                if (getColumnBlockLocal(column, nx, ny, nz) == 0u) return true;
+                continue;
+            }
+            const glm::ivec3 neighborWorldPos(
+                columnKey.coord.x * size + localX + dir.x,
+                ny,
+                columnKey.coord.y * size + localZ + dir.z
+            );
+            if (world.getBlockWorld(neighborWorldPos) == 0u) return true;
         }
         return false;
     }
@@ -324,7 +354,10 @@ bool VoxelWorldContext::writeColumnBlock(VoxelColumn& column,
     if (localX < 0 || localX >= column.chunkSize) return false;
     if (localZ < 0 || localZ >= column.chunkSize) return false;
     if (worldY < column.minY || worldY >= column.maxYExclusive) return false;
-    const int idx = columnVoxelIndex(column, glm::ivec3(localX, worldY - column.minY, localZ));
+    const int height = columnHeight(column);
+    const int idx = localX
+        + (worldY - column.minY) * column.chunkSize
+        + localZ * column.chunkSize * height;
     if (idx < 0 || idx >= static_cast<int>(column.ids.size())) return false;
 
     const size_t slot = static_cast<size_t>(idx);
@@ -358,13 +391,22 @@ int VoxelWorldContext::writeColumnRun(VoxelColumn& column,
 
     const uint32_t storedColor = (id == 0u) ? 0u : color;
     int changed = 0;
+    const int height = columnHeight(column);
+    int idx = localX
+        + (writeMinY - column.minY) * column.chunkSize
+        + localZ * column.chunkSize * height;
     for (int y = writeMinY; y <= writeMaxY; ++y) {
-        const int idx = columnVoxelIndex(column, glm::ivec3(localX, y - column.minY, localZ));
-        if (idx < 0 || idx >= static_cast<int>(column.ids.size())) continue;
+        if (idx < 0 || idx >= static_cast<int>(column.ids.size())) {
+            idx += column.chunkSize;
+            continue;
+        }
         const size_t slot = static_cast<size_t>(idx);
         const uint32_t oldId = column.ids[slot];
         const uint32_t oldColor = column.colors[slot];
-        if (oldId == id && oldColor == storedColor) continue;
+        if (oldId == id && oldColor == storedColor) {
+            idx += column.chunkSize;
+            continue;
+        }
 
         column.ids[slot] = id;
         column.colors[slot] = storedColor;
@@ -374,6 +416,7 @@ int VoxelWorldContext::writeColumnRun(VoxelColumn& column,
             column.nonAirCount = std::max(0, column.nonAirCount - 1);
         }
         changed += 1;
+        idx += column.chunkSize;
     }
     return changed;
 }
@@ -497,20 +540,17 @@ bool VoxelWorldContext::materializeSectionFromColumn(const VoxelSectionKey& key)
 
     bool hasNonAir = false;
     bool hasExposedVoxel = false;
+    const int scanColumnHeight = columnHeight(column);
     for (int z = 0; z < size && !hasExposedVoxel; ++z) {
         for (int y = copyMinY; y < copyMaxYExclusive && !hasExposedVoxel; ++y) {
+            const int rowIdx = (y - column.minY) * column.chunkSize
+                + z * column.chunkSize * scanColumnHeight;
+            if (rowIdx < 0 || rowIdx + size > static_cast<int>(column.ids.size())) continue;
             for (int x = 0; x < size; ++x) {
-                const glm::ivec3 columnLocal(x, y - column.minY, z);
-                const int columnIdx = columnVoxelIndex(column, columnLocal);
-                if (columnIdx < 0 || columnIdx >= static_cast<int>(column.ids.size())) continue;
+                const int columnIdx = rowIdx + x;
                 if (column.ids[static_cast<size_t>(columnIdx)] == 0u) continue;
                 hasNonAir = true;
-                const glm::ivec3 worldPos(
-                    columnKey.coord.x * size + x,
-                    y,
-                    columnKey.coord.y * size + z
-                );
-                if (hasAirNeighbor(*this, worldPos)) {
+                if (hasAirNeighborInColumnOrWorld(*this, column, columnKey, x, y, z, size)) {
                     hasExposedVoxel = true;
                     break;
                 }
@@ -548,17 +588,24 @@ bool VoxelWorldContext::materializeSectionFromColumn(const VoxelSectionKey& key)
     }
 
     VoxelSection& section = sectionIt->second;
+    const int columnHeightValue = columnHeight(column);
     for (int z = 0; z < size; ++z) {
         for (int y = copyMinY; y < copyMaxYExclusive; ++y) {
+            const int sectionLocalY = y - sectionMinY;
+            const int columnRowIdx = (y - column.minY) * column.chunkSize
+                + z * column.chunkSize * columnHeightValue;
+            const int sectionRowIdx = sectionLocalY * size
+                + z * size * size;
+            if (columnRowIdx < 0
+                || sectionRowIdx < 0
+                || columnRowIdx + size > static_cast<int>(column.ids.size())
+                || sectionRowIdx + size > static_cast<int>(section.ids.size())) {
+                continue;
+            }
             for (int x = 0; x < size; ++x) {
-                const glm::ivec3 columnLocal(x, y - column.minY, z);
-                const int columnIdx = columnVoxelIndex(column, columnLocal);
-                if (columnIdx < 0 || columnIdx >= static_cast<int>(column.ids.size())) continue;
-
+                const int columnIdx = columnRowIdx + x;
+                const int sectionIdx = sectionRowIdx + x;
                 const uint32_t id = column.ids[static_cast<size_t>(columnIdx)];
-                const int sectionLocalY = y - sectionMinY;
-                const int sectionIdx = voxelIndex(glm::ivec3(x, sectionLocalY, z), size);
-                if (sectionIdx < 0 || sectionIdx >= static_cast<int>(section.ids.size())) continue;
                 section.ids[static_cast<size_t>(sectionIdx)] = id;
                 section.colors[static_cast<size_t>(sectionIdx)] =
                     id == 0u ? 0u : column.colors[static_cast<size_t>(columnIdx)];

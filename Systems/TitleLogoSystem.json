@@ -1,0 +1,19 @@
+{
+    "update_steps": {
+        "RenderTitleLogo": {
+            "dependencies": [
+                "RendererContext",
+                "WorldContext",
+                "LevelContext",
+                "UIContext"
+            ]
+        }
+    },
+    "cleanup_steps": {
+        "CleanupTitleLogo": {
+            "dependencies": [
+                "RendererContext"
+            ]
+        }
+    }
+}

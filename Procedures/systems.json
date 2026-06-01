@@ -97,6 +97,8 @@
         "WaterRenderSystem.json",
         "RainSystem.json",
         "OverlayRenderSystem.json",
+        "TitleLogoSystem.json",
+        "ScopeTextSystem.json",
         "DawBackdropSystem.json",
         "UIScreenSystem.json",
         "DawLaneTimelineSystem.json",

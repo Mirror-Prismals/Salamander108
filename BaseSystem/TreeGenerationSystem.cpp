@@ -180,6 +180,15 @@ namespace TreeGenerationSystemLogic {
             int processedSections = 0;
             int deferredByTimeBudget = 0;
             int backfillAppended = 0;
+            int scannedColumns = 0;
+            int candidateColumns = 0;
+            int placedTrees = 0;
+            int skippedOutOfSection = 0;
+            int skippedNonLand = 0;
+            int skippedMissingGround = 0;
+            int blockedByDependencies = 0;
+            int blockedByColumn = 0;
+            int blockedBySpacing = 0;
             bool backfillRan = false;
             float updateMs = 0.0f;
         };
@@ -1004,6 +1013,15 @@ namespace TreeGenerationSystemLogic {
                                  int& processedSections,
                                  int& deferredByTimeBudget,
                                  int& backfillAppended,
+                                 int& scannedColumns,
+                                 int& candidateColumns,
+                                 int& placedTrees,
+                                 int& skippedOutOfSection,
+                                 int& skippedNonLand,
+                                 int& skippedMissingGround,
+                                 int& blockedByDependencies,
+                                 int& blockedByColumn,
+                                 int& blockedBySpacing,
                                  bool& backfillRan,
                                  float& updateMs) {
         pendingSections = g_treePerfStats.pendingSections;
@@ -1013,6 +1031,15 @@ namespace TreeGenerationSystemLogic {
         processedSections = g_treePerfStats.processedSections;
         deferredByTimeBudget = g_treePerfStats.deferredByTimeBudget;
         backfillAppended = g_treePerfStats.backfillAppended;
+        scannedColumns = g_treePerfStats.scannedColumns;
+        candidateColumns = g_treePerfStats.candidateColumns;
+        placedTrees = g_treePerfStats.placedTrees;
+        skippedOutOfSection = g_treePerfStats.skippedOutOfSection;
+        skippedNonLand = g_treePerfStats.skippedNonLand;
+        skippedMissingGround = g_treePerfStats.skippedMissingGround;
+        blockedByDependencies = g_treePerfStats.blockedByDependencies;
+        blockedByColumn = g_treePerfStats.blockedByColumn;
+        blockedBySpacing = g_treePerfStats.blockedBySpacing;
         backfillRan = g_treePerfStats.backfillRan;
         updateMs = g_treePerfStats.updateMs;
     }
@@ -2152,7 +2179,7 @@ namespace TreeGenerationSystemLogic {
 
         const float foliageTimeBudgetMs = std::max(0.0f, getRegistryFloat(baseSystem, "TreeFoliageMaxMsPerFrame", 0.0f));
         const float foliageSectionBudgetMs = std::max(0.0f, getRegistryFloat(baseSystem, "TreeFoliageMaxMsPerSection", 1.25f));
-        const int foliageMinSectionsBeforeTimeCap = std::max(0, getRegistryInt(baseSystem, "TreeFoliageMinSectionsPerFrame", 0));
+        const int foliageMinSectionsBeforeTimeCap = std::max(1, getRegistryInt(baseSystem, "TreeFoliageMinSectionsPerFrame", 1));
         const bool foliageImmediateExemptFromTimeBudget = getRegistryBool(
             baseSystem,
             "TreeFoliageImmediateExemptFromTimeBudget",
@@ -2169,6 +2196,15 @@ namespace TreeGenerationSystemLogic {
         int processedSections = 0;
         int deferredByTimeBudget = 0;
         int caveDecorSectionsProcessed = 0;
+        int scannedColumns = 0;
+        int candidateColumns = 0;
+        int placedTrees = 0;
+        int skippedOutOfSection = 0;
+        int skippedNonLand = 0;
+        int skippedMissingGround = 0;
+        int blockedByDependencies = 0;
+        int blockedByColumn = 0;
+        int blockedBySpacing = 0;
         for (size_t keyIndex = 0; keyIndex < dirtySections.size(); ++keyIndex) {
             if (!forceCompleteActive
                 && foliageTimeBudgetMs > 0.0f
@@ -2271,15 +2307,10 @@ namespace TreeGenerationSystemLogic {
             const int maxX = minX + sectionSize - 1;
             const int maxY = minY + sectionSize - 1;
             const int maxZ = minZ + sectionSize - 1;
-            const PineSpec scanPineSpec = scaledPineSpecForTier(baseSpec, sectionScale);
-            const int pineTreeScanMargin = pineTreeHorizontalReach(scanPineSpec);
-            const int bareTreeScanMargin = 2;
-            const int jungleTreeScanMargin = std::max(2, jungleTreeCanopyRadius);
-            const int treeScanMargin = std::max({pineTreeScanMargin, bareTreeScanMargin, jungleTreeScanMargin});
-            const int scanMinX = minX - treeScanMargin;
-            const int scanMinZ = minZ - treeScanMargin;
-            const int scanMaxX = maxX + treeScanMargin;
-            const int scanMaxZ = maxZ + treeScanMargin;
+            const int scanMinX = minX;
+            const int scanMinZ = minZ;
+            const int scanMaxX = maxX;
+            const int scanMaxZ = maxZ;
             // Keep the scan resumable so one tree-heavy section cannot monopolize the frame.
             const long long scanSpanX = static_cast<long long>(scanMaxX) - static_cast<long long>(scanMinX) + 1ll;
             const long long scanSpanZ = static_cast<long long>(scanMaxZ) - static_cast<long long>(scanMinZ) + 1ll;
@@ -2299,8 +2330,22 @@ namespace TreeGenerationSystemLogic {
             }
             treeColumnsPerSlice = static_cast<int>(std::min<long long>(treeColumnsPerSlice, fullColumns));
             const long long surfaceColumns = static_cast<long long>(sectionSize) * static_cast<long long>(sectionSize);
+            int configuredGroundColumnsPerSlice = std::max(
+                1,
+                getRegistryInt(baseSystem, "TreeFoliageGroundColumnsPerSlice", 32)
+            );
+            if (forceCompleteSection) {
+                configuredGroundColumnsPerSlice = std::max(
+                    configuredGroundColumnsPerSlice,
+                    getRegistryInt(
+                        baseSystem,
+                        "TreeFoliageForceCompleteGroundColumnsPerSlice",
+                        static_cast<int>(std::min(surfaceColumns, maxInt))
+                    )
+                );
+            }
             const int groundFoliageColumnsPerSlice = static_cast<int>(std::min<long long>(
-                std::max(1, getRegistryInt(baseSystem, "TreeFoliageGroundColumnsPerSlice", 32)),
+                configuredGroundColumnsPerSlice,
                 std::max(1ll, surfaceColumns)
             ));
 
@@ -2441,18 +2486,6 @@ namespace TreeGenerationSystemLogic {
 
             bool finishedSection = false;
             while (!finishedSection) {
-                if (!progress.surfaceFoliageSeeded) {
-                    if (!runGroundFoliagePass()) {
-                        deferSection();
-                        finishedSection = true;
-                        continue;
-                    }
-                    if (sectionTimeExceeded()) {
-                        deferSection();
-                        finishedSection = true;
-                        continue;
-                    }
-                }
                 if (progress.phase <= 0) {
                     int tierZ = progress.scanTierZ;
                     int tierX = progress.scanTierX;
@@ -2462,11 +2495,12 @@ namespace TreeGenerationSystemLogic {
                     }
                     int columnsProcessed = 0;
                     bool treeScanDone = false;
-                    while (tierZ <= scanMaxZ && columnsProcessed < treeColumnsPerSlice) {
-                        while (tierX <= scanMaxX && columnsProcessed < treeColumnsPerSlice) {
-                            columnsProcessed += 1;
-                            const int worldX = tierX * sectionScale;
-                            const int worldZ = tierZ * sectionScale;
+                        while (tierZ <= scanMaxZ && columnsProcessed < treeColumnsPerSlice) {
+                            while (tierX <= scanMaxX && columnsProcessed < treeColumnsPerSlice) {
+                                columnsProcessed += 1;
+                                scannedColumns += 1;
+                                const int worldX = tierX * sectionScale;
+                                const int worldZ = tierZ * sectionScale;
                             const int biomeID = ExpanseBiomeSystemLogic::ResolveBiome(
                                 worldCtx,
                                 static_cast<float>(worldX),
@@ -2498,6 +2532,7 @@ namespace TreeGenerationSystemLogic {
                                 tierX += 1;
                                 continue;
                             }
+                            candidateColumns += 1;
 
                             float terrainHeight = 0.0f;
                             const bool isLand = ExpanseBiomeSystemLogic::SampleTerrain(
@@ -2507,12 +2542,14 @@ namespace TreeGenerationSystemLogic {
                                 terrainHeight
                             );
                             if (!isLand) {
+                                skippedNonLand += 1;
                                 tierX += 1;
                                 continue;
                             }
                             const int groundY = floorDivInt(static_cast<int>(std::floor(terrainHeight)), sectionScale);
                             const glm::ivec3 groundCell(tierX, groundY, tierZ);
-                            if (getBlockAt(voxelWorld, groundCell) == 0u) {
+                            if (!cellBelongsToSection(groundCell, sectionCoord, sectionSize)) {
+                                skippedOutOfSection += 1;
                                 tierX += 1;
                                 continue;
                             }
@@ -2538,7 +2575,8 @@ namespace TreeGenerationSystemLogic {
                                 const int pineCanopyTopY = groundY + treeSpec.trunkHeight - treeSpec.canopyOffset
                                     + treeSpec.canopyLayers - 1;
                                 const int pineTreeMaxY = std::max(groundY + treeSpec.trunkHeight, pineCanopyTopY);
-                                if (!sectionRangeIntersectsY(minY, maxY, pineTreeMinY, pineTreeMaxY)) {
+                                if (getBlockAt(voxelWorld, groundCell) == 0u) {
+                                    skippedMissingGround += 1;
                                     tierX += 1;
                                     continue;
                                 }
@@ -2546,10 +2584,11 @@ namespace TreeGenerationSystemLogic {
                                 if (!arePineTreeSectionsReady(
                                         sectionSize,
                                         tierX,
-                                        groundY,
-                                        tierZ,
-                                        treeSpec)) {
+                                            groundY,
+                                            tierZ,
+                                            treeSpec)) {
                                     unresolvedDependencies = true;
+                                    blockedByDependencies += 1;
                                     tierX += 1;
                                     continue;
                                 }
@@ -2564,6 +2603,7 @@ namespace TreeGenerationSystemLogic {
                                                          groundY,
                                                          tierZ,
                                                          treeSpec.trunkHeight)) {
+                                    blockedByColumn += 1;
                                     tierX += 1;
                                     continue;
                                 }
@@ -2576,6 +2616,7 @@ namespace TreeGenerationSystemLogic {
                                                               groundY + 1,
                                                               tierZ,
                                                               treeSpec.trunkExclusionRadius)) {
+                                    blockedBySpacing += 1;
                                     tierX += 1;
                                     continue;
                                 }
@@ -2598,6 +2639,7 @@ namespace TreeGenerationSystemLogic {
                                                  treeSpec,
                                                  touchedSections,
                                                  modified);
+                                placedTrees += 1;
                             } else if (wantsBareTree) {
                                 const int bareTrunkID = bareTrunkProto ? bareTrunkProto->prototypeID : trunkProtoA->prototypeID;
                                 const uint32_t bareSeed = hash2D(worldX + 6097, worldZ - 2953);
@@ -2607,7 +2649,8 @@ namespace TreeGenerationSystemLogic {
                                 );
                                 const int bareTreeMinY = groundY + 1;
                                 const int bareTreeMaxY = groundY + bareTrunkHeight + 2;
-                                if (!sectionRangeIntersectsY(minY, maxY, bareTreeMinY, bareTreeMaxY)) {
+                                if (getBlockAt(voxelWorld, groundCell) == 0u) {
+                                    skippedMissingGround += 1;
                                     tierX += 1;
                                     continue;
                                 }
@@ -2616,10 +2659,11 @@ namespace TreeGenerationSystemLogic {
                                         sectionSize,
                                         tierX,
                                         groundY,
-                                        tierZ,
-                                        bareTrunkHeight,
-                                        bareSeed)) {
+                                            tierZ,
+                                            bareTrunkHeight,
+                                            bareSeed)) {
                                     unresolvedDependencies = true;
+                                    blockedByDependencies += 1;
                                     tierX += 1;
                                     continue;
                                 }
@@ -2634,6 +2678,7 @@ namespace TreeGenerationSystemLogic {
                                                          groundY,
                                                          tierZ,
                                                          bareTrunkHeight)) {
+                                    blockedByColumn += 1;
                                     tierX += 1;
                                     continue;
                                 }
@@ -2646,6 +2691,7 @@ namespace TreeGenerationSystemLogic {
                                                               groundY + 1,
                                                               tierZ,
                                                               2)) {
+                                    blockedBySpacing += 1;
                                     tierX += 1;
                                     continue;
                                 }
@@ -2678,6 +2724,7 @@ namespace TreeGenerationSystemLogic {
                                     touchedSections,
                                     modified
                                 );
+                                placedTrees += 1;
                             } else {
                                 const int jungleTrunkID = jungleTrunkProto ? jungleTrunkProto->prototypeID : trunkProtoA->prototypeID;
                                 const uint32_t jungleSeed = hash2D(worldX + 4041, worldZ - 7927);
@@ -2687,7 +2734,8 @@ namespace TreeGenerationSystemLogic {
                                 const int jungleCanopyRadius = std::max(2, jungleTreeCanopyRadius);
                                 const int jungleTreeMinY = groundY + 1;
                                 const int jungleTreeMaxY = groundY + jungleTrunkHeight + 2 + jungleCanopyRadius;
-                                if (!sectionRangeIntersectsY(minY, maxY, jungleTreeMinY, jungleTreeMaxY)) {
+                                if (getBlockAt(voxelWorld, groundCell) == 0u) {
+                                    skippedMissingGround += 1;
                                     tierX += 1;
                                     continue;
                                 }
@@ -2696,10 +2744,11 @@ namespace TreeGenerationSystemLogic {
                                         sectionSize,
                                         tierX,
                                         groundY,
-                                        tierZ,
-                                        jungleTrunkHeight,
-                                        jungleTreeCanopyRadius)) {
+                                            tierZ,
+                                            jungleTrunkHeight,
+                                            jungleTreeCanopyRadius)) {
                                     unresolvedDependencies = true;
+                                    blockedByDependencies += 1;
                                     tierX += 1;
                                     continue;
                                 }
@@ -2714,6 +2763,7 @@ namespace TreeGenerationSystemLogic {
                                                          groundY,
                                                          tierZ,
                                                          jungleTrunkHeight)) {
+                                    blockedByColumn += 1;
                                     tierX += 1;
                                     continue;
                                 }
@@ -2726,6 +2776,7 @@ namespace TreeGenerationSystemLogic {
                                                               groundY + 1,
                                                               tierZ,
                                                               2)) {
+                                    blockedBySpacing += 1;
                                     tierX += 1;
                                     continue;
                                 }
@@ -2751,6 +2802,7 @@ namespace TreeGenerationSystemLogic {
                                     touchedSections,
                                     modified
                                 );
+                                placedTrees += 1;
                             }
 
                             tierX += 1;
@@ -3074,6 +3126,15 @@ namespace TreeGenerationSystemLogic {
         g_treePerfStats.processedSections = processedSections;
         g_treePerfStats.deferredByTimeBudget = deferredByTimeBudget;
         g_treePerfStats.backfillAppended = backfillAppended;
+        g_treePerfStats.scannedColumns = scannedColumns;
+        g_treePerfStats.candidateColumns = candidateColumns;
+        g_treePerfStats.placedTrees = placedTrees;
+        g_treePerfStats.skippedOutOfSection = skippedOutOfSection;
+        g_treePerfStats.skippedNonLand = skippedNonLand;
+        g_treePerfStats.skippedMissingGround = skippedMissingGround;
+        g_treePerfStats.blockedByDependencies = blockedByDependencies;
+        g_treePerfStats.blockedByColumn = blockedByColumn;
+        g_treePerfStats.blockedBySpacing = blockedBySpacing;
         g_treePerfStats.backfillRan = backfillRan;
         g_treePerfStats.updateMs = std::chrono::duration<float, std::milli>(
             std::chrono::steady_clock::now() - updateStart

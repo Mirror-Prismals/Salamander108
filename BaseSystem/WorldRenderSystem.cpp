@@ -5,6 +5,10 @@ namespace {
         size_t frustumRejected = 0;
         size_t occlusionRejected = 0;
         size_t trimmed = 0;
+        size_t ahead = 0;
+        size_t behind = 0;
+        size_t frustumRejectedAhead = 0;
+        size_t frustumRejectedBehind = 0;
     };
 
     struct VoxelRenderSubmitStats {
@@ -264,6 +268,7 @@ namespace WorldRenderSystemLogic {
             glm::vec3 minBounds = glm::vec3(0.0f);
             glm::vec3 maxBounds = glm::vec3(0.0f);
             float dist2 = 0.0f;
+            float viewPriority = 0.0f;
         };
         std::vector<VisibleVoxelRenderSection> visibleVoxelRenderSections;
         std::vector<VisibleVoxelRenderSection> visibleFarRenderSections;
@@ -317,9 +322,20 @@ namespace WorldRenderSystemLogic {
                 if (secIt == voxelWorld.sections.end()) continue;
                 for (const VoxelRenderCluster& cluster : clusters) {
                     if (stats) ++stats->tested;
+                    const glm::vec3 center = 0.5f * (cluster.minBounds + cluster.maxBounds);
+                    const glm::vec3 delta = center - cameraPos;
+                    const float depth = glm::dot(delta, cameraForward);
+                    if (stats) {
+                        if (depth >= 0.0f) ++stats->ahead;
+                        else ++stats->behind;
+                    }
                     if (!mapViewActive
                         && !FrustumCullingSystemLogic::ShouldRenderWorldAabb(baseSystem, cluster.minBounds, cluster.maxBounds)) {
-                        if (stats) ++stats->frustumRejected;
+                        if (stats) {
+                            ++stats->frustumRejected;
+                            if (depth >= 0.0f) ++stats->frustumRejectedAhead;
+                            else ++stats->frustumRejectedBehind;
+                        }
                         continue;
                     }
                     if (!mapViewActive
@@ -328,9 +344,13 @@ namespace WorldRenderSystemLogic {
                         if (stats) ++stats->occlusionRejected;
                         continue;
                     }
-                    const glm::vec3 center = 0.5f * (cluster.minBounds + cluster.maxBounds);
-                    const glm::vec3 delta = center - cameraPos;
-                    outSections.push_back({&cluster.buffers, cluster.minBounds, cluster.maxBounds, glm::dot(delta, delta)});
+                    const float dist2 = glm::dot(delta, delta);
+                    const float lateral2 = std::max(0.0f, dist2 - depth * depth);
+                    const float positiveDepth = std::max(0.0f, depth);
+                    const float centeredViewScore = lateral2 / (positiveDepth * positiveDepth + 256.0f);
+                    const float behindPenalty = depth < -static_cast<float>(voxelSectionSizeBlocks) ? 1000000.0f : 0.0f;
+                    const float viewPriority = behindPenalty + centeredViewScore * 4096.0f + dist2 * 0.001f;
+                    outSections.push_back({&cluster.buffers, cluster.minBounds, cluster.maxBounds, dist2, viewPriority});
                     if (stats) ++stats->visible;
                 }
             }
@@ -341,6 +361,7 @@ namespace WorldRenderSystemLogic {
                     outSections.begin(),
                     outSections.end(),
                     [](const VisibleVoxelRenderSection& a, const VisibleVoxelRenderSection& b) {
+                        if (a.viewPriority != b.viewPriority) return a.viewPriority < b.viewPriority;
                         return a.dist2 < b.dist2;
                     }
                 );
@@ -367,7 +388,14 @@ namespace WorldRenderSystemLogic {
                     }
                     const glm::vec3 center = 0.5f * (cluster.minBounds + cluster.maxBounds);
                     const glm::vec3 delta = center - cameraPos;
-                    outSections.push_back({&cluster.buffers, cluster.minBounds, cluster.maxBounds, glm::dot(delta, delta)});
+                    const float dist2 = glm::dot(delta, delta);
+                    const float depth = glm::dot(delta, cameraForward);
+                    const float lateral2 = std::max(0.0f, dist2 - depth * depth);
+                    const float positiveDepth = std::max(0.0f, depth);
+                    const float centeredViewScore = lateral2 / (positiveDepth * positiveDepth + 256.0f);
+                    const float behindPenalty = depth < -static_cast<float>(voxelSectionSizeBlocks) ? 1000000.0f : 0.0f;
+                    const float viewPriority = behindPenalty + centeredViewScore * 4096.0f + dist2 * 0.001f;
+                    outSections.push_back({&cluster.buffers, cluster.minBounds, cluster.maxBounds, dist2, viewPriority});
                 }
             };
             appendVisibleClusters(baseSystem.farTerrain->bodyRenderClusters);
@@ -1393,6 +1421,10 @@ namespace WorldRenderSystemLogic {
                           << "/" << mainVoxelCollectStats.frustumRejected
                           << "/" << mainVoxelCollectStats.occlusionRejected
                           << "/" << mainVoxelCollectStats.trimmed
+                          << " mainDir=" << mainVoxelCollectStats.ahead
+                          << "/" << mainVoxelCollectStats.behind
+                          << "/" << mainVoxelCollectStats.frustumRejectedAhead
+                          << "/" << mainVoxelCollectStats.frustumRejectedBehind
                           << " refl=" << reflectionVoxelCollectStats.tested
                           << "/" << reflectionVoxelCollectStats.visible
                           << "/" << reflectionVoxelCollectStats.frustumRejected
