@@ -1,0 +1,9 @@
+{
+    "init_steps": {},
+    "update_steps": {
+        "RenderFishing": {
+            "dependencies": ["RendererContext", "WorldContext", "PlayerContext", "FishingContext"]
+        }
+    },
+    "cleanup_steps": {}
+}

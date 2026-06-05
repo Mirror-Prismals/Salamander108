@@ -1176,6 +1176,7 @@ struct FishingContext {
     bool previewBobberInitialized = false;
     glm::vec3 previewBobberPosition = glm::vec3(0.0f);
     glm::vec3 previewBobberVelocity = glm::vec3(0.0f);
+    std::string activeSaveSignature;
     std::string lastCatchText;
     float lastCatchTimer = 0.0f;
 };
@@ -1945,6 +1946,7 @@ struct PerfContext {
     std::unordered_map<std::string, double> maxMs;
     std::unordered_map<std::string, int> counts;
     std::unordered_map<std::string, int> hitchCounts;
+    std::unordered_map<std::string, double> manualFrameStepMs;
 };
 
 struct WorldSaveCatalogEntry {
@@ -1970,6 +1972,9 @@ struct WorldSaveContext {
     bool dawLoadedForActiveWorld = false;
     bool menuBuilt = false;
     bool catalogDirty = false;
+    std::string menuScreen = "main";
+    std::string menuDraftName;
+    int menuScrollOffset = 0;
     double autosaveAccumulator = 0.0;
     std::string saveRoot = "Saves";
     std::string activeWorldId;
@@ -2085,6 +2090,8 @@ namespace FarTerrainClipmapSystemLogic { void UpdateFarTerrainClipmap(BaseSystem
 namespace FrustumCullingSystemLogic {
     void UpdateFrustumCulling(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle);
     bool ShouldRenderWorldAabb(const BaseSystem&, const glm::vec3&, const glm::vec3&);
+    bool IsVoxelTerrainPlanarCullingEnabled(const BaseSystem&);
+    bool ShouldRenderVoxelTerrainAabb(const BaseSystem&, const glm::vec3&, const glm::vec3&);
     bool ShouldRenderVoxelSection(const BaseSystem&, const VoxelSection&);
     void SetDebugFrozen(BaseSystem&, bool);
     bool IsDebugFrozen(const BaseSystem&);

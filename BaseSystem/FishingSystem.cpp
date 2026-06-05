@@ -80,6 +80,15 @@ namespace FishingSystemLogic {
             return fallback;
         }
 
+        std::string getRegistryString(const BaseSystem& baseSystem, const std::string& key, const std::string& fallback) {
+            if (!baseSystem.registry) return fallback;
+            auto it = baseSystem.registry->find(key);
+            if (it == baseSystem.registry->end()) return fallback;
+            if (std::holds_alternative<std::string>(it->second)) return std::get<std::string>(it->second);
+            if (std::holds_alternative<bool>(it->second)) return std::get<bool>(it->second) ? "true" : "false";
+            return fallback;
+        }
+
         float nextRand01(FishingContext& fishing) {
             fishing.rngState = fishing.rngState * 1664525u + 1013904223u;
             return static_cast<float>((fishing.rngState >> 8) & 0x00ffffffu) / 16777216.0f;
@@ -119,6 +128,27 @@ namespace FishingSystemLogic {
             fishing.previewBobberInitialized = false;
             fishing.previewBobberPosition = glm::vec3(0.0f);
             fishing.previewBobberVelocity = glm::vec3(0.0f);
+        }
+
+        std::string currentFishingSaveSignature(const BaseSystem& baseSystem) {
+            std::string worldId = getRegistryString(baseSystem, "ActiveWorldId", "");
+            std::string dimensionId = getRegistryString(baseSystem, "ActiveDimensionId", "overworld");
+            if (baseSystem.worldSave) {
+                if (!baseSystem.worldSave->activeWorldId.empty()) worldId = baseSystem.worldSave->activeWorldId;
+                if (!baseSystem.worldSave->activeDimensionId.empty()) dimensionId = baseSystem.worldSave->activeDimensionId;
+            }
+            if (worldId.empty()) worldId = getRegistryString(baseSystem, "level", "unsaved");
+            if (dimensionId.empty()) dimensionId = "overworld";
+            return worldId + ":" + dimensionId;
+        }
+
+        void resetFishingForSaveSignature(FishingContext& fishing, const std::string& signature) {
+            clearFishingRuntime(fishing);
+            fishing.dailySchoolValid = false;
+            fishing.dailySchoolDayKey = -1;
+            fishing.dailySchoolPosition = glm::vec3(0.0f);
+            fishing.dailyFishRemaining = 0;
+            fishing.activeSaveSignature = signature;
         }
 
         void clearFishingCastState(FishingContext& fishing, bool resetRipples) {
@@ -1277,6 +1307,12 @@ namespace FishingSystemLogic {
         PlayerContext& player = *baseSystem.player;
         VoxelWorldContext& voxelWorld = *baseSystem.voxelWorld;
         FishingContext& fishing = *baseSystem.fishing;
+        const std::string saveSignature = currentFishingSaveSignature(baseSystem);
+        if (fishing.activeSaveSignature.empty()) {
+            fishing.activeSaveSignature = saveSignature;
+        } else if (fishing.activeSaveSignature != saveSignature) {
+            resetFishingForSaveSignature(fishing, saveSignature);
+        }
         auto playSfx = [&](const char* fileName, float cooldown = 0.0f) {
             triggerFishingSfx(baseSystem, std::string("Procedures/chuck/fishing/") + fileName, cooldown);
         };
@@ -2009,14 +2045,31 @@ namespace FishingSystemLogic {
         renderer.fishingVertexCount = static_cast<int>(lineVerts.size() + fillVerts.size());
         if (renderer.fishingVertexCount <= 0) return;
 
+        const bool renderToWaterSceneTarget =
+            renderer.waterSceneFBO != 0
+            && renderer.waterSceneTex != 0
+            && renderer.waterSceneWidth > 0
+            && renderer.waterSceneHeight > 0;
+        if (renderToWaterSceneTarget) {
+            renderBackend.resumeOffscreenColorPass(
+                renderer.waterSceneFBO,
+                renderer.waterSceneWidth,
+                renderer.waterSceneHeight
+            );
+        }
+
         setBlendEnabled(true);
         setBlendModeAlpha();
+        setCullEnabled(false);
         setDepthWriteEnabled(false);
         setDepthTestEnabled(true);
 
         renderer.audioRayShader->use();
+        renderer.audioRayShader->setMat4("model", glm::mat4(1.0f));
         renderer.audioRayShader->setMat4("view", player.viewMatrix);
         renderer.audioRayShader->setMat4("projection", player.projectionMatrix);
+        renderer.audioRayShader->setVec3("color", glm::vec3(1.0f));
+        renderer.audioRayShader->setFloat("opacity", 1.0f);
         PaniniProjectionSystemLogic::ApplyProjectionWarpUniforms(player, *renderer.audioRayShader);
         renderBackend.bindVertexArray(renderer.fishingVAO);
         if (!fillVerts.empty()) {
@@ -2041,6 +2094,12 @@ namespace FishingSystemLogic {
         }
 
         setDepthWriteEnabled(true);
+        setDepthTestEnabled(true);
+        setBlendEnabled(false);
+        setCullEnabled(true);
         renderBackend.unbindVertexArray();
+        if (renderToWaterSceneTarget) {
+            renderBackend.endOffscreenColorPass();
+        }
     }
 }

@@ -116,6 +116,24 @@ namespace WorldSaveSystemLogic {
             return out;
         }
 
+        std::string trimDisplayName(const std::string& value) {
+            std::string out;
+            out.reserve(value.size());
+            bool pendingSpace = false;
+            for (char c : value) {
+                const unsigned char uc = static_cast<unsigned char>(c);
+                if (std::isspace(uc)) {
+                    pendingSpace = !out.empty();
+                    continue;
+                }
+                if (pendingSpace && !out.empty()) out.push_back(' ');
+                pendingSpace = false;
+                out.push_back(c);
+            }
+            while (!out.empty() && std::isspace(static_cast<unsigned char>(out.back()))) out.pop_back();
+            return out;
+        }
+
         std::string sanitizeDimensionIdPart(std::string value) {
             std::string out;
             out.reserve(value.size());
@@ -804,13 +822,16 @@ namespace WorldSaveSystemLogic {
             return ok;
         }
 
-        bool createWorld(BaseSystem& baseSystem) {
+        bool createWorld(BaseSystem& baseSystem, const std::string& requestedDisplayName) {
             if (!baseSystem.worldSave || !baseSystem.registry) return false;
             WorldSaveContext& ctx = *baseSystem.worldSave;
             refreshCatalog(baseSystem);
 
             const int worldNumber = static_cast<int>(ctx.catalog.size()) + 1;
-            const std::string displayName = "World " + std::to_string(worldNumber);
+            std::string displayName = trimDisplayName(requestedDisplayName);
+            if (displayName.empty()) {
+                displayName = "World " + std::to_string(worldNumber);
+            }
             const std::string baseId = sanitizeWorldIdPart(displayName) + "_" + std::to_string(nowEpochSeconds());
             std::string worldId = baseId;
             int suffix = 2;
@@ -970,6 +991,201 @@ namespace WorldSaveSystemLogic {
             menuWorld.instances.push_back(std::move(text));
         }
 
+        void addMenuField(BaseSystem& baseSystem,
+                          std::vector<Entity>& prototypes,
+                          Entity& menuWorld,
+                          const std::string& controlId,
+                          const std::string& label,
+                          float centerX,
+                          float y,
+                          float halfWidth = 320.0f) {
+            const Entity* buttonProto = HostLogic::findPrototype("ActionButton", prototypes);
+            const Entity* textProto = HostLogic::findPrototype("Text", prototypes);
+            if (!buttonProto || !textProto) return;
+
+            EntityInstance panel = makeMenuInstance(
+                baseSystem,
+                buttonProto->prototypeID,
+                "ActionButton",
+                glm::vec3(centerX, y, 0.0f),
+                glm::vec3(halfWidth, 34.0f, 8.0f),
+                controlId,
+                "field"
+            );
+            panel.colorName = "ButtonFront";
+            panel.topColorName = "ButtonTopHighlight";
+            panel.sideColorName = "ButtonSideShadow";
+            panel.buttonMode = "static";
+
+            EntityInstance text = makeMenuInstance(
+                baseSystem,
+                textProto->prototypeID,
+                "Text",
+                glm::vec3(centerX, y, 0.0f),
+                glm::vec3(26.0f),
+                controlId,
+                "label"
+            );
+            text.colorName = "ButtonGlyph";
+            text.font = "AlegreyaSans-Regular.ttf";
+            text.text = label;
+            text.textType = "UIOnly";
+
+            menuWorld.instances.push_back(std::move(panel));
+            menuWorld.instances.push_back(std::move(text));
+        }
+
+        bool menuKeyJustPressed(PlatformWindowHandle win, PlatformInput::Key key) {
+            static std::unordered_map<int, bool> previous;
+            const int keyId = static_cast<int>(key);
+            const bool down = PlatformInput::IsKeyDown(win, key);
+            const bool wasDown = previous[keyId];
+            previous[keyId] = down;
+            return down && !wasDown;
+        }
+
+        void appendMenuDraftChar(WorldSaveContext& ctx, char c) {
+            if (ctx.menuDraftName.size() >= 32u) return;
+            if (c == ' ' && (ctx.menuDraftName.empty() || ctx.menuDraftName.back() == ' ')) return;
+            ctx.menuDraftName.push_back(c);
+            ctx.menuBuilt = false;
+        }
+
+        void updateCreateNameInput(BaseSystem& baseSystem, PlatformWindowHandle win) {
+            if (!baseSystem.worldSave || !baseSystem.ui || !win) return;
+            WorldSaveContext& ctx = *baseSystem.worldSave;
+            UIContext& ui = *baseSystem.ui;
+            if (ctx.menuScreen != "create") return;
+
+            if (menuKeyJustPressed(win, PlatformInput::Key::Backspace)) {
+                if (!ctx.menuDraftName.empty()) {
+                    ctx.menuDraftName.pop_back();
+                    ctx.menuBuilt = false;
+                }
+            }
+            if (menuKeyJustPressed(win, PlatformInput::Key::Escape)) {
+                ctx.menuScreen = "main";
+                ctx.menuDraftName.clear();
+                ctx.menuBuilt = false;
+                return;
+            }
+            if (menuKeyJustPressed(win, PlatformInput::Key::Enter)
+                || menuKeyJustPressed(win, PlatformInput::Key::KpEnter)) {
+                ui.pendingActionType = "WorldMenu";
+                ui.pendingActionKey = "create_confirm";
+                ui.pendingActionValue.clear();
+                ui.actionDelayFrames = 0;
+                return;
+            }
+
+            const bool shiftDown =
+                PlatformInput::IsKeyDown(win, PlatformInput::Key::LeftShift)
+                || PlatformInput::IsKeyDown(win, PlatformInput::Key::RightShift);
+            struct LetterBinding {
+                PlatformInput::Key key;
+                char lower;
+            };
+            static const LetterBinding letters[] = {
+                {PlatformInput::Key::A, 'a'}, {PlatformInput::Key::B, 'b'},
+                {PlatformInput::Key::C, 'c'}, {PlatformInput::Key::D, 'd'},
+                {PlatformInput::Key::E, 'e'}, {PlatformInput::Key::F, 'f'},
+                {PlatformInput::Key::G, 'g'}, {PlatformInput::Key::H, 'h'},
+                {PlatformInput::Key::I, 'i'}, {PlatformInput::Key::J, 'j'},
+                {PlatformInput::Key::K, 'k'}, {PlatformInput::Key::L, 'l'},
+                {PlatformInput::Key::M, 'm'}, {PlatformInput::Key::N, 'n'},
+                {PlatformInput::Key::O, 'o'}, {PlatformInput::Key::P, 'p'},
+                {PlatformInput::Key::Q, 'q'}, {PlatformInput::Key::R, 'r'},
+                {PlatformInput::Key::S, 's'}, {PlatformInput::Key::T, 't'},
+                {PlatformInput::Key::U, 'u'}, {PlatformInput::Key::V, 'v'},
+                {PlatformInput::Key::W, 'w'}, {PlatformInput::Key::X, 'x'},
+                {PlatformInput::Key::Y, 'y'}, {PlatformInput::Key::Z, 'z'}
+            };
+            for (const LetterBinding& binding : letters) {
+                if (!menuKeyJustPressed(win, binding.key)) continue;
+                char c = binding.lower;
+                if (shiftDown) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+                appendMenuDraftChar(ctx, c);
+            }
+
+            struct DigitBinding {
+                PlatformInput::Key key;
+                char value;
+            };
+            static const DigitBinding digits[] = {
+                {PlatformInput::Key::Num0, '0'}, {PlatformInput::Key::Num1, '1'},
+                {PlatformInput::Key::Num2, '2'}, {PlatformInput::Key::Num3, '3'},
+                {PlatformInput::Key::Num4, '4'}, {PlatformInput::Key::Num5, '5'},
+                {PlatformInput::Key::Num6, '6'}, {PlatformInput::Key::Num7, '7'},
+                {PlatformInput::Key::Num8, '8'}, {PlatformInput::Key::Num9, '9'}
+            };
+            for (const DigitBinding& binding : digits) {
+                if (menuKeyJustPressed(win, binding.key)) appendMenuDraftChar(ctx, binding.value);
+            }
+            if (menuKeyJustPressed(win, PlatformInput::Key::Space)) {
+                appendMenuDraftChar(ctx, ' ');
+            }
+        }
+
+        int menuVisibleWorldRows(PlatformWindowHandle win) {
+            int width = 0;
+            int height = 0;
+            PlatformInput::GetWindowSize(win, width, height);
+            (void)width;
+            if (height <= 0) height = 1080;
+            return std::clamp((height - 230) / 58, 4, 12);
+        }
+
+        void updateLoadMenuScroll(BaseSystem& baseSystem, PlatformWindowHandle win) {
+            if (!baseSystem.worldSave) return;
+            WorldSaveContext& ctx = *baseSystem.worldSave;
+            if (ctx.menuScreen != "load") return;
+            const int visibleRows = menuVisibleWorldRows(win);
+            const int maxOffset = std::max(0, static_cast<int>(ctx.catalog.size()) - visibleRows);
+            int nextOffset = std::clamp(ctx.menuScrollOffset, 0, maxOffset);
+
+            if (baseSystem.player
+                && (baseSystem.player->scrollYOffset > 0.001 || baseSystem.player->scrollYOffset < -0.001)) {
+                nextOffset += (baseSystem.player->scrollYOffset < 0.0) ? 1 : -1;
+                baseSystem.player->scrollYOffset = 0.0;
+            }
+            if (menuKeyJustPressed(win, PlatformInput::Key::ArrowDown)) nextOffset += 1;
+            if (menuKeyJustPressed(win, PlatformInput::Key::ArrowUp)) nextOffset -= 1;
+            if (menuKeyJustPressed(win, PlatformInput::Key::Escape)) {
+                ctx.menuScreen = "main";
+                ctx.menuScrollOffset = 0;
+                ctx.menuBuilt = false;
+                return;
+            }
+
+            nextOffset = std::clamp(nextOffset, 0, maxOffset);
+            if (nextOffset != ctx.menuScrollOffset) {
+                ctx.menuScrollOffset = nextOffset;
+                ctx.menuBuilt = false;
+            }
+        }
+
+        void updateMenuInput(BaseSystem& baseSystem, PlatformWindowHandle win) {
+            if (!baseSystem.worldSave || !isMenuLevel(baseSystem)) return;
+            updateCreateNameInput(baseSystem, win);
+            updateLoadMenuScroll(baseSystem, win);
+        }
+
+        void setTitleChromeVisibility(Entity& menuWorld, float centerX, bool showLogo, bool showScope) {
+            for (EntityInstance& inst : menuWorld.instances) {
+                if (inst.controlRole == "title_logo" || inst.controlId == "title_logo") {
+                    inst.position.x = centerX;
+                    inst.position.y = 200.0f;
+                    inst.size = showLogo ? glm::vec3(1690.0f, 0.0f, 0.0f) : glm::vec3(-1.0f);
+                    inst.uiState = showLogo ? "idle" : "hidden";
+                } else if (inst.controlRole == "scope_text" || inst.controlId == "scope_text_prismals") {
+                    inst.position.x = centerX;
+                    inst.position.y = 415.0f;
+                    inst.size = showScope ? glm::vec3(1060.0f, 530.0f, 0.0f) : glm::vec3(-1.0f);
+                    inst.uiState = showScope ? "idle" : "hidden";
+                }
+            }
+        }
+
         void rebuildMenuWorld(BaseSystem& baseSystem, std::vector<Entity>& prototypes, PlatformWindowHandle win) {
             if (!baseSystem.worldSave || !baseSystem.level) return;
             if (!isMenuLevel(baseSystem)) {
@@ -988,6 +1204,11 @@ namespace WorldSaveSystemLogic {
             }
             if (!menuWorld) return;
 
+            WorldSaveContext& ctx = *baseSystem.worldSave;
+            if (ctx.menuScreen != "main" && ctx.menuScreen != "create" && ctx.menuScreen != "load") {
+                ctx.menuScreen = "main";
+            }
+
             const float centerX = menuCenterX(win);
             menuWorld->instances.erase(
                 std::remove_if(menuWorld->instances.begin(), menuWorld->instances.end(), [](const EntityInstance& inst) {
@@ -997,42 +1218,122 @@ namespace WorldSaveSystemLogic {
                 menuWorld->instances.end()
             );
 
-            addMenuButton(baseSystem, prototypes, *menuWorld,
-                          "world_menu_create",
-                          "CREATE NEW WORLD",
-                          centerX,
-                          540.0f,
-                          "create",
-                          "");
-
-            if (baseSystem.worldSave->catalog.empty()) {
+            if (ctx.menuScreen == "main") {
+                setTitleChromeVisibility(*menuWorld, centerX, true, true);
+                addMenuButton(baseSystem, prototypes, *menuWorld,
+                              "world_menu_load",
+                              "LOAD WORLD",
+                              centerX,
+                              560.0f,
+                              "screen_load",
+                              "");
+                addMenuButton(baseSystem, prototypes, *menuWorld,
+                              "world_menu_create",
+                              "CREATE NEW WORLD",
+                              centerX,
+                              620.0f,
+                              "screen_create",
+                              "");
+            } else if (ctx.menuScreen == "create") {
+                setTitleChromeVisibility(*menuWorld, centerX, true, false);
                 addMenuText(baseSystem, prototypes, *menuWorld,
-                            "world_menu_empty",
-                            "NO SAVED WORLDS",
+                            "world_menu_create_heading",
+                            "CREATE NEW WORLD",
                             centerX,
-                            625.0f,
-                            22.0f,
-                            "ButtonGlyph");
-            } else {
+                            505.0f,
+                            24.0f,
+                            "White");
+                const std::string displayDraft = ctx.menuDraftName.empty()
+                    ? std::string("_")
+                    : ctx.menuDraftName + "_";
+                addMenuField(baseSystem, prototypes, *menuWorld,
+                             "world_menu_name_field",
+                             displayDraft,
+                             centerX,
+                             565.0f,
+                             320.0f);
+                addMenuButton(baseSystem, prototypes, *menuWorld,
+                              "world_menu_create_confirm",
+                              "CREATE",
+                              centerX,
+                              635.0f,
+                              "create_confirm",
+                              "",
+                              160.0f);
+                addMenuButton(baseSystem, prototypes, *menuWorld,
+                              "world_menu_back",
+                              "BACK",
+                              centerX,
+                              695.0f,
+                              "back",
+                              "",
+                              160.0f);
+            } else if (ctx.menuScreen == "load") {
+                setTitleChromeVisibility(*menuWorld, centerX, false, false);
                 addMenuText(baseSystem, prototypes, *menuWorld,
                             "world_menu_load_heading",
-                            "LOAD EXISTING WORLD",
+                            "LOAD WORLD",
                             centerX,
-                            610.0f,
-                            22.0f,
+                            115.0f,
+                            28.0f,
                             "White");
-                const int maxSlots = std::min(5, static_cast<int>(baseSystem.worldSave->catalog.size()));
-                for (int i = 0; i < maxSlots; ++i) {
-                    const WorldSaveCatalogEntry& entry = baseSystem.worldSave->catalog[static_cast<size_t>(i)];
-                    addMenuButton(baseSystem, prototypes, *menuWorld,
-                                  "world_menu_load_" + std::to_string(i),
-                                  entry.displayName,
-                                  centerX,
-                                  660.0f + static_cast<float>(i) * 54.0f,
-                                  "load",
-                                  entry.worldId,
-                                  260.0f);
+                if (ctx.catalog.empty()) {
+                    addMenuText(baseSystem, prototypes, *menuWorld,
+                                "world_menu_empty",
+                                "NO SAVED WORLDS",
+                                centerX,
+                                250.0f,
+                                22.0f,
+                                "ButtonGlyph");
+                } else {
+                    const int visibleRows = menuVisibleWorldRows(win);
+                    const int maxOffset = std::max(0, static_cast<int>(ctx.catalog.size()) - visibleRows);
+                    ctx.menuScrollOffset = std::clamp(ctx.menuScrollOffset, 0, maxOffset);
+                    const int end = std::min(static_cast<int>(ctx.catalog.size()), ctx.menuScrollOffset + visibleRows);
+                    float y = 190.0f;
+                    for (int i = ctx.menuScrollOffset; i < end; ++i) {
+                        const WorldSaveCatalogEntry& entry = ctx.catalog[static_cast<size_t>(i)];
+                        addMenuButton(baseSystem, prototypes, *menuWorld,
+                                      "world_menu_load_" + std::to_string(i),
+                                      entry.displayName,
+                                      centerX,
+                                      y,
+                                      "load",
+                                      entry.worldId,
+                                      300.0f);
+                        y += 58.0f;
+                    }
+                    if (ctx.catalog.size() > static_cast<size_t>(visibleRows)) {
+                        const std::string rangeText =
+                            std::to_string(ctx.menuScrollOffset + 1)
+                            + "-"
+                            + std::to_string(end)
+                            + " / "
+                            + std::to_string(ctx.catalog.size());
+                        addMenuText(baseSystem, prototypes, *menuWorld,
+                                    "world_menu_load_range",
+                                    rangeText,
+                                    centerX,
+                                    y + 20.0f,
+                                    18.0f,
+                                    "ButtonGlyph");
+                    }
                 }
+                int windowWidth = 0;
+                int windowHeight = 0;
+                PlatformInput::GetWindowSize(win, windowWidth, windowHeight);
+                (void)windowWidth;
+                const float backY = windowHeight > 0
+                    ? std::max(80.0f, std::min(980.0f, static_cast<float>(windowHeight) - 58.0f))
+                    : 980.0f;
+                addMenuButton(baseSystem, prototypes, *menuWorld,
+                              "world_menu_back",
+                              "BACK",
+                              centerX,
+                              backY,
+                              "back",
+                              "",
+                              160.0f);
             }
 
             if (baseSystem.ui) {
@@ -1052,8 +1353,24 @@ namespace WorldSaveSystemLogic {
             const std::string action = ui.pendingActionKey;
             const std::string value = ui.pendingActionValue;
             bool ok = false;
-            if (action == "create") {
-                ok = createWorld(baseSystem);
+            if (action == "screen_load") {
+                baseSystem.worldSave->menuScreen = "load";
+                baseSystem.worldSave->menuScrollOffset = 0;
+                baseSystem.worldSave->menuBuilt = false;
+                ok = true;
+            } else if (action == "screen_create") {
+                baseSystem.worldSave->menuScreen = "create";
+                baseSystem.worldSave->menuDraftName.clear();
+                baseSystem.worldSave->menuBuilt = false;
+                ok = true;
+            } else if (action == "back") {
+                baseSystem.worldSave->menuScreen = "main";
+                baseSystem.worldSave->menuDraftName.clear();
+                baseSystem.worldSave->menuScrollOffset = 0;
+                baseSystem.worldSave->menuBuilt = false;
+                ok = true;
+            } else if (action == "create_confirm") {
+                ok = createWorld(baseSystem, baseSystem.worldSave->menuDraftName);
                 if (ok) requestLevelSwitch(baseSystem, baseSystem.worldSave->activeLevelKey);
             } else if (action == "load") {
                 ok = loadWorld(baseSystem, value);
@@ -1235,6 +1552,7 @@ namespace WorldSaveSystemLogic {
             InitializeWorldSave(baseSystem, prototypes, 0.0f, nullptr);
         }
 
+        updateMenuInput(baseSystem, win);
         processMenuAction(baseSystem);
         rebuildMenuWorld(baseSystem, prototypes, win);
         loadDawSessionIfNeeded(baseSystem);

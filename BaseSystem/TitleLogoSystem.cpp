@@ -247,6 +247,7 @@ namespace TitleLogoSystemLogic {
         for (const auto& logoWorld : baseSystem.level->worlds) {
             for (const auto& inst : logoWorld.instances) {
                 if (!isTitleLogoInstance(inst, prototypes)) continue;
+                if (inst.uiState == "hidden" || inst.size.x < 0.0f || inst.size.y < 0.0f) continue;
                 const std::string imagePath = inst.text.empty()
                     ? registryString(baseSystem, "TitleLogoImagePath", "Procedures/assets/title_logo.png")
                     : inst.text;

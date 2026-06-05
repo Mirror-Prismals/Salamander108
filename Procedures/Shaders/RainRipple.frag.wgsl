@@ -31,6 +31,9 @@ struct Uniforms {
 @group(0) @binding(0)
 var<uniform> u: Uniforms;
 
+const RAIN_MASK_SIZE: i32 = 8;
+const RAIN_OPEN_BLOCKER_TOP_Y: f32 = -100000.0;
+
 struct FSIn {
     @location(0) texCoord: vec2<f32>,
     @location(1) shadingNormal: vec3<f32>,
@@ -115,6 +118,39 @@ fn ripples(p: vec2<f32>) -> f32 {
     return r;
 }
 
+fn rainMaskAtIndex(index: i32) -> f32 {
+    let packedIndex = index / 4;
+    let lane = index % 4;
+    let packed = u.blockDamageProgress[packedIndex];
+    if (lane == 0) {
+        return packed.x;
+    }
+    if (lane == 1) {
+        return packed.y;
+    }
+    if (lane == 2) {
+        return packed.z;
+    }
+    return packed.w;
+}
+
+fn rainMaskAtCell(x: i32, z: i32) -> f32 {
+    if (x < 0 || z < 0 || x >= RAIN_MASK_SIZE || z >= RAIN_MASK_SIZE) {
+        return RAIN_OPEN_BLOCKER_TOP_Y;
+    }
+    return rainMaskAtIndex(z * RAIN_MASK_SIZE + x);
+}
+
+fn rainExposureAt(p: vec3<f32>) -> f32 {
+    if (u.extra.z < 0.5) {
+        return 1.0;
+    }
+    let cellSize = max(u.lightAndGrid.w, 0.01);
+    let grid = floor((p.xz - u.vec2Data.xy) / cellSize);
+    let blockerTopY = rainMaskAtCell(i32(grid.x), i32(grid.y));
+    return step(blockerTopY - 0.02, p.y);
+}
+
 @fragment
 fn fs_main(input: FSIn) -> @location(0) vec4<f32> {
     let intensity = clamp(u.extra.x * max(u.extra.y, 0.0), 0.0, 2.0);
@@ -123,6 +159,10 @@ fn fs_main(input: FSIn) -> @location(0) vec4<f32> {
     }
 
     let p = input.worldPos.xz;
+    let exposure = rainExposureAt(input.worldPos);
+    if (exposure <= 0.001) {
+        discard;
+    }
     let ripple = ripples(p);
     let mask = max(0.42, puddleMask(p));
     let viewDist = length(input.worldPos - u.cameraAndScale.xyz);
@@ -130,7 +170,7 @@ fn fs_main(input: FSIn) -> @location(0) vec4<f32> {
     let viewDir = normalize(u.cameraAndScale.xyz - input.worldPos);
     let grazing = pow(1.0 - max(dot(viewDir, normalize(input.shadingNormal)), 0.0), 2.0);
 
-    var alpha = clamp(ripple * mask * (0.22 + grazing * 0.18) * distFade * intensity, 0.0, 0.42);
+    var alpha = clamp(ripple * mask * (0.22 + grazing * 0.18) * distFade * intensity * exposure, 0.0, 0.42);
     if (alpha <= 0.002) {
         discard;
     }

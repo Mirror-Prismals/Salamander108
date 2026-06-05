@@ -1,8 +1,10 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <iostream>
 #include <random>
@@ -17,6 +19,9 @@ namespace RenderInitSystemLogic {
 namespace RainSystemLogic {
     namespace {
         constexpr int kTopWaterFaceType = 2;
+        constexpr int kRainMaskGridSize = 8;
+        constexpr int kRainMaskCellCount = kRainMaskGridSize * kRainMaskGridSize;
+        constexpr float kRainOpenBlockerTopY = -100000.0f;
 
         struct VisibleRainWaterSection {
             const ChunkRenderBuffers* buffers = nullptr;
@@ -31,6 +36,11 @@ namespace RainSystemLogic {
             uint32_t seed = 0;
             float visualIntensity = 0.0f;
             bool warnedMissingShaders = false;
+            std::array<float, kRainMaskCellCount> rainBlockerTopY{};
+            glm::vec2 rainMaskOrigin = glm::vec2(0.0f);
+            float rainMaskCellSize = 4.0f;
+            int rainMaskFrameCountdown = 0;
+            bool rainMaskValid = false;
         };
 
         RainState& rainState() {
@@ -108,6 +118,21 @@ namespace RainSystemLogic {
         void setRegistryString(BaseSystem& baseSystem, const std::string& key, const std::string& value) {
             if (!baseSystem.registry) return;
             (*baseSystem.registry)[key] = value;
+        }
+
+        std::chrono::steady_clock::time_point rainPerfNow() {
+            return std::chrono::steady_clock::now();
+        }
+
+        double rainPerfElapsedMs(std::chrono::steady_clock::time_point start) {
+            return std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - start
+            ).count();
+        }
+
+        void recordRainPerfStep(BaseSystem& baseSystem, const std::string& name, double elapsedMs) {
+            if (!baseSystem.perf || !baseSystem.perf->enabled || elapsedMs <= 0.0) return;
+            baseSystem.perf->manualFrameStepMs[name] += elapsedMs;
         }
 
         uint32_t makeWeatherSeed() {
@@ -223,6 +248,149 @@ namespace RainSystemLogic {
             });
         }
 
+        bool isWaterLikePrototypeName(const std::string& name) {
+            return name == "Water" || name.rfind("WaterSlope", 0) == 0;
+        }
+
+        bool isLeafRainBlockerName(const std::string& name) {
+            return name == "Leaf"
+                || name.rfind("LeafJungle", 0) == 0
+                || name.find("LeafBlock") != std::string::npos;
+        }
+
+        bool prototypeBlocksRain(const std::vector<Entity>& prototypes, uint32_t prototypeId) {
+            if (prototypeId == 0u) return false;
+            if (prototypeId >= prototypes.size()) return true;
+            const Entity& proto = prototypes[static_cast<size_t>(prototypeId)];
+            if (!proto.isBlock) return false;
+            if (isWaterLikePrototypeName(proto.name)) return false;
+            return proto.isSolid || proto.isOpaque || isLeafRainBlockerName(proto.name);
+        }
+
+        int rainFloorDivInt(int value, int divisor) {
+            if (divisor <= 0) return 0;
+            if (value >= 0) return value / divisor;
+            return -(((-value) + divisor - 1) / divisor);
+        }
+
+        float rainColumnBlockerTopY(const BaseSystem& baseSystem,
+                                    const std::vector<Entity>& prototypes,
+                                    int x,
+                                    int z) {
+            if (!baseSystem.voxelWorld) return kRainOpenBlockerTopY;
+            const VoxelWorldContext& voxelWorld = *baseSystem.voxelWorld;
+            const int size = std::max(1, voxelWorld.sectionSize);
+            const VoxelColumnKey columnKey{glm::ivec2(
+                rainFloorDivInt(x, size),
+                rainFloorDivInt(z, size)
+            )};
+            const auto columnIt = voxelWorld.columns.find(columnKey);
+            if (columnIt == voxelWorld.columns.end()) return kRainOpenBlockerTopY;
+
+            const VoxelColumn& column = columnIt->second;
+            const int height = std::max(0, column.maxYExclusive - column.minY);
+            if (column.chunkSize <= 0 || height <= 0 || column.ids.empty()) return kRainOpenBlockerTopY;
+
+            const int localX = x - columnKey.coord.x * size;
+            const int localZ = z - columnKey.coord.y * size;
+            if (localX < 0 || localX >= column.chunkSize || localZ < 0 || localZ >= column.chunkSize) {
+                return kRainOpenBlockerTopY;
+            }
+
+            const int scanMinY = std::max(voxelWorld.columnMinY, column.minY);
+            const int scanMaxY = std::min(voxelWorld.columnMaxYExclusive, column.maxYExclusive) - 1;
+            if (scanMaxY < scanMinY) return kRainOpenBlockerTopY;
+
+            int idx = localX
+                + (scanMaxY - column.minY) * column.chunkSize
+                + localZ * column.chunkSize * height;
+            for (int y = scanMaxY; y >= scanMinY; --y, idx -= column.chunkSize) {
+                if (idx < 0 || idx >= static_cast<int>(column.ids.size())) continue;
+                const uint32_t id = column.ids[static_cast<size_t>(idx)];
+                if (prototypeBlocksRain(prototypes, id)) {
+                    return static_cast<float>(y + 1);
+                }
+            }
+            return kRainOpenBlockerTopY;
+        }
+
+        bool updateRainExposureMask(BaseSystem& baseSystem,
+                                    const std::vector<Entity>& prototypes,
+                                    RainState& state,
+                                    const glm::vec3& cameraPos) {
+            const bool enabled = registryBool(
+                baseSystem,
+                "RainMaskEnabled",
+                registryBool(baseSystem, "RainDownpourMaskEnabled", true)
+            );
+            if (!enabled || !baseSystem.voxelWorld) {
+                state.rainMaskValid = false;
+                state.rainBlockerTopY.fill(kRainOpenBlockerTopY);
+                return false;
+            }
+
+            const float cellSize = glm::clamp(
+                registryFloat(baseSystem, "RainDownpourMaskCellSize", 4.0f),
+                1.0f,
+                12.0f
+            );
+            const float span = cellSize * static_cast<float>(kRainMaskGridSize);
+            const glm::vec2 origin(
+                std::floor((cameraPos.x - span * 0.5f) / cellSize) * cellSize,
+                std::floor((cameraPos.z - span * 0.5f) / cellSize) * cellSize
+            );
+            const int refreshFrames = std::clamp(
+                registryInt(baseSystem, "RainDownpourMaskRefreshFrames", 6),
+                1,
+                120
+            );
+
+            if (state.rainMaskFrameCountdown > 0) {
+                state.rainMaskFrameCountdown -= 1;
+            }
+            const bool sameGrid =
+                state.rainMaskValid
+                && std::abs(state.rainMaskOrigin.x - origin.x) < 0.001f
+                && std::abs(state.rainMaskOrigin.y - origin.y) < 0.001f
+                && std::abs(state.rainMaskCellSize - cellSize) < 0.001f;
+            if (sameGrid && state.rainMaskFrameCountdown > 0) {
+                return true;
+            }
+
+            state.rainMaskOrigin = origin;
+            state.rainMaskCellSize = cellSize;
+            state.rainMaskFrameCountdown = refreshFrames;
+            state.rainMaskValid = true;
+
+            for (int z = 0; z < kRainMaskGridSize; ++z) {
+                for (int x = 0; x < kRainMaskGridSize; ++x) {
+                    const float sampleX = origin.x + (static_cast<float>(x) + 0.5f) * cellSize;
+                    const float sampleZ = origin.y + (static_cast<float>(z) + 0.5f) * cellSize;
+                    state.rainBlockerTopY[static_cast<size_t>(z * kRainMaskGridSize + x)] =
+                        rainColumnBlockerTopY(
+                            baseSystem,
+                            prototypes,
+                            static_cast<int>(std::floor(sampleX)),
+                            static_cast<int>(std::floor(sampleZ))
+                        );
+                }
+            }
+            return true;
+        }
+
+        void applyRainExposureMaskUniforms(Shader& shader, const RainState& state, bool maskEnabled) {
+            shader.setVec2("lightPos", state.rainMaskOrigin);
+            shader.setFloat("blockDamageGrid", state.rainMaskCellSize);
+            shader.setFloat("samples", maskEnabled ? 1.0f : 0.0f);
+            if (!maskEnabled) return;
+            const int progressLoc = shader.findUniform("blockDamageProgress");
+            shader.setFloatArrayUniform(
+                progressLoc,
+                kRainMaskCellCount,
+                state.rainBlockerTopY.data()
+            );
+        }
+
         void resolveCamera(const BaseSystem& baseSystem,
                            glm::mat4& outView,
                            glm::mat4& outProjection,
@@ -276,6 +444,8 @@ namespace RainSystemLogic {
         }
 
         void drawWaterRipples(BaseSystem& baseSystem,
+                              const RainState& state,
+                              bool rainMaskEnabled,
                               RendererContext& renderer,
                               IRenderBackend& renderBackend,
                               const PlayerContext& player,
@@ -304,8 +474,13 @@ namespace RainSystemLogic {
             shader.setVec2("uResolution", glm::vec2(static_cast<float>(targetSize.x), static_cast<float>(targetSize.y)));
             shader.setInt("ready", 1);
             shader.setInt("faceType", kTopWaterFaceType);
+            applyRainExposureMaskUniforms(
+                shader,
+                state,
+                rainMaskEnabled && registryBool(baseSystem, "RainRippleSkyCheckEnabled", true)
+            );
 
-            renderBackend.setDepthTestEnabled(false);
+            renderBackend.setDepthTestEnabled(true);
             renderBackend.setDepthWriteEnabled(false);
             renderBackend.setBlendEnabled(true);
             renderBackend.setBlendModeAlpha();
@@ -321,7 +496,9 @@ namespace RainSystemLogic {
             renderBackend.unbindVertexArray();
         }
 
-        void drawRainStreaks(const BaseSystem& baseSystem,
+        void drawRainStreaks(BaseSystem& baseSystem,
+                             const RainState& state,
+                             bool rainMaskEnabled,
                              RendererContext& renderer,
                              IRenderBackend& renderBackend,
                              const PlayerContext& player,
@@ -344,7 +521,13 @@ namespace RainSystemLogic {
             shader.setFloat("time", time);
             shader.setFloat("density", intensity);
             shader.setFloat("weight", registryBool(baseSystem, "RainScreenStreaksEnabled", false) ? 1.0f : 0.0f);
+            applyRainExposureMaskUniforms(
+                shader,
+                state,
+                rainMaskEnabled && registryBool(baseSystem, "RainDownpourSkyCheckEnabled", true)
+            );
 
+            const auto drawStart = rainPerfNow();
             renderBackend.setDepthTestEnabled(false);
             renderBackend.setDepthWriteEnabled(false);
             renderBackend.setBlendEnabled(true);
@@ -353,11 +536,11 @@ namespace RainSystemLogic {
             renderBackend.bindVertexArray(renderer.godrayQuadVAO);
             renderBackend.drawArraysTriangles(0, 6);
             renderBackend.unbindVertexArray();
+            recordRainPerfStep(baseSystem, "RenderRainDownpourDraw", rainPerfElapsedMs(drawStart));
         }
     }
 
     void RenderRain(BaseSystem& baseSystem, std::vector<Entity>& prototypes, float dt, PlatformWindowHandle win) {
-        (void)prototypes;
         if (!baseSystem.renderer || !baseSystem.world || !baseSystem.player || !baseSystem.renderBackend) return;
 
         RainState& state = rainState();
@@ -404,6 +587,19 @@ namespace RainSystemLogic {
         if (state.visualIntensity <= 0.002f) return;
         if (!renderer.rainFullscreenShader || !renderer.rainRippleShader) return;
 
+        const bool renderToWaterSceneTarget =
+            renderer.waterSceneFBO != 0
+            && renderer.waterSceneTex != 0
+            && renderer.waterSceneWidth > 0
+            && renderer.waterSceneHeight > 0;
+        if (renderToWaterSceneTarget) {
+            renderBackend.resumeOffscreenColorPass(
+                renderer.waterSceneFBO,
+                renderer.waterSceneWidth,
+                renderer.waterSceneHeight
+            );
+        }
+
         glm::mat4 view(1.0f);
         glm::mat4 projection(1.0f);
         glm::vec3 cameraPos(0.0f);
@@ -413,12 +609,24 @@ namespace RainSystemLogic {
         const float time = static_cast<float>(PlatformInput::GetTimeSeconds());
         const float intensity = glm::clamp(state.visualIntensity, 0.0f, 2.0f);
 
-        drawWaterRipples(baseSystem, renderer, renderBackend, player, view, projection, cameraPos, targetSize, time, intensity);
-        drawRainStreaks(baseSystem, renderer, renderBackend, player, view, projection, cameraPos, targetSize, time, intensity);
+        const auto maskStart = rainPerfNow();
+        const bool rainMaskEnabled = updateRainExposureMask(baseSystem, prototypes, state, cameraPos);
+        recordRainPerfStep(baseSystem, "RenderRainMask", rainPerfElapsedMs(maskStart));
+
+        const auto rippleStart = rainPerfNow();
+        drawWaterRipples(baseSystem, state, rainMaskEnabled, renderer, renderBackend, player, view, projection, cameraPos, targetSize, time, intensity);
+        recordRainPerfStep(baseSystem, "RenderRainRipples", rainPerfElapsedMs(rippleStart));
+
+        const auto downpourStart = rainPerfNow();
+        drawRainStreaks(baseSystem, state, rainMaskEnabled, renderer, renderBackend, player, view, projection, cameraPos, targetSize, time, intensity);
+        recordRainPerfStep(baseSystem, "RenderRainDownpour", rainPerfElapsedMs(downpourStart));
 
         renderBackend.setCullEnabled(true);
         renderBackend.setBlendEnabled(false);
         renderBackend.setDepthWriteEnabled(true);
         renderBackend.setDepthTestEnabled(true);
+        if (renderToWaterSceneTarget) {
+            renderBackend.endOffscreenColorPass();
+        }
     }
 }

@@ -499,6 +499,7 @@ namespace ScopeTextSystemLogic {
         for (const auto& scopeWorld : baseSystem.level->worlds) {
             for (const auto& inst : scopeWorld.instances) {
                 if (!isScopeTextInstance(inst, prototypes)) continue;
+                if (inst.uiState == "hidden" || inst.size.x < 0.0f || inst.size.y < 0.0f) continue;
                 found = true;
 
                 const std::string phrase = inst.text.empty() ? defaultPhrase : inst.text;

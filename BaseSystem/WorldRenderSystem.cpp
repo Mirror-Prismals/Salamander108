@@ -307,6 +307,37 @@ namespace WorldRenderSystemLogic {
                 : ((voxelRenderMaxVisibleSections > 0)
                     ? voxelRenderMaxVisibleSections * voxelClustersPerSection
                     : 0);
+        const bool voxelTerrainPlanarCulling =
+            FrustumCullingSystemLogic::IsVoxelTerrainPlanarCullingEnabled(baseSystem);
+        glm::vec2 voxelTerrainForwardXZ(cameraForward.x, cameraForward.z);
+        const float voxelTerrainForwardLen2 = glm::dot(voxelTerrainForwardXZ, voxelTerrainForwardXZ);
+        if (voxelTerrainForwardLen2 > 1e-6f) {
+            voxelTerrainForwardXZ /= std::sqrt(voxelTerrainForwardLen2);
+        } else {
+            voxelTerrainForwardXZ = glm::vec2(std::cos(glm::radians(player.cameraYaw)),
+                                              std::sin(glm::radians(player.cameraYaw)));
+        }
+        auto voxelTerrainViewPriority = [&](const glm::vec3& cameraPos,
+                                            const glm::vec3& center,
+                                            const glm::vec3& delta,
+                                            float dist2) {
+            if (voxelTerrainPlanarCulling) {
+                const glm::vec2 deltaXZ(center.x - cameraPos.x, center.z - cameraPos.z);
+                const float planarDist2 = glm::dot(deltaXZ, deltaXZ);
+                const float depth = glm::dot(deltaXZ, voxelTerrainForwardXZ);
+                const float lateral2 = std::max(0.0f, planarDist2 - depth * depth);
+                const float positiveDepth = std::max(0.0f, depth);
+                const float centeredViewScore = lateral2 / (positiveDepth * positiveDepth + 256.0f);
+                const float behindPenalty = depth < -static_cast<float>(voxelSectionSizeBlocks) ? 1000000.0f : 0.0f;
+                return behindPenalty + centeredViewScore * 4096.0f + planarDist2 * 0.001f;
+            }
+            const float depth = glm::dot(delta, cameraForward);
+            const float lateral2 = std::max(0.0f, dist2 - depth * depth);
+            const float positiveDepth = std::max(0.0f, depth);
+            const float centeredViewScore = lateral2 / (positiveDepth * positiveDepth + 256.0f);
+            const float behindPenalty = depth < -static_cast<float>(voxelSectionSizeBlocks) ? 1000000.0f : 0.0f;
+            return behindPenalty + centeredViewScore * 4096.0f + dist2 * 0.001f;
+        };
         auto collectVisibleVoxelRenderSections = [&](const glm::vec3& cameraPos,
                                                      std::vector<VisibleVoxelRenderSection>& outSections,
                                                      VoxelRenderCollectStats* stats) {
@@ -330,7 +361,7 @@ namespace WorldRenderSystemLogic {
                         else ++stats->behind;
                     }
                     if (!mapViewActive
-                        && !FrustumCullingSystemLogic::ShouldRenderWorldAabb(baseSystem, cluster.minBounds, cluster.maxBounds)) {
+                        && !FrustumCullingSystemLogic::ShouldRenderVoxelTerrainAabb(baseSystem, cluster.minBounds, cluster.maxBounds)) {
                         if (stats) {
                             ++stats->frustumRejected;
                             if (depth >= 0.0f) ++stats->frustumRejectedAhead;
@@ -345,11 +376,7 @@ namespace WorldRenderSystemLogic {
                         continue;
                     }
                     const float dist2 = glm::dot(delta, delta);
-                    const float lateral2 = std::max(0.0f, dist2 - depth * depth);
-                    const float positiveDepth = std::max(0.0f, depth);
-                    const float centeredViewScore = lateral2 / (positiveDepth * positiveDepth + 256.0f);
-                    const float behindPenalty = depth < -static_cast<float>(voxelSectionSizeBlocks) ? 1000000.0f : 0.0f;
-                    const float viewPriority = behindPenalty + centeredViewScore * 4096.0f + dist2 * 0.001f;
+                    const float viewPriority = voxelTerrainViewPriority(cameraPos, center, delta, dist2);
                     outSections.push_back({&cluster.buffers, cluster.minBounds, cluster.maxBounds, dist2, viewPriority});
                     if (stats) ++stats->visible;
                 }

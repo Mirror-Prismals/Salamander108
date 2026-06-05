@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cmath>
+
 namespace FrustumCullingSystemLogic {
     namespace {
         void extractFrustumPlanes(const glm::mat4& viewProj, std::array<glm::vec4, 6>& planes);
@@ -56,6 +58,71 @@ namespace FrustumCullingSystemLogic {
                 if (glm::dot(n, positive) + plane.w < 0.0f) return false;
             }
             return true;
+        }
+
+        bool pointPassesPlanarView(const glm::vec2& cameraXZ,
+                                   const glm::vec2& forwardXZ,
+                                   float nearRadiusSq,
+                                   float cosHalfAngle,
+                                   const glm::vec2& point) {
+            const glm::vec2 delta = point - cameraXZ;
+            const float dist2 = glm::dot(delta, delta);
+            if (dist2 <= nearRadiusSq) return true;
+            if (dist2 <= 1e-6f) return true;
+            const float invDist = 1.0f / std::sqrt(dist2);
+            return glm::dot(delta * invDist, forwardXZ) >= cosHalfAngle;
+        }
+
+        bool aabbIntersectsPlanarTerrainView(const BaseSystem& baseSystem,
+                                             const glm::vec3& minB,
+                                             const glm::vec3& maxB) {
+            if (!baseSystem.player) return true;
+
+            const glm::vec3 cameraPos = GetCullingCameraPosition(baseSystem);
+            const glm::vec2 cameraXZ(cameraPos.x, cameraPos.z);
+            const float yawRadians = glm::radians(GetCullingCameraYaw(baseSystem));
+            glm::vec2 forwardXZ(std::cos(yawRadians), std::sin(yawRadians));
+            const float forwardLen2 = glm::dot(forwardXZ, forwardXZ);
+            if (forwardLen2 > 1e-6f) {
+                forwardXZ /= std::sqrt(forwardLen2);
+            } else {
+                forwardXZ = glm::vec2(0.0f, -1.0f);
+            }
+
+            const float defaultNearRadius = std::max(
+                0.0f,
+                RenderInitSystemLogic::getRegistryFloat(baseSystem, "voxelCpuViewNearRadiusBlocks", 96.0f)
+            );
+            const float nearRadius = std::max(
+                0.0f,
+                RenderInitSystemLogic::getRegistryFloat(baseSystem, "voxelTerrainPlanarNearRadiusBlocks", defaultNearRadius)
+            );
+            const float halfAngleDegrees = glm::clamp(
+                RenderInitSystemLogic::getRegistryFloat(baseSystem, "voxelTerrainPlanarHalfAngleDegrees", 120.0f),
+                1.0f,
+                180.0f
+            );
+            const float margin = std::max(
+                0.0f,
+                RenderInitSystemLogic::getRegistryFloat(
+                    baseSystem,
+                    "voxelTerrainPlanarMarginBlocks",
+                    baseSystem.frustumCulling ? baseSystem.frustumCulling->margin : 24.0f
+                )
+            );
+            const float minX = minB.x - margin;
+            const float maxX = maxB.x + margin;
+            const float minZ = minB.z - margin;
+            const float maxZ = maxB.z + margin;
+            const glm::vec2 center((minX + maxX) * 0.5f, (minZ + maxZ) * 0.5f);
+            const float nearRadiusSq = nearRadius * nearRadius;
+            const float cosHalfAngle = std::cos(glm::radians(halfAngleDegrees));
+
+            if (pointPassesPlanarView(cameraXZ, forwardXZ, nearRadiusSq, cosHalfAngle, center)) return true;
+            if (pointPassesPlanarView(cameraXZ, forwardXZ, nearRadiusSq, cosHalfAngle, glm::vec2(minX, minZ))) return true;
+            if (pointPassesPlanarView(cameraXZ, forwardXZ, nearRadiusSq, cosHalfAngle, glm::vec2(maxX, minZ))) return true;
+            if (pointPassesPlanarView(cameraXZ, forwardXZ, nearRadiusSq, cosHalfAngle, glm::vec2(minX, maxZ))) return true;
+            return pointPassesPlanarView(cameraXZ, forwardXZ, nearRadiusSq, cosHalfAngle, glm::vec2(maxX, maxZ));
         }
     }
 
@@ -153,6 +220,18 @@ namespace FrustumCullingSystemLogic {
         return aabbIntersectsFrustum(frustum.planes, minB, maxB, frustum.margin);
     }
 
+    bool IsVoxelTerrainPlanarCullingEnabled(const BaseSystem& baseSystem) {
+        return RenderInitSystemLogic::getRegistryBool(baseSystem, "voxelTerrainPlanarCullingEnabled", false);
+    }
+
+    bool ShouldRenderVoxelTerrainAabb(const BaseSystem& baseSystem, const glm::vec3& minB, const glm::vec3& maxB) {
+        if (baseSystem.frustumCulling && !baseSystem.frustumCulling->enabled) return true;
+        if (IsVoxelTerrainPlanarCullingEnabled(baseSystem)) {
+            return aabbIntersectsPlanarTerrainView(baseSystem, minB, maxB);
+        }
+        return ShouldRenderWorldAabb(baseSystem, minB, maxB);
+    }
+
     bool ShouldRenderVoxelSection(const BaseSystem& baseSystem, const VoxelSection& section) {
         const glm::vec3 minB(
             static_cast<float>(section.coord.x * section.size),
@@ -160,6 +239,6 @@ namespace FrustumCullingSystemLogic {
             static_cast<float>(section.coord.z * section.size)
         );
         const glm::vec3 maxB = minB + glm::vec3(static_cast<float>(section.size));
-        return ShouldRenderWorldAabb(baseSystem, minB, maxB);
+        return ShouldRenderVoxelTerrainAabb(baseSystem, minB, maxB);
     }
 }

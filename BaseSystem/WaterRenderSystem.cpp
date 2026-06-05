@@ -1,6 +1,11 @@
+#include <algorithm>
+#include <cmath>
 #include <string>
 
-namespace RenderInitSystemLogic { bool getRegistryBool(const BaseSystem& baseSystem, const std::string& key, bool fallback); }
+namespace RenderInitSystemLogic {
+    bool getRegistryBool(const BaseSystem& baseSystem, const std::string& key, bool fallback);
+    int getRegistryInt(const BaseSystem& baseSystem, const std::string& key, int fallback);
+}
 
 namespace {
     struct VisibleWaterSection {
@@ -8,6 +13,7 @@ namespace {
         glm::vec3 minBounds = glm::vec3(0.0f);
         glm::vec3 maxBounds = glm::vec3(0.0f);
         float dist2 = 0.0f;
+        float viewPriority = 0.0f;
     };
 
     bool chunkHasWaterBuffers(const ChunkRenderBuffers& buffers) {
@@ -45,6 +51,63 @@ namespace {
                                      const glm::vec3& cameraPos,
                                      std::vector<VisibleWaterSection>& outSections) {
         outSections.clear();
+        const bool useTerrainVisibility = RenderInitSystemLogic::getRegistryBool(
+            baseSystem,
+            "voxelWaterUsesTerrainVisibility",
+            true
+        );
+        const int waterMaxVisibleClusters = std::max(
+            0,
+            RenderInitSystemLogic::getRegistryInt(
+                baseSystem,
+                "voxelWaterMaxVisibleClusters",
+                RenderInitSystemLogic::getRegistryInt(baseSystem, "voxelRenderMaxVisibleClusters", 0)
+            )
+        );
+        const int voxelSectionSizeBlocks = baseSystem.voxelWorld
+            ? std::max(1, baseSystem.voxelWorld->sectionSize)
+            : 16;
+        glm::vec3 cameraForward(0.0f, 0.0f, -1.0f);
+        if (baseSystem.player) {
+            cameraForward.x = std::cos(glm::radians(baseSystem.player->cameraYaw))
+                * std::cos(glm::radians(baseSystem.player->cameraPitch));
+            cameraForward.y = std::sin(glm::radians(baseSystem.player->cameraPitch));
+            cameraForward.z = std::sin(glm::radians(baseSystem.player->cameraYaw))
+                * std::cos(glm::radians(baseSystem.player->cameraPitch));
+            if (glm::dot(cameraForward, cameraForward) > 1e-6f) {
+                cameraForward = glm::normalize(cameraForward);
+            }
+        }
+        const bool planarTerrainCulling =
+            FrustumCullingSystemLogic::IsVoxelTerrainPlanarCullingEnabled(baseSystem);
+        glm::vec2 planarForward(cameraForward.x, cameraForward.z);
+        const float planarForwardLen2 = glm::dot(planarForward, planarForward);
+        if (planarForwardLen2 > 1e-6f) {
+            planarForward /= std::sqrt(planarForwardLen2);
+        } else if (baseSystem.player) {
+            planarForward = glm::vec2(std::cos(glm::radians(baseSystem.player->cameraYaw)),
+                                      std::sin(glm::radians(baseSystem.player->cameraYaw)));
+        } else {
+            planarForward = glm::vec2(0.0f, -1.0f);
+        }
+        auto waterViewPriority = [&](const glm::vec3& center, const glm::vec3& delta, float dist2) {
+            if (planarTerrainCulling) {
+                const glm::vec2 deltaXZ(center.x - cameraPos.x, center.z - cameraPos.z);
+                const float planarDist2 = glm::dot(deltaXZ, deltaXZ);
+                const float depth = glm::dot(deltaXZ, planarForward);
+                const float lateral2 = std::max(0.0f, planarDist2 - depth * depth);
+                const float positiveDepth = std::max(0.0f, depth);
+                const float centeredViewScore = lateral2 / (positiveDepth * positiveDepth + 256.0f);
+                const float behindPenalty = depth < -static_cast<float>(voxelSectionSizeBlocks) ? 1000000.0f : 0.0f;
+                return behindPenalty + centeredViewScore * 4096.0f + planarDist2 * 0.001f;
+            }
+            const float depth = glm::dot(delta, cameraForward);
+            const float lateral2 = std::max(0.0f, dist2 - depth * depth);
+            const float positiveDepth = std::max(0.0f, depth);
+            const float centeredViewScore = lateral2 / (positiveDepth * positiveDepth + 256.0f);
+            const float behindPenalty = depth < -static_cast<float>(voxelSectionSizeBlocks) ? 1000000.0f : 0.0f;
+            return behindPenalty + centeredViewScore * 4096.0f + dist2 * 0.001f;
+        };
         size_t clusterCapacity = 0;
         if (baseSystem.voxelRender) {
             for (const auto& [_, clusters] : baseSystem.voxelRender->renderClusters) clusterCapacity += clusters.size();
@@ -58,7 +121,10 @@ namespace {
 
         auto appendCluster = [&](const VoxelRenderCluster& cluster) {
             if (!chunkHasWaterBuffers(cluster.buffers)) return;
-            if (!FrustumCullingSystemLogic::ShouldRenderWorldAabb(baseSystem, cluster.minBounds, cluster.maxBounds)) {
+            const bool visible = useTerrainVisibility
+                ? FrustumCullingSystemLogic::ShouldRenderVoxelTerrainAabb(baseSystem, cluster.minBounds, cluster.maxBounds)
+                : FrustumCullingSystemLogic::ShouldRenderWorldAabb(baseSystem, cluster.minBounds, cluster.maxBounds);
+            if (!visible) {
                 return;
             }
             if (OcclusionCullingSystemLogic::IsWorldAabbOccluded(baseSystem, cluster.minBounds, cluster.maxBounds)) {
@@ -66,7 +132,14 @@ namespace {
             }
             const glm::vec3 center = 0.5f * (cluster.minBounds + cluster.maxBounds);
             const glm::vec3 delta = center - cameraPos;
-            outSections.push_back({&cluster.buffers, cluster.minBounds, cluster.maxBounds, glm::dot(delta, delta)});
+            const float dist2 = glm::dot(delta, delta);
+            outSections.push_back({
+                &cluster.buffers,
+                cluster.minBounds,
+                cluster.maxBounds,
+                dist2,
+                waterViewPriority(center, delta, dist2)
+            });
         };
 
         if (baseSystem.voxelWorld && baseSystem.voxelRender) {
@@ -89,6 +162,18 @@ namespace {
             };
             appendFarClusters(baseSystem.farTerrain->bodyRenderClusters);
             appendFarClusters(baseSystem.farTerrain->handoffRenderClusters);
+        }
+
+        if (waterMaxVisibleClusters > 0 && static_cast<int>(outSections.size()) > waterMaxVisibleClusters) {
+            std::sort(
+                outSections.begin(),
+                outSections.end(),
+                [](const VisibleWaterSection& a, const VisibleWaterSection& b) {
+                    if (a.viewPriority != b.viewPriority) return a.viewPriority < b.viewPriority;
+                    return a.dist2 < b.dist2;
+                }
+            );
+            outSections.resize(static_cast<size_t>(waterMaxVisibleClusters));
         }
     }
 

@@ -2329,6 +2329,10 @@ void WebGPUBackend::setShaderUniformFloat(int location, float value) {
         prog.uniforms.time = value;
         return;
     }
+    if (lower.find("samples") != std::string::npos) {
+        prog.uniforms.samples = value;
+        return;
+    }
     if (lower.find("emotionintensity") != std::string::npos) {
         prog.uniforms.mapZoom = value;
         return;

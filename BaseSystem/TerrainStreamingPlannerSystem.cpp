@@ -240,6 +240,8 @@ namespace TerrainSystemLogic {
             int lastRadius = std::numeric_limits<int>::min();
             int lastCpuViewYawBucket = std::numeric_limits<int>::min();
             bool lastCpuViewCullingEnabled = false;
+            bool lastCpuViewMotionLookaheadEnabled = false;
+            glm::ivec2 lastCpuViewMotionColumn = glm::ivec2(std::numeric_limits<int>::min());
             bool pendingDesiredRebuild = true;
         };
 
@@ -982,10 +984,14 @@ namespace TerrainSystemLogic {
             return voxelWorld.sectionSize > 0 ? voxelWorld.sectionSize : 1;
         }
 
-        int streamRadiusWorld(const VoxelWorldContext& voxelWorld) {
-            constexpr int kStreamRadiusChunks = 6;
+        int streamRadiusWorld(const BaseSystem& baseSystem, const VoxelWorldContext& voxelWorld) {
+            const int streamRadiusChunks = std::clamp(
+                getRegistryInt(baseSystem, "voxelStreamRadiusChunks", 6),
+                0,
+                64
+            );
             const long long span = static_cast<long long>(sectionSizeForSection(voxelWorld));
-            long long radius = span * static_cast<long long>(kStreamRadiusChunks);
+            long long radius = span * static_cast<long long>(streamRadiusChunks);
             if (radius > 2000000000LL) radius = 2000000000LL;
             return static_cast<int>(radius);
         }
@@ -996,6 +1002,10 @@ namespace TerrainSystemLogic {
             glm::vec2 forwardXZ{0.0f, -1.0f};
             float nearRadiusSq = 0.0f;
             float cosHalfAngle = -1.0f;
+            bool motionLookaheadEnabled = false;
+            glm::vec2 motionLookaheadXZ{0.0f};
+            glm::ivec2 motionLookaheadColumn{std::numeric_limits<int>::min()};
+            float motionNearRadiusSq = 0.0f;
         };
 
         int angleBucket(float degrees, float bucketDegrees, float offset) {
@@ -1031,6 +1041,46 @@ namespace TerrainSystemLogic {
             view.forwardXZ = forward;
             view.nearRadiusSq = nearRadius * nearRadius;
             view.cosHalfAngle = std::cos(glm::radians(halfAngleDegrees));
+            if (view.enabled
+                && baseSystem.player
+                && getRegistryBool(baseSystem, "voxelCpuViewMotionLookaheadEnabled", true)) {
+                const glm::vec2 previousXZ(
+                    baseSystem.player->prevCameraPosition.x,
+                    baseSystem.player->prevCameraPosition.z
+                );
+                const glm::vec2 frameDelta = view.cameraXZ - previousXZ;
+                const float minDelta = std::max(
+                    0.0f,
+                    getRegistryFloat(baseSystem, "voxelCpuViewMotionMinFrameDeltaBlocks", 0.01f)
+                );
+                const float deltaLen2 = glm::dot(frameDelta, frameDelta);
+                if (deltaLen2 >= minDelta * minDelta) {
+                    const float leadFrames = std::max(
+                        0.0f,
+                        getRegistryFloat(baseSystem, "voxelCpuViewMotionLeadFrames", 90.0f)
+                    );
+                    const float maxLookahead = std::max(
+                        0.0f,
+                        getRegistryFloat(baseSystem, "voxelCpuViewMotionMaxBlocks", 96.0f)
+                    );
+                    glm::vec2 offset = frameDelta * leadFrames;
+                    const float offsetLen2 = glm::dot(offset, offset);
+                    if (maxLookahead > 0.0f && offsetLen2 > maxLookahead * maxLookahead) {
+                        offset *= maxLookahead / std::sqrt(offsetLen2);
+                    }
+                    view.motionLookaheadEnabled = true;
+                    view.motionLookaheadXZ = view.cameraXZ + offset;
+                    const float motionNearRadius = std::max(
+                        static_cast<float>(sectionSize),
+                        getRegistryFloat(baseSystem, "voxelCpuViewMotionNearRadiusBlocks", nearRadius)
+                    );
+                    view.motionNearRadiusSq = motionNearRadius * motionNearRadius;
+                    view.motionLookaheadColumn = glm::ivec2(
+                        floorDivInt(static_cast<int>(std::floor(view.motionLookaheadXZ.x)), sectionSize),
+                        floorDivInt(static_cast<int>(std::floor(view.motionLookaheadXZ.y)), sectionSize)
+                    );
+                }
+            }
             return view;
         }
 
@@ -1039,6 +1089,10 @@ namespace TerrainSystemLogic {
             const glm::vec2 delta = point - view.cameraXZ;
             const float dist2 = glm::dot(delta, delta);
             if (dist2 <= view.nearRadiusSq) return true;
+            if (view.motionLookaheadEnabled) {
+                const glm::vec2 motionDelta = point - view.motionLookaheadXZ;
+                if (glm::dot(motionDelta, motionDelta) <= view.motionNearRadiusSq) return true;
+            }
             if (dist2 <= 1e-6f) return true;
             const float invDist = 1.0f / std::sqrt(dist2);
             return glm::dot(delta * invDist, view.forwardXZ) >= view.cosHalfAngle;
@@ -1193,6 +1247,121 @@ namespace TerrainSystemLogic {
             );
         }
 
+        struct VoxelColumnPriorityContext {
+            bool enabled = true;
+            glm::vec2 cameraXZ{0.0f};
+            glm::vec2 forwardXZ{0.0f, -1.0f};
+            int sectionSize = 16;
+            float nearRadiusSq = 0.0f;
+            float viewWeight = 4096.0f;
+            float distanceWeight = 0.001f;
+            float behindPenalty = 1000000.0f;
+        };
+
+        VoxelColumnPriorityContext makeVoxelColumnPriorityContext(const BaseSystem& baseSystem,
+                                                                  const VoxelWorldContext& voxelWorld,
+                                                                  const glm::vec3& cameraPos) {
+            VoxelColumnPriorityContext ctx{};
+            ctx.enabled = getRegistryBool(baseSystem, "voxelColumnViewPriorityEnabled", true);
+            ctx.sectionSize = sectionSizeForSection(voxelWorld);
+            const float yawRadians = glm::radians(baseSystem.player ? baseSystem.player->cameraYaw : -90.0f);
+            ctx.forwardXZ = glm::vec2(std::cos(yawRadians), std::sin(yawRadians));
+            const float forwardLen2 = glm::dot(ctx.forwardXZ, ctx.forwardXZ);
+            if (forwardLen2 > 1e-6f) {
+                ctx.forwardXZ /= std::sqrt(forwardLen2);
+            } else {
+                ctx.forwardXZ = glm::vec2(0.0f, -1.0f);
+            }
+            const float lookaheadBlocks = std::max(
+                0.0f,
+                getRegistryFloat(baseSystem, "voxelColumnPriorityLookaheadBlocks", 0.0f)
+            );
+            ctx.cameraXZ = glm::vec2(cameraPos.x, cameraPos.z) + ctx.forwardXZ * lookaheadBlocks;
+            if (baseSystem.player && getRegistryBool(baseSystem, "voxelColumnPriorityMotionLookaheadEnabled", true)) {
+                const glm::vec2 previousXZ(
+                    baseSystem.player->prevCameraPosition.x,
+                    baseSystem.player->prevCameraPosition.z
+                );
+                const glm::vec2 frameDelta = glm::vec2(cameraPos.x, cameraPos.z) - previousXZ;
+                const float minDelta = std::max(
+                    0.0f,
+                    getRegistryFloat(baseSystem, "voxelColumnPriorityMotionMinFrameDeltaBlocks", 0.01f)
+                );
+                const float deltaLen2 = glm::dot(frameDelta, frameDelta);
+                if (deltaLen2 >= minDelta * minDelta) {
+                    const float leadFrames = std::max(
+                        0.0f,
+                        getRegistryFloat(baseSystem, "voxelColumnPriorityMotionLeadFrames", 90.0f)
+                    );
+                    const float maxLookahead = std::max(
+                        0.0f,
+                        getRegistryFloat(baseSystem, "voxelColumnPriorityMotionMaxBlocks", 96.0f)
+                    );
+                    glm::vec2 offset = frameDelta * leadFrames;
+                    const float offsetLen2 = glm::dot(offset, offset);
+                    if (maxLookahead > 0.0f && offsetLen2 > maxLookahead * maxLookahead) {
+                        offset *= maxLookahead / std::sqrt(offsetLen2);
+                    }
+                    ctx.cameraXZ += offset;
+                }
+            }
+            const float nearRadius = std::max(
+                static_cast<float>(ctx.sectionSize),
+                getRegistryFloat(
+                    baseSystem,
+                    "voxelColumnPriorityNearRadiusBlocks",
+                    static_cast<float>(ctx.sectionSize) * 2.0f
+                )
+            );
+            ctx.nearRadiusSq = nearRadius * nearRadius;
+            ctx.viewWeight = std::max(
+                0.0f,
+                getRegistryFloat(baseSystem, "voxelColumnPriorityViewWeight", 4096.0f)
+            );
+            ctx.distanceWeight = std::max(
+                0.0f,
+                getRegistryFloat(baseSystem, "voxelColumnPriorityDistanceWeight", 0.001f)
+            );
+            ctx.behindPenalty = std::max(
+                0.0f,
+                getRegistryFloat(baseSystem, "voxelColumnPriorityBehindPenalty", 1000000.0f)
+            );
+            return ctx;
+        }
+
+        float columnViewPriority(const VoxelColumnPriorityContext& ctx,
+                                 const VoxelColumnKey& key) {
+            if (!ctx.enabled) return 0.0f;
+            const float span = static_cast<float>(std::max(1, ctx.sectionSize));
+            const glm::vec2 center(
+                (static_cast<float>(key.coord.x) + 0.5f) * span,
+                (static_cast<float>(key.coord.y) + 0.5f) * span
+            );
+            const glm::vec2 delta = center - ctx.cameraXZ;
+            const float dist2 = glm::dot(delta, delta);
+            const float depth = glm::dot(delta, ctx.forwardXZ);
+            const float lateral2 = std::max(0.0f, dist2 - depth * depth);
+            const float positiveDepth = std::max(0.0f, depth);
+            const float centeredViewScore = lateral2 / (positiveDepth * positiveDepth + span * span);
+            const float behindPenalty =
+                (dist2 > ctx.nearRadiusSq && depth < -span) ? ctx.behindPenalty : 0.0f;
+            return behindPenalty + centeredViewScore * ctx.viewWeight + dist2 * ctx.distanceWeight;
+        }
+
+        bool columnPriorityLess(const VoxelColumnPriorityContext& priority,
+                                const glm::ivec2& cameraColumn,
+                                const VoxelColumnKey& a,
+                                const VoxelColumnKey& b) {
+            const float aPriority = columnViewPriority(priority, a);
+            const float bPriority = columnViewPriority(priority, b);
+            if (std::abs(aPriority - bPriority) > 0.0001f) return aPriority < bPriority;
+            const int da = columnChebyshevDistance(a, cameraColumn);
+            const int db = columnChebyshevDistance(b, cameraColumn);
+            if (da != db) return da < db;
+            if (a.coord.x != b.coord.x) return a.coord.x < b.coord.x;
+            return a.coord.y < b.coord.y;
+        }
+
         bool columnWasDesiredRecently(const VoxelColumnKey& key, uint64_t frame, uint64_t retentionFrames) {
             auto it = g_voxelColumnStreaming.lastDesiredFrame.find(key);
             if (it == g_voxelColumnStreaming.lastDesiredFrame.end()) return false;
@@ -1248,6 +1417,7 @@ namespace TerrainSystemLogic {
         }
 
         void prioritizeActiveColumnJobs(const glm::ivec2& cameraColumn,
+                                        const VoxelColumnPriorityContext& priority,
                                         uint64_t frame,
                                         uint64_t retentionFrames,
                                         VoxelColumnFrameMaintenanceStats& stats) {
@@ -1275,9 +1445,7 @@ namespace TerrainSystemLogic {
                     if (aActive && bActive && aJobIt->second.phase != bJobIt->second.phase) {
                         return aJobIt->second.phase > bJobIt->second.phase;
                     }
-                    const int da = columnChebyshevDistance(a, cameraColumn);
-                    const int db = columnChebyshevDistance(b, cameraColumn);
-                    return da < db;
+                    return columnPriorityLess(priority, cameraColumn, a, b);
                 }
             );
         }
@@ -1794,7 +1962,7 @@ namespace TerrainSystemLogic {
                                                                int cpuViewYawBucket) {
             VoxelColumnFrameMaintenanceStats stats;
             (void)cfg;
-            const int radius = streamRadiusWorld(voxelWorld);
+            const int radius = streamRadiusWorld(baseSystem, voxelWorld);
             const int size = sectionSizeForSection(voxelWorld);
             const glm::ivec2 cameraColumn(
                 floorDivInt(static_cast<int>(std::floor(cameraPos.x)), size),
@@ -1809,7 +1977,9 @@ namespace TerrainSystemLogic {
                 g_voxelColumnStreaming.lastCenterColumn != cameraColumn
                 || g_voxelColumnStreaming.lastRadius != radius
                 || g_voxelColumnStreaming.lastCpuViewYawBucket != cpuViewYawBucket
-                || g_voxelColumnStreaming.lastCpuViewCullingEnabled != cpuStreamingView.enabled;
+                || g_voxelColumnStreaming.lastCpuViewCullingEnabled != cpuStreamingView.enabled
+                || g_voxelColumnStreaming.lastCpuViewMotionLookaheadEnabled != cpuStreamingView.motionLookaheadEnabled
+                || g_voxelColumnStreaming.lastCpuViewMotionColumn != cpuStreamingView.motionLookaheadColumn;
             if (!moved
                 && !g_voxelColumnStreaming.pendingDesiredRebuild
                 && !g_voxelColumnStreaming.desired.empty()) {
@@ -1823,6 +1993,8 @@ namespace TerrainSystemLogic {
             g_voxelColumnStreaming.lastRadius = radius;
             g_voxelColumnStreaming.lastCpuViewYawBucket = cpuViewYawBucket;
             g_voxelColumnStreaming.lastCpuViewCullingEnabled = cpuStreamingView.enabled;
+            g_voxelColumnStreaming.lastCpuViewMotionLookaheadEnabled = cpuStreamingView.motionLookaheadEnabled;
+            g_voxelColumnStreaming.lastCpuViewMotionColumn = cpuStreamingView.motionLookaheadColumn;
             g_voxelColumnStreaming.pendingDesiredRebuild = false;
 
             std::unordered_set<VoxelColumnKey, VoxelColumnKeyHash> nextDesired;
@@ -1860,6 +2032,19 @@ namespace TerrainSystemLogic {
                         }
                     }
                 }
+            }
+
+            if (getRegistryBool(baseSystem, "voxelColumnDesiredViewSortEnabled", true)
+                && nextOrder.size() > 1u) {
+                const VoxelColumnPriorityContext priority =
+                    makeVoxelColumnPriorityContext(baseSystem, voxelWorld, cameraPos);
+                std::stable_sort(
+                    nextOrder.begin(),
+                    nextOrder.end(),
+                    [&](const VoxelColumnKey& a, const VoxelColumnKey& b) {
+                        return columnPriorityLess(priority, cameraColumn, a, b);
+                    }
+                );
             }
 
             const int desiredHardCap = std::max(0, getRegistryInt(baseSystem, "voxelDesiredColumnHardCap", 0));
@@ -2024,19 +2209,22 @@ namespace TerrainSystemLogic {
                 floorDivInt(static_cast<int>(std::floor(cameraPos.x)), size),
                 floorDivInt(static_cast<int>(std::floor(cameraPos.z)), size)
             );
+            const VoxelColumnPriorityContext columnPriority =
+                makeVoxelColumnPriorityContext(baseSystem, voxelWorld, cameraPos);
             const uint64_t retentionFrames = static_cast<uint64_t>(std::max(
                 0,
                 getRegistryInt(baseSystem, "voxelColumnRetentionFrames", 180)
             ));
             prioritizeActiveColumnJobs(
                 cameraColumn,
+                columnPriority,
                 g_voxelStreaming.frameCounter,
                 retentionFrames,
                 maintenance
             );
 
             const int fullColumnsPerSection = size * size;
-            const int localColumnsPerStep = std::clamp(
+            int localColumnsPerStep = std::clamp(
                 getRegistryInt(
                     baseSystem,
                     "voxelColumnLocalColumnsPerStep",
@@ -2045,14 +2233,38 @@ namespace TerrainSystemLogic {
                 1,
                 std::max(1, fullColumnsPerSection)
             );
-            const int generationBudget = std::max(
+            int generationBudget = std::max(
                 1,
                 getRegistryInt(baseSystem, "voxelColumnGenerationStepsPerFrame", 1)
             );
-            const float generationTimeBudgetMs = std::max(
+            float generationTimeBudgetMs = std::max(
                 0.1f,
                 getRegistryFloat(baseSystem, "voxelColumnGenerationMaxMsPerFrame", 8.0f)
             );
+            const bool menuFlyoverPrewarm =
+                currentLevel == "menu"
+                && baseSystem.ui
+                && baseSystem.ui->loadingActive
+                && getRegistryBool(baseSystem, "IslandFlyoverEnabled", true)
+                && getRegistryBool(baseSystem, "voxelColumnMenuPrewarmEnabled", true);
+            if (menuFlyoverPrewarm) {
+                localColumnsPerStep = std::clamp(
+                    std::max(
+                        localColumnsPerStep,
+                        getRegistryInt(baseSystem, "voxelColumnMenuPrewarmLocalColumnsPerStep", 64)
+                    ),
+                    1,
+                    std::max(1, fullColumnsPerSection)
+                );
+                generationBudget = std::max(
+                    generationBudget,
+                    getRegistryInt(baseSystem, "voxelColumnMenuPrewarmStepsPerFrame", 8)
+                );
+                generationTimeBudgetMs = std::max(
+                    generationTimeBudgetMs,
+                    getRegistryFloat(baseSystem, "voxelColumnMenuPrewarmMaxMsPerFrame", 14.0f)
+                );
+            }
             const auto genStart = std::chrono::steady_clock::now();
             int columnSteps = 0;
             int columnsBuilt = 0;
@@ -2659,7 +2871,7 @@ namespace TerrainSystemLogic {
             if (superChunkSize < 1) superChunkSize = 1;
             bool movedDesired = false;
             {
-                const int radius = streamRadiusWorld(voxelWorld);
+                const int radius = streamRadiusWorld(baseSystem, voxelWorld);
                 const int size = sectionSizeForSection(voxelWorld);
                 const int scale = 1;
                 glm::ivec3 cameraCell = glm::ivec3(glm::floor(cameraPos / static_cast<float>(scale)));
@@ -2788,7 +3000,7 @@ namespace TerrainSystemLogic {
             bool desiredRebuildFinished = false;
             while (g_voxelDesiredRebuild.active && desiredColumnsBudget > 0) {
                 if (!g_voxelDesiredRebuild.tierPrepared) {
-                    const int radius = streamRadiusWorld(voxelWorld);
+                    const int radius = streamRadiusWorld(baseSystem, voxelWorld);
                     if (radius <= 0) {
                         g_voxelDesiredRebuild.prevRadius = radius;
                         g_voxelDesiredRebuild.active = false;
@@ -3083,7 +3295,7 @@ namespace TerrainSystemLogic {
                 std::vector<VoxelSectionKey> toRemove;
                 toRemove.reserve(voxelWorld.sections.size());
                 glm::vec2 camXZ(cameraPos.x, cameraPos.z);
-                const int radius = streamRadiusWorld(voxelWorld);
+                const int radius = streamRadiusWorld(baseSystem, voxelWorld);
                 const int size = sectionSizeForSection(voxelWorld);
                 const int scale = 1;
                 const float keepRadius = static_cast<float>(radius + size * scale);
@@ -3194,7 +3406,7 @@ namespace TerrainSystemLogic {
                 if (tier0SurfaceRescuePerFrame > 0 && runSurfaceRescue && !surfaceRescueBacklogged) {
                     const int size = sectionSizeForSection(voxelWorld);
                     const int scale = 1;
-                    const int radius = streamRadiusWorld(voxelWorld);
+                    const int radius = streamRadiusWorld(baseSystem, voxelWorld);
                     if (radius > 0) {
                         const int sectionRadius = static_cast<int>(std::ceil(static_cast<float>(radius) / static_cast<float>(size * scale)));
                         glm::ivec3 cameraCell = glm::ivec3(glm::floor(cameraPos / static_cast<float>(scale)));
@@ -3360,7 +3572,7 @@ namespace TerrainSystemLogic {
                             : static_cast<int>(std::floor(cfg.waterSurface));
                         tierSurfaceCenterY = floorDivInt(targetY, scale * size);
                     }
-                    const int radius = streamRadiusWorld(voxelWorld);
+                    const int radius = streamRadiusWorld(baseSystem, voxelWorld);
                     const int tier0RescueScanPerFrame = 256;
 
                     int scannedDesired = 0;

@@ -389,6 +389,7 @@ void Host::registerSystemFunctions() {
     functionRegistry["UpdateGemChisel"] = GemChiselSystemLogic::UpdateGemChisel;
     functionRegistry["UpdateGems"] = GemSystemLogic::UpdateGems;
     functionRegistry["UpdateFishing"] = FishingSystemLogic::UpdateFishing;
+    functionRegistry["RenderFishing"] = FishingSystemLogic::RenderFishing;
     functionRegistry["UpdateHUD"] = HUDSystemLogic::UpdateHUD;
     functionRegistry["UpdateColorEmotions"] = ColorEmotionSystemLogic::UpdateColorEmotions;
     functionRegistry["UpdateBuildMode"] = BuildSystemLogic::UpdateBuildMode;
@@ -1210,6 +1211,15 @@ void Host::mainLoop() {
         if (trackFrameHitches || trackFramePacingPeaks) {
             frameStepMs.clear();
         }
+        auto consumeManualFrameSteps = [&]() {
+            if (!perf || perf->manualFrameStepMs.empty()) return;
+            if (trackFrameHitches || trackFramePacingPeaks) {
+                for (const auto& [name, elapsedMs] : perf->manualFrameStepMs) {
+                    frameStepMs[name] += elapsedMs;
+                }
+            }
+            perf->manualFrameStepMs.clear();
+        };
         for(const auto& step : updateFunctions) {
             if(functionRegistry.count(step.name)) {
                 if (runOptions.headlessPerf && !shouldRunInHeadlessPerf(step.name)) {
@@ -1228,6 +1238,7 @@ void Host::mainLoop() {
                         double elapsedMs = std::chrono::duration<double, std::milli>(
                             std::chrono::steady_clock::now() - start
                         ).count();
+                        consumeManualFrameSteps();
                         if (trackPerf) {
                             perf->totalsMs[step.name] += elapsedMs;
                             if (elapsedMs > perf->maxMs[step.name]) {
@@ -1247,6 +1258,7 @@ void Host::mainLoop() {
                         }
                     } else {
                         functionRegistry[step.name](baseSystem, entityPrototypes, deltaTime, window);
+                        consumeManualFrameSteps();
                     }
                 }
             }

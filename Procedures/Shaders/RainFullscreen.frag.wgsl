@@ -38,6 +38,8 @@ struct FSIn {
 
 const FAR: f32 = 28.0;
 const RAIN_STEPS: i32 = 24;
+const RAIN_MASK_SIZE: i32 = 8;
+const RAIN_OPEN_BLOCKER_TOP_Y: f32 = -100000.0;
 
 fn saturate(x: f32) -> f32 {
     return clamp(x, 0.0, 1.0);
@@ -122,6 +124,39 @@ fn rainField(p: vec3<f32>) -> f32 {
     return clamp(r, 0.0, 1.0);
 }
 
+fn rainMaskAtIndex(index: i32) -> f32 {
+    let packedIndex = index / 4;
+    let lane = index % 4;
+    let packed = u.blockDamageProgress[packedIndex];
+    if (lane == 0) {
+        return packed.x;
+    }
+    if (lane == 1) {
+        return packed.y;
+    }
+    if (lane == 2) {
+        return packed.z;
+    }
+    return packed.w;
+}
+
+fn rainMaskAtCell(x: i32, z: i32) -> f32 {
+    if (x < 0 || z < 0 || x >= RAIN_MASK_SIZE || z >= RAIN_MASK_SIZE) {
+        return RAIN_OPEN_BLOCKER_TOP_Y;
+    }
+    return rainMaskAtIndex(z * RAIN_MASK_SIZE + x);
+}
+
+fn rainExposureAt(p: vec3<f32>) -> f32 {
+    if (u.extra.z < 0.5) {
+        return 1.0;
+    }
+    let cellSize = max(u.lightAndGrid.w, 0.01);
+    let grid = floor((p.xz - u.vec2Data.xy) / cellSize);
+    let blockerTopY = rainMaskAtCell(i32(grid.x), i32(grid.y));
+    return step(blockerTopY - 0.02, p.y);
+}
+
 fn marchRain(ro: vec3<f32>, rd: vec3<f32>, tMax: f32, jitter: f32) -> vec4<f32> {
     var accum = vec3<f32>(0.0);
     var trans = 1.0;
@@ -130,6 +165,10 @@ fn marchRain(ro: vec3<f32>, rd: vec3<f32>, tMax: f32, jitter: f32) -> vec4<f32> 
         let fi = (f32(i) + jitter) / f32(RAIN_STEPS);
         let t = mix(0.1, tMax, fi);
         let p = ro + rd * t;
+        let exposure = rainExposureAt(p);
+        if (exposure <= 0.001) {
+            break;
+        }
         let r = rainField(p);
 
         if (r > 0.001) {
@@ -153,6 +192,9 @@ fn nearCameraStreaks(ro: vec3<f32>, rd: vec3<f32>, fragCoord: vec2<f32>, intensi
         let fi = (f32(i) + hash21(fragCoord + vec2<f32>(f32(i) * 13.17))) / 8.0;
         let t = mix(0.55, 7.5, fi);
         let p = ro + rd * t;
+        if (rainExposureAt(p) <= 0.001) {
+            break;
+        }
         energy = energy + rainField(p) * (1.0 - fi * 0.55);
     }
 
@@ -164,7 +206,8 @@ fn nearCameraStreaks(ro: vec3<f32>, rd: vec3<f32>, fragCoord: vec2<f32>, intensi
     let thin = smoothstep(0.035, 0.0, abs(gv.x - dropOffset * 0.34));
     let lengthMask = smoothstep(0.50, -0.20, gv.y) * smoothstep(-0.55, -0.10, gv.y);
     let keep = smoothstep(0.34, 0.98, rnd);
-    return clamp(energy * 0.22 + thin * lengthMask * keep * 0.72, 0.0, 1.0) * intensity;
+    let localExposure = rainExposureAt(ro + rd * 2.25);
+    return clamp(energy * 0.22 + thin * lengthMask * keep * 0.72 * localExposure, 0.0, 1.0) * intensity;
 }
 
 @fragment

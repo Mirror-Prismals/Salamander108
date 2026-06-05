@@ -685,7 +685,6 @@ namespace OverlayRenderSystemLogic {
         }
 
         GemSystemLogic::RenderGems(baseSystem, prototypes, dt, win);
-        FishingSystemLogic::RenderFishing(baseSystem, prototypes, dt, win);
         ColorEmotionSystemLogic::RenderColorEmotions(baseSystem, prototypes, dt, win);
 
         bool crosshairEnabled = true;

@@ -72,7 +72,8 @@ namespace IslandFlyoverSystemLogic {
             return;
         }
 
-        if (!wasActive) {
+        const bool firstActiveFrame = !wasActive;
+        if (firstActiveFrame) {
             elapsed = 0.0f;
             wasActive = true;
         }
@@ -117,8 +118,9 @@ namespace IslandFlyoverSystemLogic {
         forward = glm::normalize(forward);
 
         PlayerContext& player = *baseSystem.player;
+        const glm::vec3 previousCameraPos = firstActiveFrame ? cameraPos : player.cameraPosition;
         player.cameraPosition = cameraPos;
-        player.prevCameraPosition = cameraPos;
+        player.prevCameraPosition = previousCameraPos;
         player.cameraYaw = glm::degrees(std::atan2(forward.z, forward.x));
         player.cameraPitch = glm::degrees(std::asin(std::clamp(forward.y, -1.0f, 1.0f)));
         player.verticalVelocity = 0.0f;
