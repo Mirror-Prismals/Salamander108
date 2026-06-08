@@ -555,10 +555,11 @@ namespace WorldRenderSystemLogic {
         }
         glm::vec3 lightDir;
         SkyboxSystemLogic::RenderSkyAndCelestials(baseSystem, prototypes, starPositions, time, dayFraction, view, projection, playerPos, lightDir);
+        CloudSystemLogic::RenderClouds(baseSystem, lightDir, time, dayFraction);
         if (dt > 0.0f) {
             MiniVoxelParticleSystemLogic::UpdateParticles(baseSystem, dt, faceInstances);
         }
-        // Aurora and cloud passes are intentionally removed from the active render path.
+        // Aurora pass is intentionally kept outside the active render path unless explicitly scheduled.
 
         // Establish deterministic world-state defaults before voxel/block passes.
         // WebGPU render-state starts from backend defaults each frame, so relying

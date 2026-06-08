@@ -696,11 +696,25 @@ namespace ChuckLaneSystemLogic {
                              const DawLaneTimelineSystemLogic::LaneLayout& layout,
                              const std::vector<int>& chuckLaneIndex,
                              int laneCount) {
+            (void)laneCount;
             glm::vec3 eventColor(0.04f, 0.40f, 0.36f);
             glm::vec3 eventTopColor(0.09f, 0.58f, 0.50f);
             glm::vec3 mutedColor(0.16f, 0.20f, 0.21f);
             glm::vec3 tickColor(0.62f, 1.0f, 0.90f);
             glm::vec3 selectedColor(0.45f, 0.72f, 1.0f);
+            glm::vec3 laneColor(0.14f, 0.14f, 0.14f);
+            glm::vec3 laneHighlight(0.20f, 0.20f, 0.20f);
+            glm::vec3 laneShadow(0.08f, 0.08f, 0.08f);
+            auto itBase = world.colorLibrary.find("MiraLaneBase");
+            if (itBase != world.colorLibrary.end()) {
+                laneColor = itBase->second;
+                auto itHighlight = world.colorLibrary.find("MiraLaneHighlight");
+                if (itHighlight != world.colorLibrary.end()) laneHighlight = itHighlight->second;
+                else laneHighlight = glm::clamp(laneColor + glm::vec3(0.08f), glm::vec3(0.0f), glm::vec3(1.0f));
+                auto itShadow = world.colorLibrary.find("MiraLaneShadow");
+                if (itShadow != world.colorLibrary.end()) laneShadow = itShadow->second;
+                else laneShadow = glm::clamp(laneColor - glm::vec3(0.08f), glm::vec3(0.0f), glm::vec3(1.0f));
+            }
             auto itSel = world.colorLibrary.find("MiraLaneSelected");
             if (itSel != world.colorLibrary.end()) selectedColor = itSel->second;
 
@@ -713,10 +727,28 @@ namespace ChuckLaneSystemLogic {
                 int laneIndex = chuckLaneIndex[static_cast<size_t>(trackIndex)];
                 if (laneIndex < 0) continue;
                 float centerY = layout.startY + static_cast<float>(laneIndex) * layout.rowSpan;
+                ChuckTrack& track = daw.chuckTracks[static_cast<size_t>(trackIndex)];
+                bool trackSelected = (daw.selectedLaneType == kLaneTypeChuck
+                    && daw.selectedLaneTrack == trackIndex);
+                float laneTop = centerY - layout.laneHalfH;
+                float laneBottom = centerY + layout.laneHalfH;
+                glm::vec3 laneBody = track.mute ? mutedColor : laneColor;
+                glm::vec3 laneLip = track.mute
+                    ? glm::clamp(mutedColor + glm::vec3(0.05f), glm::vec3(0.0f), glm::vec3(1.0f))
+                    : laneHighlight;
+                pushRect(g_vertices, {layout.laneLeft, laneTop, layout.laneRight, laneBottom}, laneBody, layout.screenWidth, layout.screenHeight);
+                pushRect(g_vertices, {layout.laneLeft, laneTop, layout.laneRight, laneTop + 6.0f}, laneLip, layout.screenWidth, layout.screenHeight);
+                pushRect(g_vertices, {layout.laneLeft, laneTop, layout.laneLeft + 2.0f, laneBottom}, laneShadow, layout.screenWidth, layout.screenHeight);
+
+                float handleSize = std::min(kTrackHandleSize, std::max(14.0f, layout.laneHeight));
+                float handleHalf = handleSize * 0.5f;
+                float centerX = layout.laneRight + kTrackHandleInset + handleHalf;
+                Rect handle{centerX - handleHalf, centerY - handleHalf, centerX + handleHalf, centerY + handleHalf};
+                pushRect(g_vertices, handle, trackSelected ? selectedColor : laneLip, layout.screenWidth, layout.screenHeight);
+
                 float top = centerY - layout.laneHalfH + kEventVerticalInset;
                 float bottom = centerY + layout.laneHalfH - kEventVerticalInset;
                 float lipBottom = std::min(bottom, top + std::clamp((bottom - top) * 0.22f, 5.0f, 12.0f));
-                ChuckTrack& track = daw.chuckTracks[static_cast<size_t>(trackIndex)];
                 for (int eventIndex = 0; eventIndex < static_cast<int>(track.events.size()); ++eventIndex) {
                     ChuckEvent& event = track.events[static_cast<size_t>(eventIndex)];
                     uint64_t drawSample = event.startSample;
@@ -751,15 +783,6 @@ namespace ChuckLaneSystemLogic {
                              layout.screenWidth,
                              layout.screenHeight);
                 }
-            }
-
-            if (daw.selectedLaneType == kLaneTypeChuck && daw.selectedLaneIndex >= 0 && daw.selectedLaneIndex < laneCount) {
-                float centerY = layout.startY + static_cast<float>(daw.selectedLaneIndex) * layout.rowSpan;
-                float handleSize = std::min(kTrackHandleSize, std::max(14.0f, layout.laneHeight));
-                float handleHalf = handleSize * 0.5f;
-                float centerX = layout.laneRight + kTrackHandleInset + handleHalf;
-                Rect handle{centerX - handleHalf, centerY - handleHalf, centerX + handleHalf, centerY + handleHalf};
-                pushRect(g_vertices, handle, selectedColor, layout.screenWidth, layout.screenHeight);
             }
         }
 

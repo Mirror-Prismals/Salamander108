@@ -20,7 +20,20 @@ struct LevelContext;
 struct DawContext;
 struct Vst3Plugin;
 struct Vst3UiWindow;
+struct Vst3DefaultEditorParam {
+    int32_t id = 0;
+    double value = 0.0;
+    char title[128]{};
+    char units[64]{};
+};
+using Vst3DefaultEditorSetParamFn = void (*)(void* userData, int32_t paramID, double value);
+
 Vst3UiWindow* Vst3UI_CreateWindow(const char* title, int width, int height);
+Vst3UiWindow* Vst3UI_CreateDefaultEditorWindow(const char* title,
+                                               const Vst3DefaultEditorParam* params,
+                                               int paramCount,
+                                               Vst3DefaultEditorSetParamFn setParam,
+                                               void* userData);
 void Vst3UI_ShowWindow(Vst3UiWindow* window);
 void Vst3UI_HideWindow(Vst3UiWindow* window);
 void Vst3UI_CloseWindow(Vst3UiWindow* window);
@@ -42,6 +55,7 @@ struct Vst3Plugin {
     Steinberg::Vst::ProcessContext processContext{};
     Vst3UiWindow* uiWindow = nullptr;
     bool uiVisible = false;
+    bool usingDefaultEditor = false;
     int inputChannels = 0;
     int outputChannels = 0;
     int inputBusses = 0;
@@ -60,6 +74,12 @@ struct Vst3AvailablePlugin {
 struct Vst3SampleEntry {
     std::string name;
     std::string path;
+};
+
+struct Vst3MidaClipEntry {
+    std::string name;
+    std::string path;
+    std::string source;
 };
 
 struct Vst3TrackChain {
@@ -83,6 +103,7 @@ struct Vst3Context {
     std::vector<std::unique_ptr<Vst3Plugin>> plugins;
     std::vector<Vst3AvailablePlugin> availablePlugins;
     std::vector<Vst3SampleEntry> availableSamples;
+    std::vector<Vst3MidaClipEntry> availableMidaClips;
     std::vector<VST3::Hosting::Module::Ptr> modules;
     Steinberg::IPtr<Steinberg::Vst::HostApplication> hostApp;
     bool browserCacheBuilt = false;
@@ -105,6 +126,16 @@ struct Vst3Context {
     float samplesScroll = 0.0f;
     int samplesDragIndex = -1;
     bool samplesDragging = false;
+    bool midaClipsCacheBuilt = false;
+    LevelContext* midaClipsLevel = nullptr;
+    int midaClipsWorldIndex = -1;
+    size_t midaClipsListCount = 0;
+    std::vector<int> midaClipsInstanceIds;
+    int midaClipsGhostId = -1;
+    bool midaClipsCollapsed = false;
+    float midaClipsScroll = 0.0f;
+    int midaClipsDragIndex = -1;
+    bool midaClipsDragging = false;
     bool componentsCacheBuilt = false;
     LevelContext* componentsLevel = nullptr;
     int componentsWorldIndex = -1;

@@ -255,6 +255,8 @@ namespace UIStampingSystemLogic {
                 path = "Entities/Worlds/automation_track_controls_world.json";
             } else if (worldName == "ChuckTrackRowWorld") {
                 path = "Entities/Worlds/chuck_track_controls_world.json";
+            } else if (worldName == "MidaTrackRowWorld") {
+                path = "Entities/Worlds/mida_track_controls_world.json";
             } else {
                 return;
             }
@@ -332,13 +334,15 @@ namespace UIStampingSystemLogic {
                 bool isTrackWorld = (world.name.rfind("TrackRowWorld", 0) == 0)
                     || (world.name.rfind("MidiTrackRowWorld", 0) == 0)
                     || (world.name.rfind("AutomationTrackRowWorld", 0) == 0)
-                    || (world.name.rfind("ChuckTrackRowWorld", 0) == 0);
+                    || (world.name.rfind("ChuckTrackRowWorld", 0) == 0)
+                    || (world.name.rfind("MidaTrackRowWorld", 0) == 0);
                 if (!isTrackWorld) continue;
                 for (auto& inst : world.instances) {
                     bool isTrackControl = (inst.controlId.rfind("track_", 0) == 0)
                         || (inst.controlId.rfind("midi_track_", 0) == 0)
                         || (inst.controlId.rfind("auto_track_", 0) == 0)
-                        || (inst.controlId.rfind("chuck_track_", 0) == 0);
+                        || (inst.controlId.rfind("chuck_track_", 0) == 0)
+                        || (inst.controlId.rfind("mida_track_", 0) == 0);
                     if (!isTrackControl) continue;
                     if (inst.instanceID <= 0 || seen.find(inst.instanceID) != seen.end()) {
                         inst.instanceID = baseSystem.instance->nextInstanceID++;
@@ -361,23 +365,40 @@ namespace UIStampingSystemLogic {
         static bool g_debugPrinted = false;
         if (daw.laneOrder.empty()) {
             int audioCount = static_cast<int>(daw.tracks.size());
-            int midiCount = baseSystem.midi ? static_cast<int>(baseSystem.midi->tracks.size()) : 0;
+            int midiCount = 0;
+            if (baseSystem.midi) {
+                if (baseSystem.midi->trackVisible.size() < baseSystem.midi->tracks.size()) {
+                    baseSystem.midi->trackVisible.resize(baseSystem.midi->tracks.size(), true);
+                }
+                for (bool visible : baseSystem.midi->trackVisible) {
+                    if (visible) midiCount += 1;
+                }
+            }
             int automationCount = static_cast<int>(daw.automationTracks.size());
             int chuckCount = static_cast<int>(daw.chuckTracks.size());
-            if (audioCount + midiCount + automationCount + chuckCount > 0) {
+            int midaCount = baseSystem.mida ? static_cast<int>(baseSystem.mida->tracks.size()) : 0;
+            if (audioCount + midiCount + automationCount + chuckCount + midaCount > 0) {
                 daw.laneOrder.clear();
-                daw.laneOrder.reserve(static_cast<size_t>(audioCount + midiCount + automationCount + chuckCount));
+                daw.laneOrder.reserve(static_cast<size_t>(audioCount + midiCount + automationCount + chuckCount + midaCount));
                 for (int i = 0; i < audioCount; ++i) {
                     daw.laneOrder.push_back({0, i});
                 }
-                for (int i = 0; i < midiCount; ++i) {
-                    daw.laneOrder.push_back({1, i});
+                if (baseSystem.midi) {
+                    for (int i = 0; i < static_cast<int>(baseSystem.midi->tracks.size()); ++i) {
+                        if (i < static_cast<int>(baseSystem.midi->trackVisible.size())
+                            && baseSystem.midi->trackVisible[static_cast<size_t>(i)]) {
+                            daw.laneOrder.push_back({1, i});
+                        }
+                    }
                 }
                 for (int i = 0; i < automationCount; ++i) {
                     daw.laneOrder.push_back({2, i});
                 }
                 for (int i = 0; i < chuckCount; ++i) {
                     daw.laneOrder.push_back({3, i});
+                }
+                for (int i = 0; i < midaCount; ++i) {
+                    daw.laneOrder.push_back({DawContext::kLaneMida, i});
                 }
             }
         }
@@ -462,6 +483,27 @@ namespace UIStampingSystemLogic {
                                    stamp.chuckSourceInstances,
                                    stamp.chuckSourceBaseY);
             }
+            stamp.midaSourceWorldIndex = findWorldIndex(level, stamp.midaSourceWorldName);
+            stamp.midaSourceInstances.clear();
+            stamp.midaSourceBaseY.clear();
+            if (stamp.midaSourceWorldIndex >= 0
+                && stamp.midaSourceWorldIndex < static_cast<int>(level.worlds.size())) {
+                Entity& midaWorld = level.worlds[stamp.midaSourceWorldIndex];
+                stamp.midaSourceInstances = midaWorld.instances;
+                stamp.midaSourceBaseY.reserve(stamp.midaSourceInstances.size());
+                for (const auto& inst : stamp.midaSourceInstances) {
+                    stamp.midaSourceBaseY.push_back(inst.position.y);
+                }
+                if (stamp.midaSourceInstances.empty() || !instancesHaveTrackTokens(stamp.midaSourceInstances)) {
+                    loadFallbackSource(stamp.midaSourceWorldName,
+                                       stamp.midaSourceInstances,
+                                       stamp.midaSourceBaseY);
+                }
+            } else {
+                loadFallbackSource(stamp.midaSourceWorldName,
+                                   stamp.midaSourceInstances,
+                                   stamp.midaSourceBaseY);
+            }
             stamp.rowSpacing = kRowSpacing;
             stamp.rowWorldIndices.clear();
             stamp.stampedRows = 0;
@@ -479,9 +521,11 @@ namespace UIStampingSystemLogic {
                       << " sourceWorldIndex=" << stamp.sourceWorldIndex
                       << " midiSourceWorldIndex=" << stamp.midiSourceWorldIndex
                       << " automationSourceWorldIndex=" << stamp.automationSourceWorldIndex
+                      << " midaSourceWorldIndex=" << stamp.midaSourceWorldIndex
                       << " sourceInstances=" << stamp.sourceInstances.size()
                       << " midiSourceInstances=" << stamp.midiSourceInstances.size()
                       << " automationSourceInstances=" << stamp.automationSourceInstances.size()
+                      << " midaSourceInstances=" << stamp.midaSourceInstances.size()
                       << std::endl;
             if (!daw.laneOrder.empty()) {
                 for (int row = 0; row < desiredRows; ++row) {
@@ -490,6 +534,7 @@ namespace UIStampingSystemLogic {
                     if (type == 1) srcCount = stamp.midiSourceInstances.size();
                     else if (type == 2) srcCount = stamp.automationSourceInstances.size();
                     else if (type == 3) srcCount = stamp.chuckSourceInstances.size();
+                    else if (type == DawContext::kLaneMida) srcCount = stamp.midaSourceInstances.size();
                     std::cerr << "  row " << row << " type=" << type << " srcCount=" << srcCount << std::endl;
                 }
             }
@@ -498,24 +543,28 @@ namespace UIStampingSystemLogic {
             if (type == 1) return stamp.midiSourceInstances;
             if (type == 2) return stamp.automationSourceInstances;
             if (type == 3) return stamp.chuckSourceInstances;
+            if (type == DawContext::kLaneMida) return stamp.midaSourceInstances;
             return stamp.sourceInstances;
         };
         auto sourceBaseYForType = [&](int type) -> const std::vector<float>& {
             if (type == 1) return stamp.midiSourceBaseY;
             if (type == 2) return stamp.automationSourceBaseY;
             if (type == 3) return stamp.chuckSourceBaseY;
+            if (type == DawContext::kLaneMida) return stamp.midaSourceBaseY;
             return stamp.sourceBaseY;
         };
         auto sourceWorldNameForType = [&](int type) -> const std::string& {
             if (type == 1) return stamp.midiSourceWorldName;
             if (type == 2) return stamp.automationSourceWorldName;
             if (type == 3) return stamp.chuckSourceWorldName;
+            if (type == DawContext::kLaneMida) return stamp.midaSourceWorldName;
             return stamp.sourceWorldName;
         };
         auto sourceWorldIndexForType = [&](int type) -> int {
             if (type == 1) return stamp.midiSourceWorldIndex;
             if (type == 2) return stamp.automationSourceWorldIndex;
             if (type == 3) return stamp.chuckSourceWorldIndex;
+            if (type == DawContext::kLaneMida) return stamp.midaSourceWorldIndex;
             return stamp.sourceWorldIndex;
         };
 
@@ -561,6 +610,11 @@ namespace UIStampingSystemLogic {
                 && stamp.chuckSourceWorldIndex < static_cast<int>(level.worlds.size())
                 && stamp.chuckSourceWorldIndex != row0WorldIndex) {
                 level.worlds[stamp.chuckSourceWorldIndex].instances.clear();
+            }
+            if (stamp.midaSourceWorldIndex >= 0
+                && stamp.midaSourceWorldIndex < static_cast<int>(level.worlds.size())
+                && stamp.midaSourceWorldIndex != row0WorldIndex) {
+                level.worlds[stamp.midaSourceWorldIndex].instances.clear();
             }
         }
         if (stamp.sourceWorldIndex >= 0 && stamp.sourceWorldIndex < static_cast<int>(level.worlds.size())) {

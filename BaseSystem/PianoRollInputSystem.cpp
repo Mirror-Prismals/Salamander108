@@ -38,6 +38,9 @@ namespace PianoRollResourceSystemLogic {
                    double minNoteLen,
                    bool allowShiftForward);
 }
+namespace MidaInterpreterSystemLogic {
+    bool RegenerateMidiClipSource(BaseSystem& baseSystem, int trackIndex, int clipIndex);
+}
 
 namespace PianoRollInputSystemLogic {
     namespace {
@@ -83,7 +86,16 @@ namespace PianoRollInputSystemLogic {
         int clipIndex = state.layout.clipIndex;
         if (trackIndex < 0 || trackIndex >= static_cast<int>(midi.tracks.size())) return;
         if (clipIndex < 0 || clipIndex >= static_cast<int>(midi.tracks[trackIndex].clips.size())) return;
-        auto& laneClips = midi.tracks[trackIndex].clips;
+        MidiTrack& laneTrack = midi.tracks[static_cast<size_t>(trackIndex)];
+        auto& laneClips = laneTrack.clips;
+        auto regenerateMidaClipSource = [&](int targetClipIndex) {
+            if (targetClipIndex < 0 || targetClipIndex >= static_cast<int>(laneClips.size())) return;
+            MidiClip& targetClip = laneClips[static_cast<size_t>(targetClipIndex)];
+            if (!laneTrack.midaMidiTrack && !targetClip.hasMidaSource) return;
+            targetClip.hasMidaSource = true;
+            targetClip.midaSourceDirty = true;
+            MidaInterpreterSystemLogic::RegenerateMidiClipSource(baseSystem, trackIndex, targetClipIndex);
+        };
 
         const auto& cfg = PianoRollResourceSystemLogic::Config();
         const auto& layout = state.layout;
@@ -517,6 +529,7 @@ namespace PianoRollInputSystemLogic {
                         }
                         if (len >= layout.minNoteLenSamples
                             && PianoRollResourceSystemLogic::PlaceNote(targetClip.notes, pitch, startSample, len, layout.snapSamples, layout.minNoteLenSamples, true)) {
+                            regenerateMidaClipSource(targetClipIndex);
                             state.activeNote = static_cast<int>(targetClip.notes.size()) - 1;
                             state.activeNoteClip = targetClipIndex;
                             state.resizingNote = false;
@@ -599,6 +612,7 @@ namespace PianoRollInputSystemLogic {
                             double rowSample = placeSample;
                             double rowLen = len;
                             if (PianoRollResourceSystemLogic::PlaceNote(paintClip.notes, pitch, rowSample, rowLen, layout.snapSamples, layout.minNoteLenSamples, allowShiftForward)) {
+                                regenerateMidaClipSource(state.paintClipIndex);
                                 state.paintLastX[static_cast<size_t>(row)] = rowSample;
                                 state.paintLastXGlobal = rowSample;
                                 state.lastNoteLengthSamples = rowLen;
@@ -710,6 +724,21 @@ namespace PianoRollInputSystemLogic {
                 activeClip.notes[static_cast<size_t>(state.activeNote)].pitch = pitch;
                 activeClip.notes[static_cast<size_t>(state.activeNote)].length = static_cast<uint64_t>(std::round(maxLen));
             }
+            regenerateMidaClipSource(state.activeNoteClip);
+            state.activeNote = -1;
+            state.activeNoteClip = -1;
+            state.resizingNote = false;
+            state.painting = false;
+            state.paintClipIndex = -1;
+            state.paintLastRow = -1;
+            state.paintLastCursorX = -1.0;
+            state.paintDir = 0;
+        }
+        if (mouseReleasedThisFrame
+            && state.resizingNote
+            && state.activeNoteClip >= 0
+            && state.activeNoteClip < static_cast<int>(laneClips.size())) {
+            regenerateMidaClipSource(state.activeNoteClip);
             state.activeNote = -1;
             state.activeNoteClip = -1;
             state.resizingNote = false;
@@ -779,6 +808,7 @@ namespace PianoRollInputSystemLogic {
                 anim.startTime = currentTime;
                 state.deleteAnims.push_back(anim);
                 deleteClip.notes.erase(deleteClip.notes.begin() + deleteIndex);
+                regenerateMidaClipSource(deleteClipIndex);
             }
         }
 

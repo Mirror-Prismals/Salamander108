@@ -46,6 +46,10 @@ namespace ChuckLaneSystemLogic {
     bool InsertTrackAt(BaseSystem& baseSystem, int trackIndex);
     bool RemoveTrackAt(BaseSystem& baseSystem, int trackIndex);
 }
+namespace MidaInterpreterSystemLogic {
+    bool InsertTrackAt(BaseSystem& baseSystem, int trackIndex);
+    bool RemoveTrackAt(BaseSystem& baseSystem, int trackIndex);
+}
 
 namespace Vst3SystemLogic {
     bool ProcessEffectChainStereo(Vst3Context& ctx, Vst3TrackChain& chain,
@@ -805,6 +809,11 @@ namespace DawIOSystemLogic {
             out["start_sample"] = clip.startSample;
             out["length"] = clip.length;
             out["take_id"] = clip.takeId;
+            if (clip.hasMidaSource || !clip.midaSource.empty()) {
+                out["has_mida_source"] = clip.hasMidaSource;
+                out["mida_source_dirty"] = clip.midaSourceDirty;
+                out["mida_source"] = clip.midaSource;
+            }
             json notes = json::array();
             for (const auto& note : clip.notes) {
                 notes.push_back(serializeMidiNote(note));
@@ -818,6 +827,9 @@ namespace DawIOSystemLogic {
             clip.startSample = readU64(in, "start_sample", 0);
             clip.length = readU64(in, "length", 0);
             clip.takeId = readInt(in, "take_id", -1);
+            clip.midaSource = readString(in, "mida_source", "");
+            clip.hasMidaSource = readBool(in, "has_mida_source", false) || !clip.midaSource.empty();
+            clip.midaSourceDirty = readBool(in, "mida_source_dirty", false);
             auto itNotes = in.find("notes");
             if (itNotes != in.end() && itNotes->is_array()) {
                 clip.notes.reserve(itNotes->size());
@@ -988,8 +1000,9 @@ namespace DawIOSystemLogic {
                                       int audioTracks,
                                       int midiTracks,
                                       int automationTracks,
-                                      int chuckTracks) {
-            if (audioTracks < 0 || midiTracks < 0 || automationTracks < 0 || chuckTracks < 0) return false;
+                                      int chuckTracks,
+                                      int midaTracks) {
+            if (audioTracks < 0 || midiTracks < 0 || automationTracks < 0 || chuckTracks < 0 || midaTracks < 0) return false;
             if (!baseSystem.daw || !baseSystem.midi) return false;
             DawContext& daw = *baseSystem.daw;
             MidiContext& midi = *baseSystem.midi;
@@ -999,6 +1012,12 @@ namespace DawIOSystemLogic {
             }
             while (static_cast<int>(daw.tracks.size()) < audioTracks) {
                 if (!DawTrackSystemLogic::InsertTrackAt(baseSystem, static_cast<int>(daw.tracks.size()))) return false;
+            }
+
+            if (baseSystem.mida) {
+                while (static_cast<int>(baseSystem.mida->tracks.size()) > 0) {
+                    if (!MidaInterpreterSystemLogic::RemoveTrackAt(baseSystem, static_cast<int>(baseSystem.mida->tracks.size()) - 1)) return false;
+                }
             }
 
             while (static_cast<int>(midi.tracks.size()) > midiTracks) {
@@ -1021,6 +1040,10 @@ namespace DawIOSystemLogic {
             while (static_cast<int>(daw.chuckTracks.size()) < chuckTracks) {
                 if (!ChuckLaneSystemLogic::InsertTrackAt(baseSystem, static_cast<int>(daw.chuckTracks.size()))) return false;
             }
+            if (midaTracks > 0 && !baseSystem.mida) return false;
+            while (baseSystem.mida && static_cast<int>(baseSystem.mida->tracks.size()) < midaTracks) {
+                if (!MidaInterpreterSystemLogic::InsertTrackAt(baseSystem, static_cast<int>(daw.laneOrder.size()))) return false;
+            }
             return true;
         }
 
@@ -1028,9 +1051,10 @@ namespace DawIOSystemLogic {
                                      int audioTrackCount,
                                      int midiTrackCount,
                                      int automationTrackCount,
-                                     int chuckTrackCount) {
+                                     int chuckTrackCount,
+                                     int midaTrackCount) {
             daw.laneOrder.clear();
-            daw.laneOrder.reserve(static_cast<size_t>(audioTrackCount + midiTrackCount + automationTrackCount + chuckTrackCount));
+            daw.laneOrder.reserve(static_cast<size_t>(audioTrackCount + midiTrackCount + automationTrackCount + chuckTrackCount + midaTrackCount));
             for (int i = 0; i < audioTrackCount; ++i) {
                 daw.laneOrder.push_back({0, i});
             }
@@ -1043,6 +1067,9 @@ namespace DawIOSystemLogic {
             for (int i = 0; i < chuckTrackCount; ++i) {
                 daw.laneOrder.push_back({3, i});
             }
+            for (int i = 0; i < midaTrackCount; ++i) {
+                daw.laneOrder.push_back({DawContext::kLaneMida, i});
+            }
         }
 
         void restoreLaneOrder(DawContext& daw,
@@ -1050,9 +1077,10 @@ namespace DawIOSystemLogic {
                               int audioTrackCount,
                               int midiTrackCount,
                               int automationTrackCount,
-                              int chuckTrackCount) {
+                              int chuckTrackCount,
+                              int midaTrackCount) {
             if (!laneOrder.is_array()) {
-                rebuildDefaultLaneOrder(daw, audioTrackCount, midiTrackCount, automationTrackCount, chuckTrackCount);
+                rebuildDefaultLaneOrder(daw, audioTrackCount, midiTrackCount, automationTrackCount, chuckTrackCount, midaTrackCount);
                 return;
             }
             std::vector<DawContext::LaneEntry> restored;
@@ -1067,6 +1095,7 @@ namespace DawIOSystemLogic {
                 if (type == 1) valid = trackIndex >= 0 && trackIndex < midiTrackCount;
                 if (type == 2) valid = trackIndex >= 0 && trackIndex < automationTrackCount;
                 if (type == 3) valid = trackIndex >= 0 && trackIndex < chuckTrackCount;
+                if (type == DawContext::kLaneMida) valid = trackIndex >= 0 && trackIndex < midaTrackCount;
                 if (!valid) continue;
                 auto& seen = seenByType[type];
                 if (seen.find(trackIndex) != seen.end()) continue;
@@ -1074,7 +1103,7 @@ namespace DawIOSystemLogic {
                 restored.push_back({type, trackIndex});
             }
             if (restored.empty()) {
-                rebuildDefaultLaneOrder(daw, audioTrackCount, midiTrackCount, automationTrackCount, chuckTrackCount);
+                rebuildDefaultLaneOrder(daw, audioTrackCount, midiTrackCount, automationTrackCount, chuckTrackCount, midaTrackCount);
                 return;
             }
             auto appendMissing = [&](int type, int count) {
@@ -1088,7 +1117,21 @@ namespace DawIOSystemLogic {
             appendMissing(1, midiTrackCount);
             appendMissing(2, automationTrackCount);
             appendMissing(3, chuckTrackCount);
+            appendMissing(DawContext::kLaneMida, midaTrackCount);
             daw.laneOrder = std::move(restored);
+        }
+
+        std::vector<int> visibleMidiTrackIndices(MidiContext& midi) {
+            if (midi.trackVisible.size() < midi.tracks.size()) {
+                midi.trackVisible.resize(midi.tracks.size(), true);
+            }
+            std::vector<int> indices;
+            indices.reserve(midi.tracks.size());
+            for (int i = 0; i < static_cast<int>(midi.tracks.size()); ++i) {
+                if (i < static_cast<int>(midi.trackVisible.size()) && !midi.trackVisible[static_cast<size_t>(i)]) continue;
+                indices.push_back(i);
+            }
+            return indices;
         }
 
         bool processStemExportBlock(BaseSystem& baseSystem, uint32_t maxFrames) {
@@ -1776,9 +1819,15 @@ namespace DawIOSystemLogic {
         json midiTracks = json::array();
         json automationTracks = json::array();
         json chuckTracks = json::array();
+        json midaTracks = json::array();
 
         std::lock_guard<std::mutex> dawLock(daw.trackMutex);
         std::lock_guard<std::mutex> midiLock(midi.trackMutex);
+        const std::vector<int> visibleMidi = visibleMidiTrackIndices(midi);
+        std::unordered_map<int, int> midiRuntimeToSessionIndex;
+        for (int i = 0; i < static_cast<int>(visibleMidi.size()); ++i) {
+            midiRuntimeToSessionIndex[visibleMidi[static_cast<size_t>(i)]] = i;
+        }
 
         const uint32_t sampleRate = static_cast<uint32_t>(std::max(1.0f, daw.sampleRate));
         for (size_t i = 0; i < daw.clipAudio.size(); ++i) {
@@ -1825,8 +1874,8 @@ namespace DawIOSystemLogic {
             audioTracks.push_back(std::move(trackJson));
         }
 
-        for (size_t i = 0; i < midi.tracks.size(); ++i) {
-            const MidiTrack& track = midi.tracks[i];
+        for (int runtimeIndex : visibleMidi) {
+            const MidiTrack& track = midi.tracks[static_cast<size_t>(runtimeIndex)];
             json trackJson = json::object();
             trackJson["arm_mode"] = track.armMode.load(std::memory_order_relaxed);
             trackJson["mute"] = track.mute.load(std::memory_order_relaxed);
@@ -1840,6 +1889,7 @@ namespace DawIOSystemLogic {
             trackJson["take_stack_expanded"] = track.takeStackExpanded;
             trackJson["loop_take_range_start_sample"] = track.loopTakeRangeStartSample;
             trackJson["loop_take_range_length"] = track.loopTakeRangeLength;
+            trackJson["mida_midi_track"] = track.midaMidiTrack;
             trackJson["clips"] = json::array();
             trackJson["loop_take_clips"] = json::array();
             for (const auto& clip : track.clips) {
@@ -1878,6 +1928,15 @@ namespace DawIOSystemLogic {
             }
             chuckTracks.push_back(std::move(trackJson));
         }
+        if (baseSystem.mida) {
+            for (const auto& track : baseSystem.mida->tracks) {
+                json trackJson = json::object();
+                trackJson["source"] = track.source;
+                trackJson["mute"] = track.mute;
+                trackJson["midi_editable"] = track.midiEditable;
+                midaTracks.push_back(std::move(trackJson));
+            }
+        }
 
         if (baseSystem.vst3) {
             Vst3Context& vst3 = *baseSystem.vst3;
@@ -1891,14 +1950,17 @@ namespace DawIOSystemLogic {
                 audioTracks[i]["fx_chain"] = std::move(fx);
             }
             for (size_t i = 0; i < midiTracks.size(); ++i) {
+                int runtimeIndex = (i < visibleMidi.size()) ? visibleMidi[i] : -1;
                 json fx = json::array();
-                if (i < vst3.midiTracks.size()) {
-                    for (const auto* plugin : vst3.midiTracks[i].effects) {
+                if (runtimeIndex >= 0 && runtimeIndex < static_cast<int>(vst3.midiTracks.size())) {
+                    for (const auto* plugin : vst3.midiTracks[static_cast<size_t>(runtimeIndex)].effects) {
                         fx.push_back(serializePlugin(plugin));
                     }
                 }
-                if (i < vst3.midiInstruments.size() && vst3.midiInstruments[i]) {
-                    midiTracks[i]["instrument"] = serializePlugin(vst3.midiInstruments[i]);
+                if (runtimeIndex >= 0
+                    && runtimeIndex < static_cast<int>(vst3.midiInstruments.size())
+                    && vst3.midiInstruments[static_cast<size_t>(runtimeIndex)]) {
+                    midiTracks[i]["instrument"] = serializePlugin(vst3.midiInstruments[static_cast<size_t>(runtimeIndex)]);
                 } else {
                     midiTracks[i]["instrument"] = nullptr;
                 }
@@ -1911,11 +1973,18 @@ namespace DawIOSystemLogic {
         root["midi_tracks"] = std::move(midiTracks);
         root["automation_tracks"] = std::move(automationTracks);
         root["chuck_tracks"] = std::move(chuckTracks);
+        root["mida_tracks"] = std::move(midaTracks);
         root["lane_order"] = json::array();
         for (const auto& lane : daw.laneOrder) {
+            int savedTrackIndex = lane.trackIndex;
+            if (lane.type == 1) {
+                auto it = midiRuntimeToSessionIndex.find(lane.trackIndex);
+                if (it == midiRuntimeToSessionIndex.end()) continue;
+                savedTrackIndex = it->second;
+            }
             root["lane_order"].push_back({
                 {"type", lane.type},
-                {"track_index", lane.trackIndex}
+                {"track_index", savedTrackIndex}
             });
         }
 
@@ -1999,12 +2068,15 @@ namespace DawIOSystemLogic {
             ? root["automation_tracks"] : json::array();
         const auto& chuckTracksJson = root.contains("chuck_tracks") && root["chuck_tracks"].is_array()
             ? root["chuck_tracks"] : json::array();
+        const auto& midaTracksJson = root.contains("mida_tracks") && root["mida_tracks"].is_array()
+            ? root["mida_tracks"] : json::array();
 
         if (!setTrackCountsForSession(baseSystem,
                                       static_cast<int>(audioTracksJson.size()),
                                       static_cast<int>(midiTracksJson.size()),
                                       static_cast<int>(automationTracksJson.size()),
-                                      static_cast<int>(chuckTracksJson.size()))) {
+                                      static_cast<int>(chuckTracksJson.size()),
+                                      static_cast<int>(midaTracksJson.size()))) {
             std::cerr << "Session load failed: could not apply track counts." << std::endl;
             return false;
         }
@@ -2013,6 +2085,9 @@ namespace DawIOSystemLogic {
         daw.automationTrackCount = static_cast<int>(daw.automationTracks.size());
         daw.chuckTrackCount = static_cast<int>(daw.chuckTracks.size());
         midi.trackCount = static_cast<int>(midi.tracks.size());
+        if (baseSystem.mida) {
+            baseSystem.mida->trackCount = static_cast<int>(baseSystem.mida->tracks.size());
+        }
 
         {
             std::lock_guard<std::mutex> dawLock(daw.trackMutex);
@@ -2056,6 +2131,23 @@ namespace DawIOSystemLogic {
                 track.clearPending = false;
                 track.mute = false;
                 track.nextEventId = 1;
+            }
+            if (baseSystem.mida) {
+                baseSystem.mida->selectedTrack = -1;
+                baseSystem.mida->editorOpen = false;
+                baseSystem.mida->editorTrack = -1;
+                baseSystem.mida->editorBuffer.clear();
+                baseSystem.mida->statusMessage.clear();
+                for (auto& track : baseSystem.mida->tracks) {
+                    track.sourceHash = 0;
+                    track.midiTrackIndex = -1;
+                    track.compiledBpm = 0.0;
+                    track.compiledSampleRate = 0.0f;
+                    track.compiledTickLength = 0;
+                    track.compiledNoteCount = 0;
+                    track.compileOk = false;
+                    track.diagnostics.clear();
+                }
             }
 
             const auto& audioPoolJson = root.contains("audio_pool") && root["audio_pool"].is_array()
@@ -2163,6 +2255,7 @@ namespace DawIOSystemLogic {
                 track.takeStackExpanded = readBool(trackJson, "take_stack_expanded", false);
                 track.loopTakeRangeStartSample = readU64(trackJson, "loop_take_range_start_sample", 0);
                 track.loopTakeRangeLength = readU64(trackJson, "loop_take_range_length", 0);
+                track.midaMidiTrack = readBool(trackJson, "mida_midi_track", false);
 
                 auto itClips = trackJson.find("clips");
                 if (itClips != trackJson.end() && itClips->is_array()) {
@@ -2229,13 +2322,32 @@ namespace DawIOSystemLogic {
                     track.nextEventId = std::max(track.nextEventId, maxEventId + 1);
                 }
             }
+            if (baseSystem.mida) {
+                for (size_t i = 0; i < baseSystem.mida->tracks.size() && i < midaTracksJson.size(); ++i) {
+                    MidaTrack& track = baseSystem.mida->tracks[i];
+                    const json& trackJson = midaTracksJson[i];
+                    track.source = readString(trackJson, "source", track.source);
+                    track.mute = readBool(trackJson, "mute", false);
+                    track.midiEditable = readBool(trackJson, "midi_editable", false);
+                    track.sourceHash = 0;
+                    track.midiTrackIndex = -1;
+                    track.compiledBpm = 0.0;
+                    track.compiledSampleRate = 0.0f;
+                    track.compiledTickLength = 0;
+                    track.compiledNoteCount = 0;
+                    track.compileOk = false;
+                    track.diagnostics.clear();
+                }
+                baseSystem.mida->trackCount = static_cast<int>(baseSystem.mida->tracks.size());
+            }
 
             restoreLaneOrder(daw,
                              root.contains("lane_order") ? root["lane_order"] : json::array(),
                              static_cast<int>(daw.tracks.size()),
                              static_cast<int>(midi.tracks.size()),
                              static_cast<int>(daw.automationTracks.size()),
-                             static_cast<int>(daw.chuckTracks.size()));
+                             static_cast<int>(daw.chuckTracks.size()),
+                             baseSystem.mida ? static_cast<int>(baseSystem.mida->tracks.size()) : 0);
         }
 
         if (baseSystem.vst3) {

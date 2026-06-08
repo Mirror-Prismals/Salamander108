@@ -3,6 +3,7 @@
 #include <iostream>
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 
 namespace ChucKSystemLogic {
 
@@ -13,14 +14,17 @@ namespace ChucKSystemLogic {
     }
 
     // All helpers below assume the caller already holds `audio.chuck_vm_mutex`.
-    static bool compile_script(AudioContext& audio, const std::string& path, t_CKUINT& outShredId) {
+    static bool compile_script_with_args(AudioContext& audio,
+                                         const std::string& path,
+                                         const std::string& args,
+                                         t_CKUINT& outShredId) {
         std::ifstream f(path);
         if (!f.is_open()) {
             std::cerr << "ChucK script not found at '" << path << "'. Skipping compile." << std::endl;
             return false;
         }
         std::vector<t_CKUINT> ids;
-        bool ok = audio.chuck->compileFile(path, "", 1, FALSE, &ids);
+        bool ok = audio.chuck->compileFile(path, args, 1, FALSE, &ids);
         if (!ok || ids.empty()) {
             std::cerr << "ChucK failed to compile script: " << path << std::endl;
             return false;
@@ -28,6 +32,10 @@ namespace ChucKSystemLogic {
         outShredId = ids.front();
         std::cout << "ChucK script compiled: " << path << " (shred " << outShredId << ")" << std::endl;
         return true;
+    }
+
+    static bool compile_script(AudioContext& audio, const std::string& path, t_CKUINT& outShredId) {
+        return compile_script_with_args(audio, path, "", outShredId);
     }
 
     static bool path_matches(const std::string& candidate, const std::string& target) {
@@ -119,6 +127,57 @@ namespace ChucKSystemLogic {
         } catch (...) {
             return fallback;
         }
+    }
+
+    static bool read_registry_bool(const BaseSystem& baseSystem, const std::string& key, bool fallback) {
+        if (!baseSystem.registry) return fallback;
+        auto it = baseSystem.registry->find(key);
+        if (it == baseSystem.registry->end()) return fallback;
+        if (std::holds_alternative<bool>(it->second)) return std::get<bool>(it->second);
+        if (std::holds_alternative<std::string>(it->second)) {
+            std::string value = std::get<std::string>(it->second);
+            std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+            if (value == "1" || value == "true" || value == "yes" || value == "on") return true;
+            if (value == "0" || value == "false" || value == "no" || value == "off") return false;
+        }
+        return fallback;
+    }
+
+    static std::string read_registry_string(const BaseSystem& baseSystem,
+                                            const std::string& key,
+                                            const std::string& fallback) {
+        if (!baseSystem.registry) return fallback;
+        auto it = baseSystem.registry->find(key);
+        if (it == baseSystem.registry->end()) return fallback;
+        if (std::holds_alternative<std::string>(it->second)) return std::get<std::string>(it->second);
+        if (std::holds_alternative<bool>(it->second)) return std::get<bool>(it->second) ? "true" : "false";
+        return fallback;
+    }
+
+    static void remove_script_shreds_unlocked(AudioContext& audio,
+                                              const std::string& scriptPath,
+                                              t_CKUINT& shredId) {
+        if (!audio.chuck) return;
+        auto* vm = audio.chuck->vm();
+        if (!vm) return;
+        if (shredId) {
+            if (auto* sh = vm->shreduler()->lookup(shredId)) {
+                vm->shreduler()->remove(sh);
+            }
+        }
+        if (!scriptPath.empty()) {
+            std::vector<Chuck_VM_Shred*> shreds;
+            vm->shreduler()->get_all_shreds(shreds);
+            for (auto* shred : shreds) {
+                if (!shred || !shred->code_orig) continue;
+                if (path_matches(shred->code_orig->filename, scriptPath)) {
+                    vm->shreduler()->remove(shred);
+                }
+            }
+        }
+        shredId = 0;
     }
 
     static void stop_noise_shred_unlocked(AudioContext& audio) {
@@ -240,6 +299,9 @@ namespace ChucKSystemLogic {
                 }
                 audio.chuckHeadShredId = 0;
             }
+            remove_script_shreds_unlocked(audio, audio.chuckHeadRainScript, audio.chuckHeadRainShredId);
+            remove_script_shreds_unlocked(audio, audio.chuckHeadWaterScript, audio.chuckHeadWaterShredId);
+            remove_script_shreds_unlocked(audio, audio.chuckHeadLavaScript, audio.chuckHeadLavaShredId);
             if (audio.chuckNoiseShredId) {
                 if (auto* sh = audio.chuck->vm()->shreduler()->lookup(audio.chuckNoiseShredId)) {
                     audio.chuck->vm()->shreduler()->remove(sh);
@@ -252,8 +314,68 @@ namespace ChucKSystemLogic {
             audio.chuckMainHasActiveShreds.store(false, std::memory_order_relaxed);
             audio.chuckHeadActiveShredCount.store(0, std::memory_order_relaxed);
             audio.chuckHeadHasActiveShreds.store(false, std::memory_order_relaxed);
+            audio.chuckHeadRainActiveShredCount.store(0, std::memory_order_relaxed);
+            audio.chuckHeadRainHasActiveShreds.store(false, std::memory_order_relaxed);
+            audio.chuckHeadWaterActiveShredCount.store(0, std::memory_order_relaxed);
+            audio.chuckHeadWaterHasActiveShreds.store(false, std::memory_order_relaxed);
+            audio.chuckHeadLavaActiveShredCount.store(0, std::memory_order_relaxed);
+            audio.chuckHeadLavaHasActiveShreds.store(false, std::memory_order_relaxed);
+            audio.headRainAmbientGain.store(0.0f, std::memory_order_relaxed);
+            audio.headWaterAmbientGain.store(0.0f, std::memory_order_relaxed);
+            audio.headLavaAmbientGain.store(0.0f, std::memory_order_relaxed);
             return;
         }
+
+        const bool headAmbientEnabled = read_registry_bool(baseSystem, "HeadSpeakerEnvironmentalAudioEnabled", true);
+        static std::time_t lastHeadRainMTime = 0;
+        static std::time_t lastHeadWaterMTime = 0;
+        static std::time_t lastHeadLavaMTime = 0;
+
+        auto syncHeadAmbientLayerConfig = [&](std::string& scriptPath,
+                                              const char* scriptRegistryKey,
+                                              int& channel,
+                                              const char* channelRegistryKey,
+                                              bool& compileRequested,
+                                              std::time_t& lastMTime) {
+            const std::string configuredPath = read_registry_string(baseSystem, scriptRegistryKey, scriptPath);
+            const int configuredChannel = read_registry_int(baseSystem, channelRegistryKey, channel);
+            if (configuredPath == scriptPath && configuredChannel == channel) return;
+            scriptPath = configuredPath;
+            {
+                std::lock_guard<std::mutex> audioStateLock(audio.audio_state_mutex);
+                channel = configuredChannel;
+                if (channel >= 0 && channel < static_cast<int>(audio.channelGains.size())) {
+                    audio.channelGains[static_cast<size_t>(channel)] = 0.0f;
+                }
+            }
+            compileRequested = true;
+            lastMTime = 0;
+        };
+
+        syncHeadAmbientLayerConfig(
+            audio.chuckHeadRainScript,
+            "HeadSpeakerRainChuckScript",
+            audio.chuckHeadRainChannel,
+            "HeadSpeakerRainChuckChannel",
+            audio.chuckHeadRainCompileRequested,
+            lastHeadRainMTime
+        );
+        syncHeadAmbientLayerConfig(
+            audio.chuckHeadWaterScript,
+            "HeadSpeakerWaterChuckScript",
+            audio.chuckHeadWaterChannel,
+            "HeadSpeakerWaterChuckChannel",
+            audio.chuckHeadWaterCompileRequested,
+            lastHeadWaterMTime
+        );
+        syncHeadAmbientLayerConfig(
+            audio.chuckHeadLavaScript,
+            "HeadSpeakerLavaChuckScript",
+            audio.chuckHeadLavaChannel,
+            "HeadSpeakerLavaChuckChannel",
+            audio.chuckHeadLavaCompileRequested,
+            lastHeadLavaMTime
+        );
 
         // Hot reload based on file mtime without rebuild
         {
@@ -275,6 +397,20 @@ namespace ChucKSystemLogic {
                 audio.chuckNoiseShredId = 0;
                 lastNoiseMTime = m;
             }
+
+            auto watchHeadAmbientScript = [&](const std::string& scriptPath,
+                                              std::time_t& lastMTime,
+                                              bool& compileRequested) {
+                if (!headAmbientEnabled || scriptPath.empty()) return;
+                std::time_t ambientMTime = 0;
+                if (file_mtime(scriptPath, ambientMTime) && ambientMTime != lastMTime) {
+                    compileRequested = true;
+                    lastMTime = ambientMTime;
+                }
+            };
+            watchHeadAmbientScript(audio.chuckHeadRainScript, lastHeadRainMTime, audio.chuckHeadRainCompileRequested);
+            watchHeadAmbientScript(audio.chuckHeadWaterScript, lastHeadWaterMTime, audio.chuckHeadWaterCompileRequested);
+            watchHeadAmbientScript(audio.chuckHeadLavaScript, lastHeadLavaMTime, audio.chuckHeadLavaCompileRequested);
         }
 
         bool soundtrackStopRequested = false;
@@ -303,6 +439,13 @@ namespace ChucKSystemLogic {
             std::lock_guard<std::mutex> oneShotLock(audio.chuckOneShotMutex);
             oneShotQueued = !audio.chuckOneShotScriptQueue.empty();
         }
+        const bool headAmbientStopDueDisabled = !headAmbientEnabled
+            && (audio.chuckHeadRainShredId != 0
+                || audio.chuckHeadWaterShredId != 0
+                || audio.chuckHeadLavaShredId != 0
+                || audio.chuckHeadRainHasActiveShreds.load(std::memory_order_relaxed)
+                || audio.chuckHeadWaterHasActiveShreds.load(std::memory_order_relaxed)
+                || audio.chuckHeadLavaHasActiveShreds.load(std::memory_order_relaxed));
 
         using Clock = std::chrono::steady_clock;
         static auto lastMaintenanceTime = Clock::now();
@@ -312,6 +455,10 @@ namespace ChucKSystemLogic {
         const bool needsVmWork =
             audio.chuckMainCompileRequested
             || audio.chuckHeadCompileRequested
+            || audio.chuckHeadRainCompileRequested
+            || audio.chuckHeadWaterCompileRequested
+            || audio.chuckHeadLavaCompileRequested
+            || headAmbientStopDueDisabled
             || audio.chuckNoiseShouldRun
             || audio.chuckNoiseShredId != 0
             || soundtrackStopRequested
@@ -356,6 +503,78 @@ namespace ChucKSystemLogic {
             compile_script(audio, audio.chuckHeadScript, audio.chuckHeadShredId);
             audio.chuckHeadCompileRequested = false;
         }
+
+        auto stopHeadAmbientLayer = [&](const std::string& scriptPath,
+                                        t_CKUINT& shredId,
+                                        std::atomic<int>& activeCount,
+                                        std::atomic<bool>& hasActiveShreds) {
+            remove_script_shreds_unlocked(audio, scriptPath, shredId);
+            activeCount.store(0, std::memory_order_relaxed);
+            hasActiveShreds.store(false, std::memory_order_relaxed);
+        };
+
+        if (!headAmbientEnabled) {
+            stopHeadAmbientLayer(
+                audio.chuckHeadRainScript,
+                audio.chuckHeadRainShredId,
+                audio.chuckHeadRainActiveShredCount,
+                audio.chuckHeadRainHasActiveShreds
+            );
+            stopHeadAmbientLayer(
+                audio.chuckHeadWaterScript,
+                audio.chuckHeadWaterShredId,
+                audio.chuckHeadWaterActiveShredCount,
+                audio.chuckHeadWaterHasActiveShreds
+            );
+            stopHeadAmbientLayer(
+                audio.chuckHeadLavaScript,
+                audio.chuckHeadLavaShredId,
+                audio.chuckHeadLavaActiveShredCount,
+                audio.chuckHeadLavaHasActiveShreds
+            );
+            audio.chuckHeadRainCompileRequested = false;
+            audio.chuckHeadWaterCompileRequested = false;
+            audio.chuckHeadLavaCompileRequested = false;
+        }
+
+        auto compileHeadAmbientLayer = [&](const std::string& scriptPath,
+                                           int channel,
+                                           t_CKUINT& shredId,
+                                           bool& compileRequested,
+                                           std::atomic<int>& activeCount,
+                                           std::atomic<bool>& hasActiveShreds) {
+            if (!compileRequested) return;
+            stopHeadAmbientLayer(scriptPath, shredId, activeCount, hasActiveShreds);
+            if (headAmbientEnabled && !scriptPath.empty() && channel >= 0 && channel < audio.chuckOutputChannels) {
+                compile_script_with_args(audio, scriptPath, std::to_string(channel), shredId);
+            }
+            compileRequested = false;
+        };
+
+        compileHeadAmbientLayer(
+            audio.chuckHeadRainScript,
+            audio.chuckHeadRainChannel,
+            audio.chuckHeadRainShredId,
+            audio.chuckHeadRainCompileRequested,
+            audio.chuckHeadRainActiveShredCount,
+            audio.chuckHeadRainHasActiveShreds
+        );
+        compileHeadAmbientLayer(
+            audio.chuckHeadWaterScript,
+            audio.chuckHeadWaterChannel,
+            audio.chuckHeadWaterShredId,
+            audio.chuckHeadWaterCompileRequested,
+            audio.chuckHeadWaterActiveShredCount,
+            audio.chuckHeadWaterHasActiveShreds
+        );
+        compileHeadAmbientLayer(
+            audio.chuckHeadLavaScript,
+            audio.chuckHeadLavaChannel,
+            audio.chuckHeadLavaShredId,
+            audio.chuckHeadLavaCompileRequested,
+            audio.chuckHeadLavaActiveShredCount,
+            audio.chuckHeadLavaHasActiveShreds
+        );
 
         for (const auto& scriptPath : oneShotScripts) {
             t_CKUINT oneShotShredId = 0;
@@ -558,6 +777,21 @@ namespace ChucKSystemLogic {
             int headShredCount = count_script_shreds(audio, audio.chuckHeadScript);
             audio.chuckHeadActiveShredCount.store(headShredCount, std::memory_order_relaxed);
             audio.chuckHeadHasActiveShreds.store(headShredCount > 0, std::memory_order_relaxed);
+            int rainShredCount = audio.chuckHeadRainScript.empty()
+                ? 0
+                : count_script_shreds(audio, audio.chuckHeadRainScript);
+            audio.chuckHeadRainActiveShredCount.store(rainShredCount, std::memory_order_relaxed);
+            audio.chuckHeadRainHasActiveShreds.store(rainShredCount > 0, std::memory_order_relaxed);
+            int waterShredCount = audio.chuckHeadWaterScript.empty()
+                ? 0
+                : count_script_shreds(audio, audio.chuckHeadWaterScript);
+            audio.chuckHeadWaterActiveShredCount.store(waterShredCount, std::memory_order_relaxed);
+            audio.chuckHeadWaterHasActiveShreds.store(waterShredCount > 0, std::memory_order_relaxed);
+            int lavaShredCount = audio.chuckHeadLavaScript.empty()
+                ? 0
+                : count_script_shreds(audio, audio.chuckHeadLavaScript);
+            audio.chuckHeadLavaActiveShredCount.store(lavaShredCount, std::memory_order_relaxed);
+            audio.chuckHeadLavaHasActiveShreds.store(lavaShredCount > 0, std::memory_order_relaxed);
         }
     }
 

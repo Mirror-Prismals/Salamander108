@@ -28,6 +28,10 @@ namespace DawUiSystemLogic {
         int getChuckTrackCount(const DawContext& daw) {
             return static_cast<int>(daw.chuckTracks.size());
         }
+        int getMidaTrackCount(const BaseSystem& baseSystem) {
+            if (!baseSystem.mida) return 0;
+            return static_cast<int>(baseSystem.mida->tracks.size());
+        }
 
         int getMidiTrackCount(const BaseSystem& baseSystem) {
             if (!baseSystem.midi) return 0;
@@ -163,7 +167,9 @@ namespace DawUiSystemLogic {
             if (name == "AutomationTrackRowWorld") return true;
             if (name.rfind("AutomationTrackRowWorld_", 0) == 0) return true;
             if (name == "ChuckTrackRowWorld") return true;
-            return name.rfind("ChuckTrackRowWorld_", 0) == 0;
+            if (name.rfind("ChuckTrackRowWorld_", 0) == 0) return true;
+            if (name == "MidaTrackRowWorld") return true;
+            return name.rfind("MidaTrackRowWorld_", 0) == 0;
         }
 
         int parseTrackIndexFromControlIdWithPrefix(const std::string& controlId,
@@ -244,9 +250,28 @@ namespace DawUiSystemLogic {
             int trackCount = getTrackCount(daw);
             int automationTrackCount = getAutomationTrackCount(daw);
             int chuckTrackCount = getChuckTrackCount(daw);
+            int midaTrackCount = getMidaTrackCount(baseSystem);
             for (auto* instPtr : daw.trackInstances) {
                 if (!instPtr) continue;
                 EntityInstance& inst = *instPtr;
+                if (inst.actionType == "DawMidaTrack") {
+                    int trackIndex = parseTrackIndex(inst.actionValue, midaTrackCount);
+                    if (trackIndex < 0) {
+                        trackIndex = parseTrackIndexFromControlIdWithPrefix(inst.controlId,
+                                                                            "mida_track_",
+                                                                            midaTrackCount);
+                    }
+                    if (trackIndex < 0 || !baseSystem.mida || trackIndex >= midaTrackCount) continue;
+                    MidaTrack& track = baseSystem.mida->tracks[static_cast<size_t>(trackIndex)];
+                    if (inst.actionKey == "mute") {
+                        inst.uiState = track.mute ? "active" : "idle";
+                        ButtonSystemLogic::SetButtonToggled(inst.instanceID, track.mute);
+                    } else if (inst.actionKey == "clear" || inst.actionKey == "edit" || inst.actionKey == "add") {
+                        inst.uiState = "idle";
+                        ButtonSystemLogic::SetButtonToggled(inst.instanceID, false);
+                    }
+                    continue;
+                }
                 if (inst.actionType == "DawChuckTrack") {
                     int trackIndex = parseTrackIndex(inst.actionValue, chuckTrackCount);
                     if (trackIndex < 0) {
@@ -511,6 +536,14 @@ namespace DawUiSystemLogic {
                     } else if (inst.actionKey == "mute") {
                         inst.position.x = muteX;
                     }
+                } else if (inst.actionType == "DawMidaTrack") {
+                    if (inst.actionKey == "clear") {
+                        inst.position.x = clearX;
+                    } else if (inst.actionKey == "edit") {
+                        inst.position.x = inputX;
+                    } else if (inst.actionKey == "mute") {
+                        inst.position.x = armX;
+                    }
                 } else {
                     if (inst.actionKey == "clear") {
                         inst.position.x = clearX;
@@ -542,6 +575,16 @@ namespace DawUiSystemLogic {
                 if (!instPtr) continue;
                 EntityInstance& inst = *instPtr;
                 if (inst.controlId.find("_output") != std::string::npos) continue;
+                if (inst.controlId.rfind("mida_track_", 0) == 0) {
+                    if (inst.controlId.find("_label") != std::string::npos) {
+                        inst.position.x = soloX;
+                        continue;
+                    }
+                    if (inst.controlId.find("_notes") != std::string::npos) {
+                        inst.position.x = muteX;
+                        continue;
+                    }
+                }
                 auto it = controlX.find(inst.controlId);
                 if (it != controlX.end()) {
                     inst.position.x = it->second;
@@ -610,6 +653,8 @@ namespace DawUiSystemLogic {
                     } else if (inst.actionType == "DawAutomationTrack") {
                         daw.trackInstances.push_back(&inst);
                     } else if (inst.actionType == "DawChuckTrack") {
+                        daw.trackInstances.push_back(&inst);
+                    } else if (inst.actionType == "DawMidaTrack") {
                         daw.trackInstances.push_back(&inst);
                     } else if (inst.actionType == "DawTransport") {
                         daw.transportInstances.push_back(&inst);
@@ -748,6 +793,22 @@ namespace DawUiSystemLogic {
                 fontCtx.variables["chuck_events_" + std::to_string(i + 1)] = std::to_string(track.events.size());
             }
             fontCtx.variables["chuck_status"] = daw.chuckStatusMessage;
+        }
+
+        void updateMidaLabels(BaseSystem& baseSystem) {
+            if (!baseSystem.font || !baseSystem.mida) return;
+            FontContext& fontCtx = *baseSystem.font;
+            MidaContext& mida = *baseSystem.mida;
+            int trackCount = static_cast<int>(mida.tracks.size());
+            for (int i = 0; i < trackCount; ++i) {
+                const MidaTrack& track = mida.tracks[static_cast<size_t>(i)];
+                fontCtx.variables["mida_lane_" + std::to_string(i + 1)] =
+                    (track.midiEditable ? "MIDA-M" : "MIDA") + std::to_string(i + 1);
+                fontCtx.variables["mida_notes_" + std::to_string(i + 1)] = track.compileOk
+                    ? (std::to_string(track.compiledNoteCount) + "n")
+                    : "ERR";
+            }
+            fontCtx.variables["mida_status"] = mida.statusMessage;
         }
 
         void updateTimelineLabels(BaseSystem& baseSystem, DawContext& daw, PlatformWindowHandle win) {
@@ -978,6 +1039,7 @@ namespace DawUiSystemLogic {
             updateInputLabels(baseSystem, daw, audio);
             updateAutomationLabels(baseSystem, daw);
             updateChuckLabels(baseSystem, daw);
+            updateMidaLabels(baseSystem);
             updateTimelineLabels(baseSystem, daw, win);
             updateBpmLabel(baseSystem, daw);
             updateShaderReloadStatusLabel(baseSystem);

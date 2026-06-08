@@ -101,7 +101,10 @@ namespace MidiTrackSystemLogic {
             int current = getTrackCount(midi);
             if (desired > current) {
                 midi.tracks.resize(static_cast<size_t>(desired));
+                midi.trackNames.resize(static_cast<size_t>(desired));
+                midi.trackVisible.resize(static_cast<size_t>(desired), true);
                 for (int i = current; i < desired; ++i) {
+                    midi.trackVisible[static_cast<size_t>(i)] = true;
                     initTrack(midi.tracks[i], i, midi, audio);
                 }
             } else if (desired < current) {
@@ -113,6 +116,12 @@ namespace MidiTrackSystemLogic {
                     cleanupTrack(midi.tracks[static_cast<size_t>(i)]);
                 }
                 midi.tracks.erase(midi.tracks.begin() + desired, midi.tracks.end());
+                if (midi.trackNames.size() > static_cast<size_t>(desired)) {
+                    midi.trackNames.erase(midi.trackNames.begin() + desired, midi.trackNames.end());
+                }
+                if (midi.trackVisible.size() > static_cast<size_t>(desired)) {
+                    midi.trackVisible.erase(midi.trackVisible.begin() + desired, midi.trackVisible.end());
+                }
                 deleteStaleTrackFile(daw, oldCount);
             }
             midi.trackCount = getTrackCount(midi);
@@ -173,6 +182,12 @@ namespace MidiTrackSystemLogic {
             }
             cleanupTrack(midi.tracks[static_cast<size_t>(trackIndex)]);
             midi.tracks.erase(midi.tracks.begin() + trackIndex);
+            if (trackIndex < static_cast<int>(midi.trackNames.size())) {
+                midi.trackNames.erase(midi.trackNames.begin() + trackIndex);
+            }
+            if (trackIndex < static_cast<int>(midi.trackVisible.size())) {
+                midi.trackVisible.erase(midi.trackVisible.begin() + trackIndex);
+            }
             midi.trackCount = getTrackCount(midi);
             if (baseSystem.vst3) {
                 Vst3SystemLogic::EnsureMidiTrackCount(*baseSystem.vst3, midi.trackCount);
@@ -204,6 +219,9 @@ namespace MidiTrackSystemLogic {
             std::lock_guard<std::mutex> lock(midi.trackMutex);
             int index = getTrackCount(midi);
             midi.tracks.emplace_back();
+            midi.trackNames.resize(midi.tracks.size());
+            midi.trackVisible.resize(midi.tracks.size(), true);
+            midi.trackVisible[static_cast<size_t>(index)] = true;
             initTrack(midi.tracks.back(), index, midi, audio);
             midi.trackCount = getTrackCount(midi);
             if (baseSystem.vst3) {
@@ -216,11 +234,18 @@ namespace MidiTrackSystemLogic {
             return true;
         }
 
-        bool insertTrackAt(BaseSystem& baseSystem, MidiContext& midi, AudioContext& audio, DawContext& daw, int trackIndex) {
+        bool insertTrackAt(BaseSystem& baseSystem, MidiContext& midi, AudioContext& audio, DawContext& daw, int trackIndex, bool midaMidiTrack = false) {
             std::lock_guard<std::mutex> lock(midi.trackMutex);
             int index = getTrackCount(midi);
             midi.tracks.emplace_back();
+            midi.trackNames.resize(midi.tracks.size());
+            midi.trackVisible.resize(midi.tracks.size(), true);
+            midi.trackVisible[static_cast<size_t>(index)] = true;
             initTrack(midi.tracks.back(), index, midi, audio);
+            midi.tracks.back().midaMidiTrack = midaMidiTrack;
+            if (midaMidiTrack && index < static_cast<int>(midi.trackNames.size())) {
+                midi.trackNames[static_cast<size_t>(index)] = "mida midi track";
+            }
             midi.trackCount = getTrackCount(midi);
             if (baseSystem.vst3) {
                 Vst3SystemLogic::EnsureMidiTrackCount(*baseSystem.vst3, midi.trackCount);
@@ -240,6 +265,12 @@ namespace MidiTrackSystemLogic {
             if (midi.trackCount < 0) midi.trackCount = 0;
             if (midi.tracks.empty() && midi.trackCount > 0) {
                 midi.tracks.resize(static_cast<size_t>(midi.trackCount));
+            }
+            if (midi.trackNames.size() < midi.tracks.size()) {
+                midi.trackNames.resize(midi.tracks.size());
+            }
+            if (midi.trackVisible.size() < midi.tracks.size()) {
+                midi.trackVisible.resize(midi.tracks.size(), true);
             }
             if (midi.trackCount != getTrackCount(midi)) {
                 midi.trackCount = getTrackCount(midi);
@@ -401,6 +432,11 @@ namespace MidiTrackSystemLogic {
     bool InsertTrackAt(BaseSystem& baseSystem, int trackIndex) {
         if (!baseSystem.midi || !baseSystem.audio || !baseSystem.daw) return false;
         return insertTrackAt(baseSystem, *baseSystem.midi, *baseSystem.audio, *baseSystem.daw, trackIndex);
+    }
+
+    bool InsertMidaMidiTrackAt(BaseSystem& baseSystem, int trackIndex) {
+        if (!baseSystem.midi || !baseSystem.audio || !baseSystem.daw) return false;
+        return insertTrackAt(baseSystem, *baseSystem.midi, *baseSystem.audio, *baseSystem.daw, trackIndex, true);
     }
 
     bool RemoveTrackAt(BaseSystem& baseSystem, int trackIndex) {

@@ -88,6 +88,8 @@ bool Host::checkDependencies(const std::vector<std::string>& deps) {
         if (dep == "FontContext" && !baseSystem.font) return false;
         if (dep == "DawContext" && !baseSystem.daw) return false;
         if (dep == "MidiContext" && !baseSystem.midi) return false;
+        if (dep == "MidaContext" && !baseSystem.mida) return false;
+        if (dep == "RollerCoasterContext" && !baseSystem.rollerCoaster) return false;
         if (dep == "PerfContext" && !baseSystem.perf) return false;
         if (dep == "WorldSaveContext" && !baseSystem.worldSave) return false;
     }

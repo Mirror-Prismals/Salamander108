@@ -65,6 +65,8 @@ namespace PlatformInput {
         Equal,
         Minus,
         Period,
+        Backslash,
+        GraveAccent,
         LeftSuper,
         RightSuper,
         LeftControl,

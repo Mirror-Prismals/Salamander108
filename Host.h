@@ -115,6 +115,8 @@ struct VoxelMeshingPrototypeTraits {
     bool stick = false;
     bool stickX = false;
     bool stickZ = false;
+    bool debugSlope = false;
+    int debugSlopeDir = 0;
     bool grassCoverX = false;
     bool grassCoverZ = false;
     bool stonePebbleX = false;
@@ -658,6 +660,10 @@ struct RendererContext {
     RenderHandle grass3DVolumeVBO = 0;
     RenderHandle grass3DVolumeInstanceVBO = 0;
     int grass3DVolumeVertexCount = 0;
+    std::unique_ptr<Shader> coasterShader;
+    RenderHandle coasterVAO = 0;
+    RenderHandle coasterVBO = 0;
+    int coasterVertexCount = 0;
     std::unique_ptr<Shader> fontShader;
     RenderHandle cubeVBO;
     std::vector<RenderHandle> behaviorVAOs;
@@ -839,20 +845,38 @@ struct AudioContext {
     std::string chuckMainScript = "Procedures/chuck/head.ck";
     std::string chuckHeadScript = "Procedures/chuck/main.ck";
     std::string chuckNoiseScript = "Procedures/chuck/music.ck";
-    int chuckMainChannel = 2; // channel index for head.ck
-    int chuckHeadChannel = 0; // channel index for main.ck (ray-traced head source)
+    std::string chuckHeadRainScript = "Procedures/chuck/rain.ck";
+    std::string chuckHeadWaterScript = "Procedures/chuck/water.ck";
+    std::string chuckHeadLavaScript = "Procedures/chuck/lava.ck";
+    int chuckMainChannel = -1; // head.ck uses normal dac L/R channels
+    int chuckHeadChannel = 2; // channel index for main.ck (ray-traced player-head source)
     int chuckNoiseChannel = 0; // channel index for pink.ck
+    int chuckHeadRainChannel = 5; // channel index for rain.ck (ray-traced player-head source)
+    int chuckHeadWaterChannel = 6; // channel index for water.ck (ray-traced player-head source)
+    int chuckHeadLavaChannel = 7; // channel index for lava.ck (ray-traced player-head source)
     bool chuckBypass = false;
     bool chuckMainCompileRequested = false;
     bool chuckHeadCompileRequested = false;
+    bool chuckHeadRainCompileRequested = false;
+    bool chuckHeadWaterCompileRequested = false;
+    bool chuckHeadLavaCompileRequested = false;
     bool chuckNoiseShouldRun = false;
     t_CKUINT chuckMainShredId = 0;
     t_CKUINT chuckHeadShredId = 0;
+    t_CKUINT chuckHeadRainShredId = 0;
+    t_CKUINT chuckHeadWaterShredId = 0;
+    t_CKUINT chuckHeadLavaShredId = 0;
     t_CKUINT chuckNoiseShredId = 0;
     std::atomic<int> chuckMainActiveShredCount{0};
     std::atomic<bool> chuckMainHasActiveShreds{false};
     std::atomic<int> chuckHeadActiveShredCount{0};
     std::atomic<bool> chuckHeadHasActiveShreds{false};
+    std::atomic<int> chuckHeadRainActiveShredCount{0};
+    std::atomic<bool> chuckHeadRainHasActiveShreds{false};
+    std::atomic<int> chuckHeadWaterActiveShredCount{0};
+    std::atomic<bool> chuckHeadWaterHasActiveShreds{false};
+    std::atomic<int> chuckHeadLavaActiveShredCount{0};
+    std::atomic<bool> chuckHeadLavaHasActiveShreds{false};
     DawContext* daw = nullptr;
     struct MidiContext* midi = nullptr;
     Vst3Context* vst3 = nullptr;
@@ -939,6 +963,9 @@ struct AudioContext {
     std::atomic<float> soundtrackLevelGain{0.0f};
     std::atomic<float> speakerBlockLevelGain{0.0f};
     std::atomic<float> playerHeadSpeakerLevelGain{1.0f};
+    std::atomic<float> headRainAmbientGain{0.0f};
+    std::atomic<float> headWaterAmbientGain{0.0f};
+    std::atomic<float> headLavaAmbientGain{0.0f};
     std::atomic<float> chuckMainMeterLevel{0.0f};
     std::atomic<float> soundtrackMeterLevel{0.0f};
     std::atomic<float> speakerBlockMeterLevel{0.0f};
@@ -1288,6 +1315,8 @@ struct UIStampingContext {
     int automationSourceWorldIndex = -1;
     std::string chuckSourceWorldName = "ChuckTrackRowWorld";
     int chuckSourceWorldIndex = -1;
+    std::string midaSourceWorldName = "MidaTrackRowWorld";
+    int midaSourceWorldIndex = -1;
     int stampedRows = 0;
     float rowSpacing = 72.0f;
     float scrollY = 0.0f;
@@ -1300,6 +1329,8 @@ struct UIStampingContext {
     std::vector<float> automationSourceBaseY;
     std::vector<EntityInstance> chuckSourceInstances;
     std::vector<float> chuckSourceBaseY;
+    std::vector<EntityInstance> midaSourceInstances;
+    std::vector<float> midaSourceBaseY;
     std::vector<int> rowWorldIndices;
     std::vector<struct MirrorRowOverride> rowOverrides;
 };
@@ -1438,6 +1469,89 @@ struct MidiClip {
     uint64_t length = 0;
     std::vector<MidiNote> notes;
     int takeId = -1;
+    bool hasMidaSource = false;
+    bool midaSourceDirty = false;
+    std::string midaSource;
+};
+struct MidaDiagnostic {
+    int line = 1;
+    int column = 1;
+    std::string message;
+};
+struct MidaTrack {
+    std::string source = "*C4~E4~G4 . . . | - - - -*";
+    bool clearPending = false;
+    bool mute = false;
+    bool midiEditable = false;
+    int midiTrackIndex = -1;
+    size_t sourceHash = 0;
+    double compiledBpm = 0.0;
+    float compiledSampleRate = 0.0f;
+    uint64_t compiledTickLength = 0;
+    size_t compiledNoteCount = 0;
+    bool compileOk = false;
+    std::vector<MidaDiagnostic> diagnostics;
+};
+struct MidaContext {
+    bool initialized = false;
+    int midiTrackIndex = -1;
+    std::string trackName = "mida midi track";
+    int trackCount = 0;
+    std::vector<MidaTrack> tracks;
+    int selectedTrack = -1;
+    bool editorOpen = false;
+    int editorTrack = -1;
+    int editorMidiTrack = -1;
+    int editorMidiClip = -1;
+    std::string editorBuffer;
+    std::string statusMessage;
+    std::string source;
+    std::string sourcePath;
+    size_t sourceHash = 0;
+    double compiledBpm = 0.0;
+    float compiledSampleRate = 0.0f;
+    uint64_t compiledTickLength = 0;
+    size_t compiledNoteCount = 0;
+    bool compileOk = false;
+    std::vector<MidaDiagnostic> diagnostics;
+};
+struct CoasterTie {
+    int id = -1;
+    int worldIndex = -1;
+    glm::ivec3 cell = glm::ivec3(0);
+    glm::vec3 position = glm::vec3(0.0f);
+    glm::vec3 normal = glm::vec3(0.0f, 1.0f, 0.0f);
+    glm::vec3 forward = glm::vec3(0.0f, 0.0f, -1.0f);
+    int prevTieId = -1;
+    int nextTieId = -1;
+};
+struct CoasterSegment {
+    int id = -1;
+    int worldIndex = -1;
+    int startTieId = -1;
+    int endTieId = -1;
+    float approximateLength = 0.0f;
+};
+struct CoasterCart {
+    int segmentId = -1;
+    float t = 0.0f;
+    float velocity = 0.0f;
+    bool active = false;
+    glm::vec3 position = glm::vec3(0.0f);
+    glm::vec3 forward = glm::vec3(0.0f, 0.0f, -1.0f);
+};
+struct RollerCoasterContext {
+    bool initialized = false;
+    int nextTieId = 1;
+    int nextSegmentId = 1;
+    int selectedTieId = -1;
+    bool meshDirty = true;
+    bool nWasDown = false;
+    bool bWasDown = false;
+    std::string statusMessage;
+    std::vector<CoasterTie> ties;
+    std::vector<CoasterSegment> segments;
+    std::vector<CoasterCart> carts;
 };
 struct AutomationPoint {
     uint64_t offsetSample = 0;
@@ -1584,8 +1698,9 @@ struct DawContext {
     static constexpr int kLaneMidi = 1;
     static constexpr int kLaneAutomation = 2;
     static constexpr int kLaneChuck = 3;
+    static constexpr int kLaneMida = 4;
     struct LaneEntry {
-        int type = 0; // 0 = audio, 1 = midi, 2 = automation, 3 = ChucK event
+        int type = 0; // 0 = audio, 1 = midi, 2 = automation, 3 = ChucK event, 4 = Mida text
         int trackIndex = 0;
     };
     int trackCount = 0;
@@ -1639,6 +1754,7 @@ struct DawContext {
     int selectedAutomationClipIndex = -1;
     int selectedChuckTrack = -1;
     int selectedChuckEvent = -1;
+    int selectedMidaTrack = -1;
     bool chuckEventEditorOpen = false;
     int chuckEditorTrack = -1;
     int chuckEditorEvent = -1;
@@ -1836,6 +1952,7 @@ struct MidiTrack {
     std::atomic<float> gain{1.0f};
     int physicalInputIndex = 0;
     bool clearPending = false;
+    bool midaMidiTrack = false;
     jack_ringbuffer_t* recordRing = nullptr;
 
     MidiTrack() = default;
@@ -1881,6 +1998,7 @@ struct MidiTrack {
         gain.store(other.gain.load(std::memory_order_relaxed), std::memory_order_relaxed);
         physicalInputIndex = other.physicalInputIndex;
         clearPending = other.clearPending;
+        midaMidiTrack = other.midaMidiTrack;
         recordRing = other.recordRing;
         other.recordRing = nullptr;
         return *this;
@@ -1893,6 +2011,8 @@ struct MidiContext {
     bool recordingActive = false;
     bool recordStopPending = false;
     std::vector<MidiTrack> tracks;
+    std::vector<std::string> trackNames;
+    std::vector<bool> trackVisible;
     std::mutex trackMutex;
     std::vector<EntityInstance*> trackInstances;
     std::vector<EntityInstance*> trackLabelInstances;
@@ -2019,6 +2139,8 @@ struct BaseSystem {
     std::unique_ptr<FontContext> font;
     std::unique_ptr<DawContext> daw;
     std::unique_ptr<MidiContext> midi;
+    std::unique_ptr<MidaContext> mida;
+    std::unique_ptr<RollerCoasterContext> rollerCoaster;
     std::unique_ptr<PerfContext> perf;
     std::unique_ptr<WorldSaveContext> worldSave;
     IRenderBackend* renderBackend = nullptr;
@@ -2229,7 +2351,7 @@ namespace GemSystemLogic {
     bool TryPickupGemFromRay(BaseSystem&, const glm::vec3&, const glm::vec3&, float, GemDropState*);
     void PlaceGemDrop(BaseSystem&, GemDropState&&, const glm::vec3&);
 }
-namespace MidiTrackSystemLogic { void UpdateMidiTracks(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); void CleanupMidiTracks(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); bool InsertTrackAt(BaseSystem&, int trackIndex); bool RemoveTrackAt(BaseSystem&, int trackIndex); bool MoveTrack(BaseSystem&, int fromIndex, int toIndex); }
+namespace MidiTrackSystemLogic { void UpdateMidiTracks(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); void CleanupMidiTracks(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); bool InsertTrackAt(BaseSystem&, int trackIndex); bool InsertMidaMidiTrackAt(BaseSystem&, int trackIndex); bool RemoveTrackAt(BaseSystem&, int trackIndex); bool MoveTrack(BaseSystem&, int fromIndex, int toIndex); }
 namespace AutomationTrackSystemLogic { void UpdateAutomationTracks(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); bool InsertTrackAt(BaseSystem&, int trackIndex); bool RemoveTrackAt(BaseSystem&, int trackIndex); bool MoveTrack(BaseSystem&, int fromIndex, int toIndex); }
 namespace MidiTransportSystemLogic { void UpdateMidiTransport(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); bool CycleTrackLoopTake(MidiContext& midi, int trackIndex, int direction); }
 namespace MidiWaveformSystemLogic { void UpdateMidiWaveforms(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
@@ -2316,13 +2438,15 @@ namespace DawTimelineRebaseLogic { void ShiftTimelineRight(BaseSystem& baseSyste
 namespace MidiLaneSystemLogic { void OnTimelineRebased(uint64_t shiftSamples); }
 namespace AutomationLaneSystemLogic { void UpdateAutomationLane(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); void OnTimelineRebased(uint64_t shiftSamples); }
 namespace ChuckLaneSystemLogic { void UpdateChuckLane(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); void OnTimelineRebased(uint64_t shiftSamples); bool InsertTrackAt(BaseSystem&, int trackIndex); bool RemoveTrackAt(BaseSystem&, int trackIndex); bool MoveTrack(BaseSystem&, int fromIndex, int toIndex); }
+namespace MidaInterpreterSystemLogic { void UpdateMidaInterpreter(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); bool InsertTrackAt(BaseSystem&, int trackIndex); bool InsertMidiTrackAt(BaseSystem&, int trackIndex); bool RemoveTrackAt(BaseSystem&, int trackIndex); bool MoveTrack(BaseSystem&, int fromIndex, int toIndex); int BackendMidiTrackIndexForTrack(const BaseSystem&, int trackIndex); bool OpenMidiClipEditor(BaseSystem&, int trackIndex, int clipIndex); bool RegenerateMidiClipSource(BaseSystem&, int trackIndex, int clipIndex); bool CompileMidiClipSource(BaseSystem&, MidiClip& clip, std::string* errorMessage = nullptr); }
+namespace RollerCoasterSystemLogic { void UpdateRollerCoasters(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); void CleanupRollerCoasters(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
 namespace PianoRollResourceSystemLogic { void UpdatePianoRollResources(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
 namespace PianoRollLayoutSystemLogic { void UpdatePianoRollLayout(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
 namespace PianoRollInputSystemLogic { void UpdatePianoRollInput(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
 namespace PianoRollRenderSystemLogic { void UpdatePianoRollRender(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
 namespace SkyboxSystemLogic { void getCurrentSkyColors(float, const std::vector<SkyColorKey>&, glm::vec3&, glm::vec3&); void getCurrentSkyColors(const BaseSystem&, float, const std::vector<SkyColorKey>&, glm::vec3&, glm::vec3&); void RenderSkyAndCelestials(BaseSystem&, const std::vector<Entity>&, const std::vector<glm::vec3>&, float, float, const glm::mat4&, const glm::mat4&, const glm::vec3&, glm::vec3&); }
-namespace CloudSystemLogic { void RenderClouds(BaseSystem&, const glm::vec3& lightDir, float time, float dayFraction); }
-namespace AuroraSystemLogic { void RenderAuroras(BaseSystem&, float time, const glm::mat4& view, const glm::mat4& projection); }
+namespace CloudSystemLogic { void RenderClouds(BaseSystem&, const glm::vec3& lightDir, float time, float dayFraction); void RenderClouds(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
+namespace AuroraSystemLogic { void RenderAuroras(BaseSystem&, float time, const glm::mat4& view, const glm::mat4& projection); void RenderAuroras(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
 namespace BlockTextureSystemLogic { void LoadBlockTextures(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
 
 class Host {

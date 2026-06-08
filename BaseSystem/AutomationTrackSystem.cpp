@@ -144,7 +144,13 @@ namespace AutomationTrackSystemLogic {
                 out.push_back({0, i, "AUD" + std::to_string(i + 1)});
             }
             for (int i = 0; i < midiCount; ++i) {
-                out.push_back({1, i, "MID" + std::to_string(i + 1)});
+                std::string label = "MID" + std::to_string(i + 1);
+                if (baseSystem.midi
+                    && i < static_cast<int>(baseSystem.midi->trackNames.size())
+                    && !baseSystem.midi->trackNames[static_cast<size_t>(i)].empty()) {
+                    label = baseSystem.midi->trackNames[static_cast<size_t>(i)];
+                }
+                out.push_back({1, i, label});
             }
         }
 

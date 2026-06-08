@@ -1,6 +1,6 @@
 {
   "format": "salamander_theme_presets",
-  "selected_theme": "hg",
+  "selected_theme": "Default",
   "themes": [
     {
       "backdrop_mode": "world_camera",

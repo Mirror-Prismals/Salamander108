@@ -49,6 +49,14 @@
                                          int flaxRareFlowerPrototypeID,
                                          int hempRareFlowerPrototypeID,
                                          int fernRareFlowerPrototypeID,
+                                         const std::array<int, 3>& coniferMushroomPrototypeIDs,
+                                         int coniferMushroomPrototypeCount,
+                                         const std::array<int, 4>& jungleCoffeePrototypeIDs,
+                                         int jungleCoffeePrototypeCount,
+                                         const std::array<int, 6>& anyBiomePlantPrototypeIDs,
+                                         int anyBiomePlantPrototypeCount,
+                                         const std::array<int, 3>& meadowPlantPrototypeIDs,
+                                         int meadowPlantPrototypeCount,
                                          int flowerPrototypeID,
                                          int succulentPrototypeID,
                                          int succulentPrototypeVariantID,
@@ -103,11 +111,19 @@
             addRareFlowerToPool(hempRareFlowerPrototypeID);
             addRareFlowerToPool(fernRareFlowerPrototypeID);
             const bool hasAnyRareFlower = rareFlowerPrototypeCount > 0;
+            const bool hasAnyConiferMushroom = coniferMushroomPrototypeCount > 0;
+            const bool hasAnyJungleCoffee = jungleCoffeePrototypeCount > 0;
+            const bool hasAnyBiomePlant = anyBiomePlantPrototypeCount > 0;
+            const bool hasAnyMeadowPlant = meadowPlantPrototypeCount > 0;
             const bool hasAnySucculentPrototype =
                 (succulentPrototypeID >= 0)
                 || (succulentPrototypeVariantID >= 0);
             const bool hasAnyFlowerPrototype =
                 hasAnyRareFlower
+                || hasAnyConiferMushroom
+                || hasAnyJungleCoffee
+                || hasAnyBiomePlant
+                || hasAnyMeadowPlant
                 || (flowerPrototypeID >= 0)
                 || hasAnySucculentPrototype
                 || (jungleOrangeUnderLeafPrototypeID >= 0);
@@ -125,6 +141,10 @@
             );
             const int tallDoublePlantModulo = std::max(1, spec.flowerSpawnModulo * kBlueFlowerRareChance);
             const int rareFlowerSpawnModulo = std::max(1, spec.flowerSpawnModulo * kBlueFlowerRareChance);
+            const int coniferMushroomSpawnModulo = rareFlowerSpawnModulo;
+            const int jungleCoffeeSpawnModulo = rareFlowerSpawnModulo;
+            const int anyBiomePlantSpawnModulo = std::max(1, spec.flowerSpawnModulo);
+            const int meadowPlantSpawnModulo = std::max(1, spec.flowerSpawnModulo);
             const bool hasLilypadPrototype = (lilypadPatchPrototypeX >= 0 || lilypadPatchPrototypeZ >= 0);
             if ((!spec.grassEnabled || !hasAnyGrassOrCoverPrototype)
                 && (!spec.flowerEnabled || !hasAnyFlowerPrototype)
@@ -317,6 +337,30 @@
                             }
                         }
                     }
+                    bool spawnConiferMushroom = false;
+                    if (spec.flowerEnabled && hasAnyConiferMushroom && biomeID == 0) {
+                        const uint32_t mushroomSeed = hash2D(worldX - 5171, worldZ + 3947);
+                        spawnConiferMushroom =
+                            (mushroomSeed % static_cast<uint32_t>(coniferMushroomSpawnModulo)) == 0u;
+                    }
+                    bool spawnJungleCoffee = false;
+                    if (spec.flowerEnabled && hasAnyJungleCoffee && biomeID == 3) {
+                        const uint32_t coffeeSeed = hash2D(worldX + 7331, worldZ - 2657);
+                        spawnJungleCoffee =
+                            (coffeeSeed % static_cast<uint32_t>(jungleCoffeeSpawnModulo)) == 0u;
+                    }
+                    bool spawnAnyBiomePlant = false;
+                    if (spec.flowerEnabled && hasAnyBiomePlant) {
+                        const uint32_t anyBiomePlantSeed = hash2D(worldX - 7727, worldZ + 5563);
+                        spawnAnyBiomePlant =
+                            (anyBiomePlantSeed % static_cast<uint32_t>(anyBiomePlantSpawnModulo)) == 0u;
+                    }
+                    bool spawnMeadowPlant = false;
+                    if (spec.flowerEnabled && hasAnyMeadowPlant && biomeID == 1) {
+                        const uint32_t meadowPlantSeed = hash2D(worldX + 4271, worldZ - 8081);
+                        spawnMeadowPlant =
+                            (meadowPlantSeed % static_cast<uint32_t>(meadowPlantSpawnModulo)) == 0u;
+                    }
 
                     const bool spawnMiniPine =
                         hasMiniPine
@@ -353,6 +397,10 @@
                         && !spawnHempDouble
                         && !spawnSucculent
                         && !spawnJungleOrangeUnderLeaf
+                        && !spawnConiferMushroom
+                        && !spawnJungleCoffee
+                        && !spawnAnyBiomePlant
+                        && !spawnMeadowPlant
                         && !spawnAnyRareFlower) continue;
 
                     float terrainHeight = 0.0f;
@@ -498,6 +546,86 @@
                         if (succulentID >= 0) {
                             voxelWorld.setBlock(placeCell,
                                 static_cast<uint32_t>(succulentID),
+                                packColor(glm::vec3(1.0f)),
+                                false
+                            );
+                            modified = true;
+                            continue;
+                        }
+                    }
+
+                    if (!spawnFlower && spawnConiferMushroom) {
+                        const int clampedCount = std::max(
+                            1,
+                            std::min(static_cast<int>(coniferMushroomPrototypeIDs.size()), coniferMushroomPrototypeCount)
+                        );
+                        const uint32_t mushroomVariantSeed = hash2D(worldX + 6197, worldZ - 4051);
+                        const int mushroomID = coniferMushroomPrototypeIDs[
+                            static_cast<size_t>(mushroomVariantSeed % static_cast<uint32_t>(clampedCount))
+                        ];
+                        if (mushroomID >= 0) {
+                            voxelWorld.setBlock(placeCell,
+                                static_cast<uint32_t>(mushroomID),
+                                packColor(glm::vec3(1.0f)),
+                                false
+                            );
+                            modified = true;
+                            continue;
+                        }
+                    }
+
+                    if (!spawnFlower && spawnJungleCoffee) {
+                        const int clampedCount = std::max(
+                            1,
+                            std::min(static_cast<int>(jungleCoffeePrototypeIDs.size()), jungleCoffeePrototypeCount)
+                        );
+                        const uint32_t coffeeVariantSeed = hash2D(worldX - 6841, worldZ + 2909);
+                        const int coffeeID = jungleCoffeePrototypeIDs[
+                            static_cast<size_t>(coffeeVariantSeed % static_cast<uint32_t>(clampedCount))
+                        ];
+                        if (coffeeID >= 0) {
+                            voxelWorld.setBlock(placeCell,
+                                static_cast<uint32_t>(coffeeID),
+                                packColor(glm::vec3(1.0f)),
+                                false
+                            );
+                            modified = true;
+                            continue;
+                        }
+                    }
+
+                    if (!spawnFlower && spawnMeadowPlant) {
+                        const int clampedCount = std::max(
+                            1,
+                            std::min(static_cast<int>(meadowPlantPrototypeIDs.size()), meadowPlantPrototypeCount)
+                        );
+                        const uint32_t meadowPlantVariantSeed = hash2D(worldX - 1291, worldZ + 9049);
+                        const int meadowPlantID = meadowPlantPrototypeIDs[
+                            static_cast<size_t>(meadowPlantVariantSeed % static_cast<uint32_t>(clampedCount))
+                        ];
+                        if (meadowPlantID >= 0) {
+                            voxelWorld.setBlock(placeCell,
+                                static_cast<uint32_t>(meadowPlantID),
+                                packColor(glm::vec3(1.0f)),
+                                false
+                            );
+                            modified = true;
+                            continue;
+                        }
+                    }
+
+                    if (!spawnFlower && spawnAnyBiomePlant) {
+                        const int clampedCount = std::max(
+                            1,
+                            std::min(static_cast<int>(anyBiomePlantPrototypeIDs.size()), anyBiomePlantPrototypeCount)
+                        );
+                        const uint32_t anyBiomePlantVariantSeed = hash2D(worldX + 8039, worldZ - 3631);
+                        const int anyBiomePlantID = anyBiomePlantPrototypeIDs[
+                            static_cast<size_t>(anyBiomePlantVariantSeed % static_cast<uint32_t>(clampedCount))
+                        ];
+                        if (anyBiomePlantID >= 0) {
+                            voxelWorld.setBlock(placeCell,
+                                static_cast<uint32_t>(anyBiomePlantID),
                                 packColor(glm::vec3(1.0f)),
                                 false
                             );

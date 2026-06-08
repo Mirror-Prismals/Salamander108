@@ -83,6 +83,14 @@ namespace VoxelMeshUploadSystemLogic {
             return name == "StonePebbleCavePotTexX" || name == "StonePebbleCavePotTexZ";
         }
 
+        int debugSlopeDirFromName(const std::string& name) {
+            if (name == "DebugSlopeTexPosX") return 1;
+            if (name == "DebugSlopeTexNegX") return 2;
+            if (name == "DebugSlopeTexPosZ") return 3;
+            if (name == "DebugSlopeTexNegZ") return 4;
+            return 0;
+        }
+
         bool isGrassCoverXName(const std::string& name) {
             return name == "GrassCoverTexX"
                 || (startsWith(name, "GrassCover") && endsWith(name, "TexX"));
@@ -642,6 +650,7 @@ namespace VoxelMeshUploadSystemLogic {
             if (isFlowerPrototypeName(name)) return false;
             if (isLeafFanPlantPrototypeName(name)) return false;
             if (isCavePotPrototypeName(name)) return false;
+            if (debugSlopeDirFromName(name) != 0) return false;
             if (isStickPrototypeName(name)) return false;
             if (isGrassCoverXName(name) || isGrassCoverZName(name)) return false;
             if (isStonePebbleXName(name) || isStonePebbleZName(name)) return false;
@@ -672,6 +681,8 @@ namespace VoxelMeshUploadSystemLogic {
                 out.shortGrass = isShortGrassPrototypeName(name);
                 out.flower = isFlowerPrototypeName(name);
                 out.cavePot = isCavePotPrototypeName(name);
+                out.debugSlopeDir = debugSlopeDirFromName(name);
+                out.debugSlope = out.debugSlopeDir != 0;
                 out.leafFanPlant = isLeafFanPlantPrototypeName(name);
                 out.stickX = isStickXName(name);
                 out.stickZ = isStickZName(name);
@@ -1885,6 +1896,7 @@ namespace VoxelMeshUploadSystemLogic {
                     const bool isShortGrass = traits.shortGrass;
                     const bool isFlower = traits.flower;
                     const bool isCavePot = traits.cavePot;
+                    const bool isDebugSlope = traits.debugSlope;
                     const bool isPlantCard = isTallGrass || isShortGrass || isFlower || isCavePot;
                     const bool isLeafFanPlant = traits.leafFanPlant;
                     const bool isStick = traits.stick;
@@ -1897,6 +1909,78 @@ namespace VoxelMeshUploadSystemLogic {
                     const glm::ivec3 worldCell = snapshot.sectionBase + glm::ivec3(x, y, z);
                     const uint32_t packedColorRaw = snapshotColorAt(snapshot, x, y, z);
                     const glm::vec3 packedColor = VoxelMeshInitSystemLogic::UnpackColor(packedColorRaw);
+
+                    if (isDebugSlope) {
+                        constexpr float kSlopeCapA = -4.0f;
+                        constexpr float kSlopeCapB = -5.0f;
+                        constexpr float kSlopeTopPosX = -6.0f;
+                        constexpr float kSlopeTopNegX = -7.0f;
+                        constexpr float kSlopeTopPosZ = -8.0f;
+                        constexpr float kSlopeTopNegZ = -9.0f;
+
+                        auto pushSlopeFace = [&](int faceType, float alphaTag) {
+                            FaceInstanceRenderData face{};
+                            const glm::vec3 normal = glm::vec3(kFaceNormals[static_cast<size_t>(faceType)]);
+                            face.position = glm::vec3(worldCell) + normal * 0.5f;
+                            face.tileIndex = traits.faceTiles[static_cast<size_t>(faceType)];
+                            face.color = (face.tileIndex >= 0) ? glm::vec3(1.0f) : packedColor;
+                            face.alpha = alphaTag;
+                            face.ao = computeFaceCornerLighting(
+                                snapshot,
+                                prototypeTraits,
+                                glm::ivec3(x, y, z),
+                                faceType,
+                                1,
+                                1,
+                                true
+                            );
+                            face.scale = glm::vec2(1.0f);
+                            face.uvScale = glm::vec2(1.0f);
+                            pushFace(faceType, face);
+                        };
+
+                        int tallFaceType = 1;
+                        int capFaceA = 4;
+                        int capFaceB = 5;
+                        float capAlphaA = kSlopeCapA;
+                        float capAlphaB = kSlopeCapB;
+                        float topAlpha = kSlopeTopPosX;
+                        switch (traits.debugSlopeDir) {
+                            case 1:
+                                tallFaceType = 0;
+                                capFaceA = 4; capAlphaA = kSlopeCapA;
+                                capFaceB = 5; capAlphaB = kSlopeCapB;
+                                topAlpha = kSlopeTopPosX;
+                                break;
+                            case 2:
+                                tallFaceType = 1;
+                                capFaceA = 4; capAlphaA = kSlopeCapB;
+                                capFaceB = 5; capAlphaB = kSlopeCapA;
+                                topAlpha = kSlopeTopNegX;
+                                break;
+                            case 3:
+                                tallFaceType = 4;
+                                capFaceA = 0; capAlphaA = kSlopeCapB;
+                                capFaceB = 1; capAlphaB = kSlopeCapA;
+                                topAlpha = kSlopeTopPosZ;
+                                break;
+                            case 4:
+                                tallFaceType = 5;
+                                capFaceA = 0; capAlphaA = kSlopeCapA;
+                                capFaceB = 1; capAlphaB = kSlopeCapB;
+                                topAlpha = kSlopeTopNegZ;
+                                break;
+                            default:
+                                break;
+                        }
+
+                        pushSlopeFace(3, 1.0f);
+                        pushSlopeFace(tallFaceType, 1.0f);
+                        pushSlopeFace(capFaceA, capAlphaA);
+                        pushSlopeFace(capFaceB, capAlphaB);
+                        pushSlopeFace(2, topAlpha);
+                        continue;
+                    }
 
                     if (isPlantCard) {
                         const int plantTile = traits.faceTiles[2];

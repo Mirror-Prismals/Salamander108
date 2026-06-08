@@ -191,7 +191,7 @@ namespace {
             const char* vertexKey = nullptr;
             const char* fragmentKey = nullptr;
         };
-        const std::array<ShaderBinding, 25> bindings = {{
+        const std::array<ShaderBinding, 28> bindings = {{
             {"blockShader", &renderer.blockShader, "BLOCK_VERTEX_SHADER", "BLOCK_FRAGMENT_SHADER"},
             {"faceShader", &renderer.faceShader, "FACE_VERTEX_SHADER", "FACE_FRAGMENT_SHADER"},
             {"packedTerrainFaceShader", &renderer.packedTerrainFaceShader, "PACKED_TERRAIN_FACE_VERTEX_SHADER", "FACE_FRAGMENT_SHADER"},
@@ -201,10 +201,13 @@ namespace {
             {"waterCompositeShader", &renderer.waterCompositeShader, "WATER_COMPOSITE_VERTEX_SHADER", "WATER_COMPOSITE_FRAGMENT_SHADER"},
             {"rainFullscreenShader", &renderer.rainFullscreenShader, "RAIN_FULLSCREEN_VERTEX_SHADER", "RAIN_FULLSCREEN_FRAGMENT_SHADER"},
             {"rainRippleShader", &renderer.rainRippleShader, "RAIN_RIPPLE_VERTEX_SHADER", "RAIN_RIPPLE_FRAGMENT_SHADER"},
+            {"cloudShader", &renderer.cloudShader, "CLOUD_VERTEX_SHADER", "CLOUD_FRAGMENT_SHADER"},
             {"grass3DShader", &renderer.grass3DShader, "GRASS3D_VERTEX_SHADER", "GRASS3D_FRAGMENT_SHADER"},
+            {"coasterShader", &renderer.coasterShader, "COASTER_VERTEX_SHADER", "COASTER_FRAGMENT_SHADER"},
             {"skyboxShader", &renderer.skyboxShader, "SKYBOX_VERTEX_SHADER", "SKYBOX_FRAGMENT_SHADER"},
             {"sunMoonShader", &renderer.sunMoonShader, "SUNMOON_VERTEX_SHADER", "SUNMOON_FRAGMENT_SHADER"},
             {"starShader", &renderer.starShader, "STAR_VERTEX_SHADER", "STAR_FRAGMENT_SHADER"},
+            {"auroraShader", &renderer.auroraShader, "AURORA_VERTEX_SHADER", "AURORA_FRAGMENT_SHADER"},
             {"selectionShader", &renderer.selectionShader, "SELECTION_VERTEX_SHADER", "SELECTION_FRAGMENT_SHADER"},
             {"hudShader", &renderer.hudShader, "HUD_VERTEX_SHADER", "HUD_FRAGMENT_SHADER"},
             {"crosshairShader", &renderer.crosshairShader, "CROSSHAIR_VERTEX_SHADER", "CROSSHAIR_FRAGMENT_SHADER"},
@@ -361,6 +364,8 @@ void Host::registerSystemFunctions() {
     functionRegistry["RenderWater"] = WaterRenderSystemLogic::RenderWater;
     functionRegistry["RenderRain"] = RainSystemLogic::RenderRain;
     functionRegistry["Render3DGrass"] = ThreeDGrassSystemLogic::Render3DGrass;
+    functionRegistry["RenderClouds"] = static_cast<void(*)(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle)>(&CloudSystemLogic::RenderClouds);
+    functionRegistry["RenderAuroras"] = static_cast<void(*)(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle)>(&AuroraSystemLogic::RenderAuroras);
     functionRegistry["RenderOverlays"] = OverlayRenderSystemLogic::RenderOverlays;
     functionRegistry["RenderTitleLogo"] = TitleLogoSystemLogic::RenderTitleLogo;
     functionRegistry["CleanupTitleLogo"] = TitleLogoSystemLogic::CleanupTitleLogo;
@@ -458,6 +463,9 @@ void Host::registerSystemFunctions() {
     functionRegistry["UpdateDawLaneRender"] = DawLaneRenderSystemLogic::UpdateDawLaneRender;
     functionRegistry["UpdateMidiTracks"] = MidiTrackSystemLogic::UpdateMidiTracks;
     functionRegistry["CleanupMidiTracks"] = MidiTrackSystemLogic::CleanupMidiTracks;
+    functionRegistry["UpdateMidaInterpreter"] = MidaInterpreterSystemLogic::UpdateMidaInterpreter;
+    functionRegistry["UpdateRollerCoasters"] = RollerCoasterSystemLogic::UpdateRollerCoasters;
+    functionRegistry["CleanupRollerCoasters"] = RollerCoasterSystemLogic::CleanupRollerCoasters;
     functionRegistry["UpdateAutomationTracks"] = AutomationTrackSystemLogic::UpdateAutomationTracks;
     functionRegistry["UpdateMidiTransport"] = MidiTransportSystemLogic::UpdateMidiTransport;
     functionRegistry["UpdateMidiWaveforms"] = MidiWaveformSystemLogic::UpdateMidiWaveforms;
@@ -510,6 +518,8 @@ void Host::init() {
     baseSystem.font = std::make_unique<FontContext>();
     baseSystem.daw = std::make_unique<DawContext>();
     baseSystem.midi = std::make_unique<MidiContext>();
+    baseSystem.mida = std::make_unique<MidaContext>();
+    baseSystem.rollerCoaster = std::make_unique<RollerCoasterContext>();
     baseSystem.perf = std::make_unique<PerfContext>();
     baseSystem.worldSave = std::make_unique<WorldSaveContext>();
     baseSystem.registry = &registry;
@@ -699,6 +709,7 @@ void Host::reloadLevel(const std::string& levelName) {
     if (baseSystem.miniModel) baseSystem.miniModel = std::make_unique<MiniModelContext>();
     if (baseSystem.fishing) baseSystem.fishing = std::make_unique<FishingContext>();
     if (baseSystem.gems) baseSystem.gems = std::make_unique<GemContext>();
+    if (baseSystem.rollerCoaster) baseSystem.rollerCoaster = std::make_unique<RollerCoasterContext>();
     if (baseSystem.font) baseSystem.font = std::make_unique<FontContext>();
     if (baseSystem.uiStamp) baseSystem.uiStamp = std::make_unique<UIStampingContext>();
     if (baseSystem.panel) baseSystem.panel = std::make_unique<PanelContext>();
@@ -753,6 +764,32 @@ void Host::reloadLevel(const std::string& levelName) {
     }
     if (baseSystem.daw) {
         baseSystem.daw->uiCacheBuilt = false;
+    }
+    if (baseSystem.mida) {
+        baseSystem.mida->initialized = false;
+        baseSystem.mida->midiTrackIndex = -1;
+        baseSystem.mida->sourceHash = 0;
+        baseSystem.mida->compiledBpm = 0.0;
+        baseSystem.mida->compiledSampleRate = 0.0f;
+        baseSystem.mida->compiledTickLength = 0;
+        baseSystem.mida->compiledNoteCount = 0;
+        baseSystem.mida->compileOk = false;
+        baseSystem.mida->diagnostics.clear();
+        baseSystem.mida->selectedTrack = -1;
+        baseSystem.mida->editorOpen = false;
+        baseSystem.mida->editorTrack = -1;
+        baseSystem.mida->editorBuffer.clear();
+        baseSystem.mida->statusMessage.clear();
+        for (auto& track : baseSystem.mida->tracks) {
+            track.midiTrackIndex = -1;
+            track.sourceHash = 0;
+            track.compiledBpm = 0.0;
+            track.compiledSampleRate = 0.0f;
+            track.compiledTickLength = 0;
+            track.compiledNoteCount = 0;
+            track.compileOk = false;
+            track.diagnostics.clear();
+        }
     }
 
     // Rebuild world prototypes and instances for the new level.

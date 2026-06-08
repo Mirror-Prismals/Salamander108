@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstring>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -332,12 +333,78 @@ namespace Vst3SystemLogic {
             return true;
         }
 
+        template <size_t N, typename TString>
+        void copyVstString(char (&out)[N], const TString& in) {
+            static_assert(N > 0, "output buffer must not be empty");
+            size_t i = 0;
+            for (; i + 1 < N; ++i) {
+                const auto ch = in[i];
+                if (ch == 0) break;
+                out[i] = (ch >= 32 && ch < 127) ? static_cast<char>(ch) : '?';
+            }
+            out[i] = '\0';
+        }
+
+        std::vector<Vst3DefaultEditorParam> collectDefaultEditorParams(Vst3Plugin& plugin) {
+            std::vector<Vst3DefaultEditorParam> params;
+            if (!plugin.controller) return params;
+
+            const int32_t count = plugin.controller->getParameterCount();
+            if (count <= 0) return params;
+            const int32_t maxParams = std::min<int32_t>(count, 128);
+            params.reserve(static_cast<size_t>(maxParams));
+
+            for (int32_t i = 0; i < maxParams; ++i) {
+                Steinberg::Vst::ParameterInfo info{};
+                if (plugin.controller->getParameterInfo(i, info) != Steinberg::kResultOk) continue;
+
+                Vst3DefaultEditorParam param{};
+                param.id = static_cast<int32_t>(info.id);
+                param.value = std::clamp(plugin.controller->getParamNormalized(info.id), 0.0, 1.0);
+                copyVstString(param.title, info.title);
+                copyVstString(param.units, info.units);
+                if (param.title[0] == '\0') {
+                    std::snprintf(param.title, sizeof(param.title), "Param %d", static_cast<int>(i + 1));
+                }
+                params.push_back(param);
+            }
+            return params;
+        }
+
+        void setDefaultEditorParam(void* userData, int32_t paramID, double value) {
+            auto* plugin = static_cast<Vst3Plugin*>(userData);
+            if (!plugin || !plugin->controller) return;
+            const Steinberg::Vst::ParamID id = static_cast<Steinberg::Vst::ParamID>(paramID);
+            const double normalized = std::clamp(value, 0.0, 1.0);
+            plugin->controller->setParamNormalized(id, normalized);
+        }
+
+        bool openDefaultPluginUI(Vst3Plugin& plugin) {
+            std::vector<Vst3DefaultEditorParam> params = collectDefaultEditorParams(plugin);
+            plugin.uiWindow = Vst3UI_CreateDefaultEditorWindow(
+                plugin.name.c_str(),
+                params.empty() ? nullptr : params.data(),
+                static_cast<int>(params.size()),
+                setDefaultEditorParam,
+                &plugin
+            );
+            if (!plugin.uiWindow) return false;
+            Vst3UI_ShowWindow(plugin.uiWindow);
+            plugin.uiVisible = true;
+            plugin.usingDefaultEditor = true;
+            return true;
+        }
+
         void openPluginUIInternal(Vst3Plugin& plugin) {
             if (!plugin.controller) return;
             plugin.view = plugin.controller->createView(Steinberg::Vst::ViewType::kEditor);
-            if (!plugin.view) return;
+            if (!plugin.view) {
+                (void)openDefaultPluginUI(plugin);
+                return;
+            }
             if (plugin.view->isPlatformTypeSupported(Steinberg::kPlatformTypeNSView) != Steinberg::kResultTrue) {
                 plugin.view.reset();
+                (void)openDefaultPluginUI(plugin);
                 return;
             }
             Steinberg::ViewRect size;
@@ -347,6 +414,7 @@ namespace Vst3SystemLogic {
             plugin.uiWindow = Vst3UI_CreateWindow(plugin.name.c_str(), size.getWidth(), size.getHeight());
             if (!plugin.uiWindow) {
                 plugin.view.reset();
+                (void)openDefaultPluginUI(plugin);
                 return;
             }
             void* parent = Vst3UI_GetContentView(plugin.uiWindow);
@@ -354,10 +422,12 @@ namespace Vst3SystemLogic {
                 Vst3UI_CloseWindow(plugin.uiWindow);
                 plugin.uiWindow = nullptr;
                 plugin.view.reset();
+                (void)openDefaultPluginUI(plugin);
                 return;
             }
             Vst3UI_ShowWindow(plugin.uiWindow);
             plugin.uiVisible = true;
+            plugin.usingDefaultEditor = false;
         }
 
         Vst3Plugin* createPlugin(Vst3Context& ctx, const PluginDescriptor& desc, bool instrument) {
@@ -391,6 +461,7 @@ namespace Vst3SystemLogic {
             plugin.uiWindow = nullptr;
         }
         plugin.uiVisible = false;
+        plugin.usingDefaultEditor = false;
             if (plugin.processor) {
                 plugin.processor->setProcessing(false);
             }
@@ -900,6 +971,7 @@ namespace Vst3SystemLogic {
         ctx.midiInstruments.clear();
         ctx.midiHeldVelocities.clear();
         ctx.availablePlugins.clear();
+        ctx.availableMidaClips.clear();
         ctx.browserCacheBuilt = false;
         ctx.browserLevel = nullptr;
         ctx.browserWorldIndex = -1;
@@ -919,6 +991,16 @@ namespace Vst3SystemLogic {
         ctx.componentsCollapsed = false;
         ctx.componentsDragIndex = -1;
         ctx.componentsDragging = false;
+        ctx.midaClipsCacheBuilt = false;
+        ctx.midaClipsLevel = nullptr;
+        ctx.midaClipsWorldIndex = -1;
+        ctx.midaClipsListCount = 0;
+        ctx.midaClipsInstanceIds.clear();
+        ctx.midaClipsGhostId = -1;
+        ctx.midaClipsCollapsed = false;
+        ctx.midaClipsScroll = 0.0f;
+        ctx.midaClipsDragIndex = -1;
+        ctx.midaClipsDragging = false;
         ctx.daw = nullptr;
         Steinberg::Vst::PluginContextFactory::instance().setPluginContext(nullptr);
         ctx.hostApp.reset();

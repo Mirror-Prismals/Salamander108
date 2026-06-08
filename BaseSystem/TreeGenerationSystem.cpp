@@ -910,6 +910,7 @@ namespace TreeGenerationSystemLogic {
                 const glm::ivec3 cell(worldX + off.x, groundY + off.y, worldZ + off.z);
                 if (cell.y <= groundY + 1) continue;
                 markStructureSection(requiredSections, cell, sectionSize);
+                markStructureSection(requiredSections, cell + glm::ivec3(0, -1, 0), sectionSize);
             }
 
             return areStructureSectionsTerrainReady(requiredSections);
@@ -1108,6 +1109,13 @@ namespace TreeGenerationSystemLogic {
                                          int maxPasses) {
         if (maxPasses <= 0) maxPasses = 1;
         auto clearSurfaceOnlyPending = [&]() {
+            auto progressIt = g_treeSectionProgress.find(key);
+            if (progressIt != g_treeSectionProgress.end()
+                && isCaveDecorContinuationPhase(progressIt->second.phase)) {
+                g_treePendingSections.insert(key);
+                enqueueCaveDecorContinuation(key);
+                return;
+            }
             g_treePendingSections.erase(key);
             g_treePendingDependencies.erase(key);
             g_treeSectionProgress.erase(key);
@@ -1297,6 +1305,71 @@ namespace TreeGenerationSystemLogic {
         const Entity* succulentProto = HostLogic::findPrototype("FlowerSucculentV001", prototypes);
         const Entity* succulentProtoV2 = HostLogic::findPrototype("FlowerSucculentV002", prototypes);
         const Entity* jungleOrangeUnderLeafProto = HostLogic::findPrototype("FlowerOrangeUnderLeafV001", prototypes);
+        const Entity* pineBeeHiveProto = HostLogic::findPrototype("FlowerBeeHivePineV001", prototypes);
+        std::array<int, 3> coniferMushroomPrototypeIDs{};
+        int coniferMushroomPrototypeCount = 0;
+        {
+            const std::array<const char*, 3> kConiferMushroomNames = {
+                "FlowerMushroomConiferV001",
+                "FlowerMushroomConiferV002",
+                "FlowerMushroomConiferV003"
+            };
+            for (const char* name : kConiferMushroomNames) {
+                if (const Entity* proto = HostLogic::findPrototype(name, prototypes)) {
+                    coniferMushroomPrototypeIDs[static_cast<size_t>(coniferMushroomPrototypeCount)] = proto->prototypeID;
+                    coniferMushroomPrototypeCount += 1;
+                }
+            }
+        }
+        std::array<int, 4> jungleCoffeePrototypeIDs{};
+        int jungleCoffeePrototypeCount = 0;
+        {
+            const std::array<const char*, 4> kJungleCoffeeNames = {
+                "FlowerCoffeeJungleV001",
+                "FlowerCoffeeJungleV002",
+                "FlowerCoffeeJungleV003",
+                "FlowerCoffeeJungleV004"
+            };
+            for (const char* name : kJungleCoffeeNames) {
+                if (const Entity* proto = HostLogic::findPrototype(name, prototypes)) {
+                    jungleCoffeePrototypeIDs[static_cast<size_t>(jungleCoffeePrototypeCount)] = proto->prototypeID;
+                    jungleCoffeePrototypeCount += 1;
+                }
+            }
+        }
+        std::array<int, 6> anyBiomePlantPrototypeIDs{};
+        int anyBiomePlantPrototypeCount = 0;
+        {
+            const std::array<const char*, 6> kAnyBiomePlantNames = {
+                "FlowerMiscAnyBiomeV001",
+                "FlowerMiscAnyBiomeV002",
+                "FlowerMiscAnyBiomeV003",
+                "FlowerMiscAnyBiomeV004",
+                "FlowerMiscAnyBiomeV005",
+                "FlowerMiscAnyBiomeV006"
+            };
+            for (const char* name : kAnyBiomePlantNames) {
+                if (const Entity* proto = HostLogic::findPrototype(name, prototypes)) {
+                    anyBiomePlantPrototypeIDs[static_cast<size_t>(anyBiomePlantPrototypeCount)] = proto->prototypeID;
+                    anyBiomePlantPrototypeCount += 1;
+                }
+            }
+        }
+        std::array<int, 3> meadowPlantPrototypeIDs{};
+        int meadowPlantPrototypeCount = 0;
+        {
+            const std::array<const char*, 3> kMeadowPlantNames = {
+                "FlowerMeadowMiscV001",
+                "FlowerMeadowMiscV002",
+                "FlowerMeadowMiscV003"
+            };
+            for (const char* name : kMeadowPlantNames) {
+                if (const Entity* proto = HostLogic::findPrototype(name, prototypes)) {
+                    meadowPlantPrototypeIDs[static_cast<size_t>(meadowPlantPrototypeCount)] = proto->prototypeID;
+                    meadowPlantPrototypeCount += 1;
+                }
+            }
+        }
         std::array<int, 16> blueFlowerPrototypeIDs{};
         int blueFlowerPrototypeCount = 0;
         {
@@ -1465,6 +1538,7 @@ namespace TreeGenerationSystemLogic {
             pineMinTrunkHeight,
             getRegistryInt(baseSystem, "PineTrunkHeightMax", baseSpec.trunkHeight)
         );
+        const int pineBeeHiveSpawnModulo = std::max(1, getRegistryInt(baseSystem, "PineBeeHiveSpawnModulo", 18));
         const int jungleTreeSpawnModulo = std::max(1, getRegistryInt(baseSystem, "JungleTreeSpawnModulo", 1000));
         const bool meadowTreeGenerationEnabled = getRegistryBool(baseSystem, "MeadowTreeGenerationEnabled", true);
         const int meadowTreeSpawnModulo = std::max(1, getRegistryInt(baseSystem, "MeadowTreeSpawnModulo", 140));
@@ -1553,6 +1627,10 @@ namespace TreeGenerationSystemLogic {
             && blueFlowerPrototypeCount <= 0
             && !succulentProto
             && !succulentProtoV2
+            && coniferMushroomPrototypeCount <= 0
+            && jungleCoffeePrototypeCount <= 0
+            && anyBiomePlantPrototypeCount <= 0
+            && meadowPlantPrototypeCount <= 0
             && !jungleOrangeUnderLeafProto) {
             foliageSpec.flowerEnabled = false;
         }
@@ -1627,6 +1705,8 @@ namespace TreeGenerationSystemLogic {
         mixSig(static_cast<uint64_t>(miniPineTripleMiddleProto ? std::max(0, miniPineTripleMiddleProto->prototypeID) : 0));
         mixSig(static_cast<uint64_t>(miniPineTripleTopProto ? std::max(0, miniPineTripleTopProto->prototypeID) : 0));
         mixSig(static_cast<uint64_t>(jungleOrangeUnderLeafProto ? std::max(0, jungleOrangeUnderLeafProto->prototypeID) : 0));
+        mixSig(static_cast<uint64_t>(pineBeeHiveProto ? std::max(0, pineBeeHiveProto->prototypeID) : 0));
+        mixSig(static_cast<uint64_t>(pineBeeHiveSpawnModulo));
         mixSig(static_cast<uint64_t>(grassPrototypeBiome4Count));
         for (int i = 0; i < grassPrototypeBiome4Count; ++i) {
             mixSig(static_cast<uint64_t>(std::max(0, grassPrototypeBiome4IDs[static_cast<size_t>(i)])));
@@ -1660,6 +1740,22 @@ namespace TreeGenerationSystemLogic {
         mixSig(static_cast<uint64_t>(leafFanPineProto ? std::max(0, leafFanPineProto->prototypeID) : 0));
         mixSig(static_cast<uint64_t>(succulentProto ? std::max(0, succulentProto->prototypeID) : 0));
         mixSig(static_cast<uint64_t>(succulentProtoV2 ? std::max(0, succulentProtoV2->prototypeID) : 0));
+        mixSig(static_cast<uint64_t>(coniferMushroomPrototypeCount));
+        for (int i = 0; i < coniferMushroomPrototypeCount; ++i) {
+            mixSig(static_cast<uint64_t>(std::max(0, coniferMushroomPrototypeIDs[static_cast<size_t>(i)])));
+        }
+        mixSig(static_cast<uint64_t>(jungleCoffeePrototypeCount));
+        for (int i = 0; i < jungleCoffeePrototypeCount; ++i) {
+            mixSig(static_cast<uint64_t>(std::max(0, jungleCoffeePrototypeIDs[static_cast<size_t>(i)])));
+        }
+        mixSig(static_cast<uint64_t>(anyBiomePlantPrototypeCount));
+        for (int i = 0; i < anyBiomePlantPrototypeCount; ++i) {
+            mixSig(static_cast<uint64_t>(std::max(0, anyBiomePlantPrototypeIDs[static_cast<size_t>(i)])));
+        }
+        mixSig(static_cast<uint64_t>(meadowPlantPrototypeCount));
+        for (int i = 0; i < meadowPlantPrototypeCount; ++i) {
+            mixSig(static_cast<uint64_t>(std::max(0, meadowPlantPrototypeIDs[static_cast<size_t>(i)])));
+        }
         if (g_treeFoliageSignature != foliageSignature) {
             g_treeFoliageSignature = foliageSignature;
             g_treeAppliedVersion.clear();
@@ -1784,6 +1880,7 @@ namespace TreeGenerationSystemLogic {
         bool backfillLoaded = false;
         const int caveDecorMaxTier = 0;
         int caveDecorSectionBudget = std::numeric_limits<int>::max();
+        bool caveDecorBudgetConfiguredOff = false;
         if (!forceCompleteActive) {
             // Process all pending sections each frame (selection budget is applied later). This
             // avoids starvation where newly ready sections can wait many frames before even being
@@ -1924,6 +2021,8 @@ namespace TreeGenerationSystemLogic {
                 0,
                 getRegistryInt(baseSystem, "TreeFoliageCaveDecorSectionsPerFrameBacklogged", 1)
             );
+            caveDecorBudgetConfiguredOff =
+                caveDecorSectionsPerFrame == 0 && caveDecorSectionsPerFrameBacklogged == 0;
             caveDecorSectionBudget = skipCaveDecorWhenBacklogged
                 ? caveDecorSectionsPerFrameBacklogged
                 : caveDecorSectionsPerFrame;
@@ -2449,6 +2548,14 @@ namespace TreeGenerationSystemLogic {
                     flaxRareFlowerProto ? flaxRareFlowerProto->prototypeID : -1,
                     hempRareFlowerProto ? hempRareFlowerProto->prototypeID : -1,
                     fernRareFlowerProto ? fernRareFlowerProto->prototypeID : -1,
+                    coniferMushroomPrototypeIDs,
+                    coniferMushroomPrototypeCount,
+                    jungleCoffeePrototypeIDs,
+                    jungleCoffeePrototypeCount,
+                    anyBiomePlantPrototypeIDs,
+                    anyBiomePlantPrototypeCount,
+                    meadowPlantPrototypeIDs,
+                    meadowPlantPrototypeCount,
                     flowerProto ? flowerProto->prototypeID : -1,
                     succulentProto ? succulentProto->prototypeID : -1,
                     succulentProtoV2 ? succulentProtoV2->prototypeID : -1,
@@ -2631,6 +2738,12 @@ namespace TreeGenerationSystemLogic {
                                                  nubPrototypeID,
                                                  leafProto->prototypeID,
                                                  leafFanPineProto ? leafFanPineProto->prototypeID : -1,
+                                                 (pineBeeHiveProto
+                                                     && wantsPineTree
+                                                     && ((hash2D(worldX - 6481, worldZ + 2207)
+                                                          % static_cast<uint32_t>(pineBeeHiveSpawnModulo)) == 0u))
+                                                     ? pineBeeHiveProto->prototypeID
+                                                     : -1,
                                                  trunkColor,
                                                  leafColor,
                                                  tierX,
@@ -2943,10 +3056,15 @@ namespace TreeGenerationSystemLogic {
                     finishedSection = true;
                     continue;
                 }
+                const bool allowCaveSlopeForSection = caveDecorSectionEligible && foliageSpec.caveSlopeEnabled;
                 bool allowCaveDecorForSection = caveDecorSectionEligible;
                 if (!forceCompleteSection && allowCaveDecorForSection && caveDecorSectionBudget >= 0) {
                     if (caveDecorSectionBudget == 0 || caveDecorSectionsProcessed >= caveDecorSectionBudget) {
-                        if (progress.phase <= 9) {
+                        if (progress.phase <= 5 && allowCaveSlopeForSection) {
+                            allowCaveDecorForSection = false;
+                        } else if (caveDecorSectionBudget == 0 && caveDecorBudgetConfiguredOff) {
+                            allowCaveDecorForSection = false;
+                        } else if (progress.phase <= 9) {
                             // Preserve completed earlier phases and resume cave-decor later.
                             progress.phase = std::max(progress.phase, 5);
                             deferSection();
@@ -2960,7 +3078,7 @@ namespace TreeGenerationSystemLogic {
                     }
                 }
                 if (progress.phase <= 5) {
-                    if (allowCaveDecorForSection) {
+                    if (allowCaveSlopeForSection) {
                         writeCaveSlopeToSection(
                             prototypes,
                             worldCtx,

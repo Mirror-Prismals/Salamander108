@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <sstream>
 #include <unordered_set>
 #include <vector>
 
@@ -25,9 +26,19 @@ namespace DawClipSystemLogic {
     void TrimClipsForNewClip(DawTrack& track, const DawClip& clip);
     void RebuildTrackCacheFromClips(DawContext& daw, DawTrack& track);
 }
-namespace MidiTrackSystemLogic { bool InsertTrackAt(BaseSystem& baseSystem, int trackIndex); }
+namespace MidiTrackSystemLogic {
+    bool InsertTrackAt(BaseSystem& baseSystem, int trackIndex);
+    bool InsertMidaMidiTrackAt(BaseSystem& baseSystem, int trackIndex);
+}
 namespace AutomationTrackSystemLogic { bool InsertTrackAt(BaseSystem& baseSystem, int trackIndex); }
 namespace ChuckLaneSystemLogic { bool InsertTrackAt(BaseSystem& baseSystem, int trackIndex); }
+namespace MidaInterpreterSystemLogic {
+    bool InsertTrackAt(BaseSystem& baseSystem, int trackIndex);
+    bool InsertMidiTrackAt(BaseSystem& baseSystem, int trackIndex);
+    int BackendMidiTrackIndexForTrack(const BaseSystem& baseSystem, int trackIndex);
+    bool CompileMidiClipSource(BaseSystem& baseSystem, MidiClip& clip, std::string* errorMessage);
+    bool RegenerateMidiClipSource(BaseSystem& baseSystem, int trackIndex, int clipIndex);
+}
 namespace DawTimelineRebaseLogic { void ShiftTimelineRight(BaseSystem& baseSystem, uint64_t shiftSamples); }
 
 namespace Vst3BrowserSystemLogic {
@@ -56,7 +67,7 @@ namespace Vst3BrowserSystemLogic {
         constexpr float kGhostOffsetX = 12.0f;
         constexpr float kGhostOffsetY = 8.0f;
         constexpr float kHitPadX = 12.0f;
-        constexpr int kComponentCount = 4;
+        constexpr int kComponentCount = 6;
 
         struct WavInfo {
             uint16_t audioFormat = 0;
@@ -227,6 +238,45 @@ namespace Vst3BrowserSystemLogic {
                       });
         }
 
+        bool readTextFile(const std::filesystem::path& path, std::string& out) {
+            std::ifstream file(path);
+            if (!file.is_open()) return false;
+            std::ostringstream ss;
+            ss << file.rdbuf();
+            out = ss.str();
+            return true;
+        }
+
+        void refreshMidaClipList(Vst3Context& ctx) {
+            ctx.availableMidaClips.clear();
+            std::unordered_set<std::string> seenPaths;
+            auto addDir = [&](const std::filesystem::path& dir) {
+                if (!std::filesystem::exists(dir) || !std::filesystem::is_directory(dir)) return;
+                for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+                    if (!entry.is_regular_file()) continue;
+                    if (entry.path().extension() != ".mida") continue;
+                    std::filesystem::path canonical = std::filesystem::weakly_canonical(entry.path());
+                    std::string key = canonical.string();
+                    if (!seenPaths.insert(key).second) continue;
+                    std::string source;
+                    if (!readTextFile(entry.path(), source)) continue;
+                    Vst3MidaClipEntry clip{};
+                    clip.path = entry.path().string();
+                    clip.name = entry.path().stem().string();
+                    clip.source = std::move(source);
+                    ctx.availableMidaClips.push_back(std::move(clip));
+                }
+            };
+
+            std::filesystem::path executableDir = getExecutableDir();
+            addDir(executableDir / "USER_MIDA");
+            addDir(executableDir / "Procedures" / "mida");
+            std::sort(ctx.availableMidaClips.begin(), ctx.availableMidaClips.end(),
+                      [](const Vst3MidaClipEntry& a, const Vst3MidaClipEntry& b) {
+                          return a.name < b.name;
+                      });
+        }
+
         int findWorldIndex(const LevelContext& level, const std::string& name) {
             for (size_t i = 0; i < level.worlds.size(); ++i) {
                 if (level.worlds[i].name == name) return static_cast<int>(i);
@@ -377,11 +427,11 @@ namespace Vst3BrowserSystemLogic {
             return 0;
         }
 
-        int totalLaneSlotCount(const DawContext& daw, int audioTrackCount, int midiTrackCount) {
+        int totalLaneSlotCount(const DawContext& daw, int audioTrackCount, int midiTrackCount, int midaTrackCount) {
             if (!daw.laneOrder.empty()) return static_cast<int>(daw.laneOrder.size());
             int automationTrackCount = static_cast<int>(daw.automationTracks.size());
             int chuckTrackCount = static_cast<int>(daw.chuckTracks.size());
-            return audioTrackCount + midiTrackCount + automationTrackCount + chuckTrackCount;
+            return audioTrackCount + midiTrackCount + automationTrackCount + chuckTrackCount + midaTrackCount;
         }
 
         const char* componentLabel(int index) {
@@ -390,8 +440,177 @@ namespace Vst3BrowserSystemLogic {
                 case 1: return "Midi Track";
                 case 2: return "Automation Track";
                 case 3: return "ChucK Track";
+                case 4: return "Mida Track";
+                case 5: return "Mida MIDI Track";
                 default: return "";
             }
+        }
+
+        bool applyMidaClipToTrack(BaseSystem& baseSystem, const Vst3MidaClipEntry& clip, int trackIndex) {
+            if (!baseSystem.mida) return false;
+            MidaContext& mida = *baseSystem.mida;
+            if (trackIndex < 0 || trackIndex >= static_cast<int>(mida.tracks.size())) return false;
+            MidaTrack& track = mida.tracks[static_cast<size_t>(trackIndex)];
+            track.source = clip.source;
+            track.sourceHash = 0;
+            track.compiledBpm = 0.0;
+            track.compiledSampleRate = 0.0f;
+            track.compiledTickLength = 0;
+            track.compiledNoteCount = 0;
+            track.compileOk = false;
+            track.diagnostics.clear();
+            mida.selectedTrack = trackIndex;
+            mida.statusMessage = "Loaded .mida clip: " + clip.name;
+            if (baseSystem.daw) {
+                baseSystem.daw->selectedLaneType = DawContext::kLaneMida;
+                baseSystem.daw->selectedLaneTrack = trackIndex;
+                for (int i = 0; i < static_cast<int>(baseSystem.daw->laneOrder.size()); ++i) {
+                    const auto& entry = baseSystem.daw->laneOrder[static_cast<size_t>(i)];
+                    if (entry.type == DawContext::kLaneMida && entry.trackIndex == trackIndex) {
+                        baseSystem.daw->selectedLaneIndex = i;
+                        break;
+                    }
+                }
+            }
+            return true;
+        }
+
+        void applyTrimToMidiClip(MidiClip& clip, uint64_t newStart, uint64_t newLength) {
+            uint64_t oldStart = clip.startSample;
+            uint64_t newEnd = newStart + newLength;
+            std::vector<MidiNote> trimmed;
+            trimmed.reserve(clip.notes.size());
+            for (const MidiNote& note : clip.notes) {
+                if (note.length == 0) continue;
+                uint64_t noteStart = oldStart + note.startSample;
+                uint64_t noteEnd = noteStart + note.length;
+                if (noteEnd <= newStart || noteStart >= newEnd) continue;
+                uint64_t clippedStart = std::max(noteStart, newStart);
+                uint64_t clippedEnd = std::min(noteEnd, newEnd);
+                if (clippedEnd <= clippedStart) continue;
+                MidiNote out = note;
+                out.startSample = clippedStart - newStart;
+                out.length = clippedEnd - clippedStart;
+                trimmed.push_back(out);
+            }
+            clip.startSample = newStart;
+            clip.length = newLength;
+            clip.notes = std::move(trimmed);
+        }
+
+        void trimMidiClipsForNewClip(MidiTrack& track, const MidiClip& clip) {
+            if (clip.length == 0) return;
+            uint64_t newStart = clip.startSample;
+            uint64_t newEnd = clip.startSample + clip.length;
+            std::vector<MidiClip> updated;
+            updated.reserve(track.clips.size() + 1);
+            for (const MidiClip& existing : track.clips) {
+                if (existing.length == 0) continue;
+                uint64_t exStart = existing.startSample;
+                uint64_t exEnd = existing.startSample + existing.length;
+                if (exEnd <= newStart || exStart >= newEnd) {
+                    updated.push_back(existing);
+                    continue;
+                }
+                if (newStart <= exStart && newEnd >= exEnd) {
+                    continue;
+                }
+                if (newStart > exStart) {
+                    MidiClip left = existing;
+                    applyTrimToMidiClip(left, exStart, newStart - exStart);
+                    if (left.length > 0) updated.push_back(std::move(left));
+                }
+                if (newEnd < exEnd) {
+                    MidiClip right = existing;
+                    applyTrimToMidiClip(right, newEnd, exEnd - newEnd);
+                    if (right.length > 0) updated.push_back(std::move(right));
+                }
+            }
+            track.clips = std::move(updated);
+        }
+
+        void sortMidiClipsByStart(std::vector<MidiClip>& clips) {
+            std::sort(clips.begin(), clips.end(), [](const MidiClip& a, const MidiClip& b) {
+                if (a.startSample == b.startSample) return a.length < b.length;
+                return a.startSample < b.startSample;
+            });
+        }
+
+        bool applyMidaClipToMidiTrack(BaseSystem& baseSystem,
+                                      const Vst3MidaClipEntry& clipEntry,
+                                      int trackIndex,
+                                      uint64_t startSample) {
+            if (!baseSystem.midi) return false;
+            MidiContext& midi = *baseSystem.midi;
+            if (trackIndex < 0 || trackIndex >= static_cast<int>(midi.tracks.size())) return false;
+            MidiTrack& track = midi.tracks[static_cast<size_t>(trackIndex)];
+            if (!track.midaMidiTrack) return false;
+
+            MidiClip clip{};
+            clip.startSample = startSample;
+            clip.midaSource = clipEntry.source;
+            clip.hasMidaSource = true;
+            std::string error;
+            if (!MidaInterpreterSystemLogic::CompileMidiClipSource(baseSystem, clip, &error)) {
+                if (baseSystem.mida) {
+                    baseSystem.mida->statusMessage = "Mida MIDI error " + error;
+                }
+                return false;
+            }
+            clip.startSample = startSample;
+            if (clip.length == 0) {
+                double sampleRate = baseSystem.daw ? baseSystem.daw->sampleRate : 44100.0;
+                clip.length = static_cast<uint64_t>(std::max(1.0, sampleRate));
+            }
+            clip.takeId = track.nextTakeId++;
+            int insertedTakeId = clip.takeId;
+
+            trimMidiClipsForNewClip(track, clip);
+            track.clips.push_back(std::move(clip));
+            sortMidiClipsByStart(track.clips);
+
+            int insertedIndex = -1;
+            for (int i = 0; i < static_cast<int>(track.clips.size()); ++i) {
+                const MidiClip& candidate = track.clips[static_cast<size_t>(i)];
+                if (candidate.takeId == insertedTakeId && candidate.startSample == startSample) {
+                    insertedIndex = i;
+                    break;
+                }
+            }
+            for (int i = 0; i < static_cast<int>(track.clips.size()); ++i) {
+                if (i == insertedIndex) continue;
+                MidiClip& candidate = track.clips[static_cast<size_t>(i)];
+                if (track.midaMidiTrack || candidate.hasMidaSource) {
+                    candidate.hasMidaSource = true;
+                    candidate.midaSourceDirty = true;
+                    MidaInterpreterSystemLogic::RegenerateMidiClipSource(baseSystem, trackIndex, i);
+                }
+            }
+            track.waveformVersion += 1;
+            midi.selectedTrackIndex = trackIndex;
+            midi.selectedClipTrack = trackIndex;
+            midi.selectedClipIndex = insertedIndex;
+            if (baseSystem.daw) {
+                baseSystem.daw->selectedClipTrack = -1;
+                baseSystem.daw->selectedClipIndex = -1;
+                baseSystem.daw->selectedLaneType = DawContext::kLaneMidi;
+                baseSystem.daw->selectedLaneTrack = trackIndex;
+                for (int i = 0; i < static_cast<int>(baseSystem.daw->laneOrder.size()); ++i) {
+                    const auto& entry = baseSystem.daw->laneOrder[static_cast<size_t>(i)];
+                    if (entry.type == DawContext::kLaneMidi && entry.trackIndex == trackIndex) {
+                        baseSystem.daw->selectedLaneIndex = i;
+                        break;
+                    }
+                }
+            }
+            if (baseSystem.mida) {
+                baseSystem.mida->statusMessage = "Loaded .mida MIDI clip: " + clipEntry.name;
+            }
+            if (baseSystem.ui) baseSystem.ui->buttonCacheBuilt = false;
+            if (baseSystem.font) baseSystem.font->textCacheBuilt = false;
+            if (baseSystem.daw) baseSystem.daw->uiCacheBuilt = false;
+            midi.uiCacheBuilt = false;
+            return insertedIndex >= 0;
         }
     } // namespace
 
@@ -504,6 +723,39 @@ namespace Vst3BrowserSystemLogic {
             if (baseSystem.font) baseSystem.font->textCacheBuilt = false;
         }
 
+        if (!ctx.midaClipsCacheBuilt) {
+            refreshMidaClipList(ctx);
+        }
+        if (!ctx.midaClipsCacheBuilt || ctx.midaClipsLevel != &level || ctx.midaClipsWorldIndex != worldIndex
+            || ctx.midaClipsListCount != ctx.availableMidaClips.size()) {
+            removeInstances(level, worldIndex, ctx.midaClipsInstanceIds);
+            ctx.midaClipsInstanceIds.clear();
+            ctx.midaClipsGhostId = -1;
+
+            EntityInstance header = makeTextInstance(baseSystem, prototypes, ".MIDA CLIPS", "track_mida_clips_header");
+            ctx.midaClipsInstanceIds.push_back(header.instanceID);
+            level.worlds[worldIndex].instances.push_back(header);
+
+            for (size_t i = 0; i < ctx.availableMidaClips.size(); ++i) {
+                std::string controlId = "track_mida_clip_item_" + std::to_string(i);
+                EntityInstance item = makeTextInstance(baseSystem, prototypes, ctx.availableMidaClips[i].name, controlId);
+                ctx.midaClipsInstanceIds.push_back(item.instanceID);
+                level.worlds[worldIndex].instances.push_back(item);
+            }
+
+            EntityInstance ghost = makeTextInstance(baseSystem, prototypes, "", "track_mida_clip_drag");
+            ghost.colorName = "MiraLaneHighlight";
+            ctx.midaClipsGhostId = ghost.instanceID;
+            ctx.midaClipsInstanceIds.push_back(ghost.instanceID);
+            level.worlds[worldIndex].instances.push_back(ghost);
+
+            ctx.midaClipsCacheBuilt = true;
+            ctx.midaClipsLevel = &level;
+            ctx.midaClipsWorldIndex = worldIndex;
+            ctx.midaClipsListCount = ctx.availableMidaClips.size();
+            if (baseSystem.font) baseSystem.font->textCacheBuilt = false;
+        }
+
         RectF componentsHeaderRect{
             leftRect.x + kPadX,
             leftRect.y + kPadY,
@@ -529,12 +781,21 @@ namespace Vst3BrowserSystemLogic {
             kHeaderHeight
         };
         float remainingHeight = leftRect.y + leftRect.h - kPadY - headerRect.y;
-        float listAreaHeight = remainingHeight - (kHeaderHeight * 2.0f) - kSectionGap - kRowGap * 2.0f;
+        int openListCount = 0;
+        if (!ctx.browserCollapsed) openListCount += 1;
+        if (!ctx.samplesCollapsed) openListCount += 1;
+        if (!ctx.midaClipsCollapsed) openListCount += 1;
+        float listAreaHeight = remainingHeight
+            - (kHeaderHeight * 3.0f)
+            - (kSectionGap * 2.0f)
+            - (kRowGap * static_cast<float>(openListCount));
         if (listAreaHeight < 0.0f) listAreaHeight = 0.0f;
-        float pluginShare = ctx.browserCollapsed ? 0.0f : (ctx.samplesCollapsed ? 1.0f : 0.5f);
-        float samplesShare = ctx.samplesCollapsed ? 0.0f : (ctx.browserCollapsed ? 1.0f : 0.5f);
-        float pluginListHeight = listAreaHeight * pluginShare;
-        float samplesListHeight = listAreaHeight * samplesShare;
+        float openListHeight = openListCount > 0
+            ? listAreaHeight / static_cast<float>(openListCount)
+            : 0.0f;
+        float pluginListHeight = ctx.browserCollapsed ? 0.0f : openListHeight;
+        float samplesListHeight = ctx.samplesCollapsed ? 0.0f : openListHeight;
+        float midaClipsListHeight = ctx.midaClipsCollapsed ? 0.0f : openListHeight;
         RectF listRect{
             headerRect.x,
             headerRect.y + headerRect.h + kRowGap,
@@ -556,6 +817,21 @@ namespace Vst3BrowserSystemLogic {
             samplesHeaderRect.w,
             samplesListHeight
         };
+        float midaClipsHeaderY = samplesHeaderRect.y + samplesHeaderRect.h
+            + (ctx.samplesCollapsed ? 0.0f : (kRowGap + samplesListHeight))
+            + kSectionGap;
+        RectF midaClipsHeaderRect{
+            headerRect.x,
+            midaClipsHeaderY,
+            headerRect.w,
+            kHeaderHeight
+        };
+        RectF midaClipsListRect{
+            midaClipsHeaderRect.x,
+            midaClipsHeaderRect.y + midaClipsHeaderRect.h + kRowGap,
+            midaClipsHeaderRect.w,
+            midaClipsListHeight
+        };
         RectF listHitRect{
             listRect.x - kHitPadX,
             listRect.y,
@@ -567,6 +843,12 @@ namespace Vst3BrowserSystemLogic {
             samplesListRect.y,
             samplesListRect.w + kHitPadX,
             samplesListRect.h
+        };
+        RectF midaClipsHitRect{
+            midaClipsListRect.x - kHitPadX,
+            midaClipsListRect.y,
+            midaClipsListRect.w + kHitPadX,
+            midaClipsListRect.h
         };
 
         if (ui.mainScrollDelta != 0.0) {
@@ -584,6 +866,13 @@ namespace Vst3BrowserSystemLogic {
                 ctx.samplesScroll += static_cast<float>(ui.mainScrollDelta) * 24.0f;
                 ctx.samplesScroll = std::clamp(ctx.samplesScroll, minScroll, 0.0f);
                 ui.mainScrollDelta = 0.0;
+            } else if (!ctx.midaClipsCollapsed && hitRect(midaClipsListRect, ui)) {
+                float listHeight = static_cast<float>(ctx.availableMidaClips.size()) * kRowHeight;
+                float visibleHeight = std::max(0.0f, midaClipsListRect.h);
+                float minScroll = std::min(0.0f, visibleHeight - listHeight);
+                ctx.midaClipsScroll += static_cast<float>(ui.mainScrollDelta) * 24.0f;
+                ctx.midaClipsScroll = std::clamp(ctx.midaClipsScroll, minScroll, 0.0f);
+                ui.mainScrollDelta = 0.0;
             }
         }
 
@@ -595,6 +884,9 @@ namespace Vst3BrowserSystemLogic {
             ui.consumeClick = true;
         } else if (ui.uiLeftReleased && hitRect(samplesHeaderRect, ui)) {
             ctx.samplesCollapsed = !ctx.samplesCollapsed;
+            ui.consumeClick = true;
+        } else if (ui.uiLeftReleased && hitRect(midaClipsHeaderRect, ui)) {
+            ctx.midaClipsCollapsed = !ctx.midaClipsCollapsed;
             ui.consumeClick = true;
         }
 
@@ -629,6 +921,14 @@ namespace Vst3BrowserSystemLogic {
                 ctx.samplesDragIndex = index;
                 ui.consumeClick = true;
             }
+        } else if (!ctx.midaClipsCollapsed && ui.uiLeftPressed && hitRect(midaClipsHitRect, ui)) {
+            float localY = static_cast<float>(ui.cursorY) - midaClipsListRect.y - ctx.midaClipsScroll;
+            int index = static_cast<int>(localY / kRowHeight);
+            if (index >= 0 && index < static_cast<int>(ctx.availableMidaClips.size())) {
+                ctx.midaClipsDragging = true;
+                ctx.midaClipsDragIndex = index;
+                ui.consumeClick = true;
+            }
         }
 
         if (ctx.componentsDragging && (ui.uiLeftReleased || !ui.uiLeftDown)) {
@@ -636,9 +936,10 @@ namespace Vst3BrowserSystemLogic {
                 ? static_cast<int>(baseSystem.daw->tracks.size())
                 : 0;
             int midiTrackCount = baseSystem.midi ? baseSystem.midi->trackCount : 0;
+            int midaTrackCount = baseSystem.mida ? static_cast<int>(baseSystem.mida->tracks.size()) : 0;
             int trackCount = baseSystem.daw
-                ? totalLaneSlotCount(*baseSystem.daw, audioTrackCount, midiTrackCount)
-                : (audioTrackCount + midiTrackCount);
+                ? totalLaneSlotCount(*baseSystem.daw, audioTrackCount, midiTrackCount, midaTrackCount)
+                : (audioTrackCount + midiTrackCount + midaTrackCount);
             int dropSlot = -1;
             int windowWidth = 0;
             int windowHeight = 0;
@@ -670,6 +971,14 @@ namespace Vst3BrowserSystemLogic {
                     if (ChuckLaneSystemLogic::InsertTrackAt(baseSystem, dropSlot)) {
                         ui.consumeClick = true;
                     }
+                } else if (ctx.componentsDragIndex == 4) {
+                    if (MidaInterpreterSystemLogic::InsertTrackAt(baseSystem, dropSlot)) {
+                        ui.consumeClick = true;
+                    }
+                } else if (ctx.componentsDragIndex == 5) {
+                    if (MidiTrackSystemLogic::InsertMidaMidiTrackAt(baseSystem, dropSlot)) {
+                        ui.consumeClick = true;
+                    }
                 }
             }
             ctx.componentsDragging = false;
@@ -686,9 +995,10 @@ namespace Vst3BrowserSystemLogic {
                 ? static_cast<int>(baseSystem.daw->tracks.size())
                 : 0;
             int midiTrackCount = baseSystem.midi ? baseSystem.midi->trackCount : 0;
+            int midaTrackCount = baseSystem.mida ? static_cast<int>(baseSystem.mida->tracks.size()) : 0;
             int trackCount = baseSystem.daw
-                ? totalLaneSlotCount(*baseSystem.daw, audioTrackCount, midiTrackCount)
-                : (audioTrackCount + midiTrackCount);
+                ? totalLaneSlotCount(*baseSystem.daw, audioTrackCount, midiTrackCount, midaTrackCount)
+                : (audioTrackCount + midiTrackCount + midaTrackCount);
             int dropIndex = -1;
             int windowWidth = 0;
             int windowHeight = 0;
@@ -710,6 +1020,11 @@ namespace Vst3BrowserSystemLogic {
                         targetIndex = entry.trackIndex;
                     } else if (entry.type == 1) {
                         targetIndex = audioTrackCount + entry.trackIndex;
+                    } else if (entry.type == DawContext::kLaneMida) {
+                        int backendMidiIndex = MidaInterpreterSystemLogic::BackendMidiTrackIndexForTrack(baseSystem, entry.trackIndex);
+                        if (backendMidiIndex >= 0) {
+                            targetIndex = audioTrackCount + backendMidiIndex;
+                        }
                     }
                 } else {
                     if (dropIndex >= 0 && dropIndex < audioTrackCount) {
@@ -815,11 +1130,127 @@ namespace Vst3BrowserSystemLogic {
             ctx.samplesDragIndex = -1;
         }
 
+        if (ctx.midaClipsDragging && ui.uiLeftReleased && baseSystem.daw && baseSystem.mida) {
+            DawContext& daw = *baseSystem.daw;
+            if (ctx.midaClipsDragIndex >= 0
+                && ctx.midaClipsDragIndex < static_cast<int>(ctx.availableMidaClips.size())) {
+                int windowWidth = 0;
+                int windowHeight = 0;
+                if (win) {
+                    PlatformInput::GetWindowSize(win, windowWidth, windowHeight);
+                }
+                double screenWidth = windowWidth > 0 ? static_cast<double>(windowWidth) : 1920.0;
+                int laneSlots = !daw.laneOrder.empty()
+                    ? static_cast<int>(daw.laneOrder.size())
+                    : static_cast<int>(daw.tracks.size())
+                        + (baseSystem.midi ? baseSystem.midi->trackCount : 0)
+                        + static_cast<int>(daw.automationTracks.size())
+                        + static_cast<int>(daw.chuckTracks.size())
+                        + static_cast<int>(baseSystem.mida->tracks.size());
+                int dropLaneIndex = -1;
+                if (laneSlots > 0) {
+                    dropLaneIndex = computeDropTrackIndex(panel,
+                                                          ui,
+                                                          baseSystem.uiStamp.get(),
+                                                          daw,
+                                                          screenWidth,
+                                                          laneSlots);
+                }
+                int targetTrack = -1;
+                int targetMidiTrack = -1;
+                if (dropLaneIndex >= 0) {
+                    if (!daw.laneOrder.empty() && dropLaneIndex < static_cast<int>(daw.laneOrder.size())) {
+                        const auto& entry = daw.laneOrder[static_cast<size_t>(dropLaneIndex)];
+                        if (entry.type == DawContext::kLaneMida) {
+                            targetTrack = entry.trackIndex;
+                        } else if (entry.type == DawContext::kLaneMidi
+                                   && baseSystem.midi
+                                   && entry.trackIndex >= 0
+                                   && entry.trackIndex < static_cast<int>(baseSystem.midi->tracks.size())
+                                   && baseSystem.midi->tracks[static_cast<size_t>(entry.trackIndex)].midaMidiTrack) {
+                            targetMidiTrack = entry.trackIndex;
+                        }
+                    } else if (daw.laneOrder.empty()) {
+                        int audioCount = static_cast<int>(daw.tracks.size());
+                        int midiCount = baseSystem.midi ? static_cast<int>(baseSystem.midi->tracks.size()) : 0;
+                        int automationCount = static_cast<int>(daw.automationTracks.size());
+                        int chuckCount = static_cast<int>(daw.chuckTracks.size());
+                        int midiStart = audioCount;
+                        int midiEnd = midiStart + midiCount;
+                        int midaStart = midiEnd + automationCount + chuckCount;
+                        if (dropLaneIndex >= midiStart && dropLaneIndex < midiEnd && baseSystem.midi) {
+                            int candidateTrack = dropLaneIndex - midiStart;
+                            if (candidateTrack >= 0
+                                && candidateTrack < static_cast<int>(baseSystem.midi->tracks.size())
+                                && baseSystem.midi->tracks[static_cast<size_t>(candidateTrack)].midaMidiTrack) {
+                                targetMidiTrack = candidateTrack;
+                            }
+                        } else if (baseSystem.mida
+                                   && dropLaneIndex >= midaStart
+                                   && dropLaneIndex < midaStart + static_cast<int>(baseSystem.mida->tracks.size())) {
+                            targetTrack = dropLaneIndex - midaStart;
+                        }
+                    }
+                }
+
+                const auto& clip = ctx.availableMidaClips[ctx.midaClipsDragIndex];
+                if (targetMidiTrack >= 0 && baseSystem.midi) {
+                    LaneDropGeometry geom = buildLaneDropGeometry(baseSystem.uiStamp.get(), daw, screenWidth);
+                    double secondsPerScreen = (daw.timelineSecondsPerScreen > 0.0)
+                        ? daw.timelineSecondsPerScreen : 10.0;
+                    double windowSamples = secondsPerScreen * static_cast<double>(daw.sampleRate);
+                    if (windowSamples <= 0.0) windowSamples = 1.0;
+                    double cursorT = (geom.laneRight > geom.laneLeft)
+                        ? (static_cast<double>(ui.cursorX) - geom.laneLeft) / (geom.laneRight - geom.laneLeft)
+                        : 0.0;
+                    cursorT = std::clamp(cursorT, 0.0, 1.0);
+                    int64_t startSampleSigned = static_cast<int64_t>(std::llround(
+                        static_cast<double>(daw.timelineOffsetSamples) + cursorT * windowSamples));
+                    if (startSampleSigned < 0) {
+                        uint64_t shiftSamples = computeRebaseShiftSamples(daw, startSampleSigned);
+                        DawTimelineRebaseLogic::ShiftTimelineRight(baseSystem, shiftSamples);
+                        startSampleSigned += static_cast<int64_t>(shiftSamples);
+                    }
+                    uint64_t startSample = static_cast<uint64_t>(startSampleSigned);
+                    if (applyMidaClipToMidiTrack(baseSystem, clip, targetMidiTrack, startSample)) {
+                        ui.consumeClick = true;
+                    }
+                } else if (targetTrack >= 0) {
+                    if (applyMidaClipToTrack(baseSystem, clip, targetTrack)) {
+                        ui.consumeClick = true;
+                    }
+                } else {
+                    int dropSlot = -1;
+                    if (laneSlots > 0) {
+                        dropSlot = computeDropTrackSlot(panel,
+                                                        ui,
+                                                        baseSystem.uiStamp.get(),
+                                                        daw,
+                                                        screenWidth,
+                                                        laneSlots);
+                    } else {
+                        dropSlot = computeDropIndexForEmpty(panel, ui, daw, screenWidth) >= 0 ? 0 : -1;
+                    }
+                    if (dropSlot >= 0 && MidaInterpreterSystemLogic::InsertTrackAt(baseSystem, dropSlot)) {
+                        int insertedTrack = baseSystem.mida->selectedTrack;
+                        if (applyMidaClipToTrack(baseSystem, clip, insertedTrack)) {
+                            ui.consumeClick = true;
+                        }
+                    }
+                }
+            }
+            ctx.midaClipsDragging = false;
+            ctx.midaClipsDragIndex = -1;
+        }
+
         if (!ctx.browserDragging && !ui.uiLeftDown) {
             ctx.browserDragIndex = -1;
         }
         if (!ctx.samplesDragging && !ui.uiLeftDown) {
             ctx.samplesDragIndex = -1;
+        }
+        if (!ctx.midaClipsDragging && !ui.uiLeftDown) {
+            ctx.midaClipsDragIndex = -1;
         }
         if (!ctx.componentsDragging && !ui.uiLeftDown) {
             ctx.componentsDragIndex = -1;
@@ -829,9 +1260,10 @@ namespace Vst3BrowserSystemLogic {
                 ? static_cast<int>(baseSystem.daw->tracks.size())
                 : 0;
             int midiTrackCount = baseSystem.midi ? baseSystem.midi->trackCount : 0;
+            int midaTrackCount = baseSystem.mida ? static_cast<int>(baseSystem.mida->tracks.size()) : 0;
             int trackCount = baseSystem.daw
-                ? totalLaneSlotCount(*baseSystem.daw, audioTrackCount, midiTrackCount)
-                : (audioTrackCount + midiTrackCount);
+                ? totalLaneSlotCount(*baseSystem.daw, audioTrackCount, midiTrackCount, midaTrackCount)
+                : (audioTrackCount + midiTrackCount + midaTrackCount);
             int windowWidth = 0;
             int windowHeight = 0;
             if (win) {
@@ -864,9 +1296,42 @@ namespace Vst3BrowserSystemLogic {
                 baseSystem.daw->externalDropActive = dropSlot >= 0;
                 baseSystem.daw->externalDropIndex = dropSlot;
                 baseSystem.daw->externalDropType = 3;
+            } else if (ctx.componentsDragIndex == 4 && baseSystem.daw) {
+                baseSystem.daw->externalDropActive = dropSlot >= 0;
+                baseSystem.daw->externalDropIndex = dropSlot;
+                baseSystem.daw->externalDropType = DawContext::kLaneMida;
+            } else if (ctx.componentsDragIndex == 5 && baseSystem.daw) {
+                baseSystem.daw->externalDropActive = dropSlot >= 0;
+                baseSystem.daw->externalDropIndex = dropSlot;
+                baseSystem.daw->externalDropType = DawContext::kLaneMidi;
             }
         }
-        if (!ctx.componentsDragging && baseSystem.daw) {
+        if (ctx.midaClipsDragging && baseSystem.daw) {
+            DawContext& daw = *baseSystem.daw;
+            int windowWidth = 0;
+            int windowHeight = 0;
+            if (win) {
+                PlatformInput::GetWindowSize(win, windowWidth, windowHeight);
+            }
+            double screenWidth = windowWidth > 0 ? static_cast<double>(windowWidth) : 1920.0;
+            int laneSlots = !daw.laneOrder.empty()
+                ? static_cast<int>(daw.laneOrder.size())
+                : static_cast<int>(daw.tracks.size())
+                    + (baseSystem.midi ? baseSystem.midi->trackCount : 0)
+                    + static_cast<int>(daw.automationTracks.size())
+                    + static_cast<int>(daw.chuckTracks.size())
+                    + (baseSystem.mida ? static_cast<int>(baseSystem.mida->tracks.size()) : 0);
+            int dropSlot = -1;
+            if (laneSlots > 0) {
+                dropSlot = computeDropTrackSlot(panel, ui, baseSystem.uiStamp.get(), daw, screenWidth, laneSlots);
+            } else {
+                dropSlot = computeDropIndexForEmpty(panel, ui, daw, screenWidth) >= 0 ? 0 : -1;
+            }
+            daw.externalDropActive = dropSlot >= 0;
+            daw.externalDropIndex = dropSlot;
+            daw.externalDropType = DawContext::kLaneMida;
+        }
+        if (!ctx.componentsDragging && !ctx.midaClipsDragging && baseSystem.daw) {
             baseSystem.daw->externalDropActive = false;
             baseSystem.daw->externalDropIndex = -1;
             baseSystem.daw->externalDropType = -1;
@@ -976,6 +1441,42 @@ namespace Vst3BrowserSystemLogic {
             inst->text = ctx.availableSamples[itemIndex].name;
             float rowY = samplesListRect.y + ctx.samplesScroll + static_cast<float>(itemIndex) * kRowHeight;
             inst->position.x = samplesListRect.x;
+            inst->position.y = rowY + kRowHeight * 0.75f;
+            inst->position.z = -1.0f;
+        }
+
+        for (size_t i = 0; i < ctx.midaClipsInstanceIds.size(); ++i) {
+            EntityInstance* inst = findInstance(level, worldIndex, ctx.midaClipsInstanceIds[i]);
+            if (!inst) continue;
+            if (i == 0) {
+                inst->text = ctx.midaClipsCollapsed ? "> .MIDA CLIPS" : "v .MIDA CLIPS";
+                inst->position.x = midaClipsHeaderRect.x;
+                inst->position.y = midaClipsHeaderRect.y + midaClipsHeaderRect.h * 0.75f;
+                inst->position.z = -1.0f;
+                continue;
+            }
+            if (ctx.midaClipsGhostId == inst->instanceID) {
+                if (ctx.midaClipsDragging && ctx.midaClipsDragIndex >= 0
+                    && ctx.midaClipsDragIndex < static_cast<int>(ctx.availableMidaClips.size())) {
+                    inst->text = ctx.availableMidaClips[ctx.midaClipsDragIndex].name;
+                    inst->position.x = static_cast<float>(ui.cursorX) + kGhostOffsetX;
+                    inst->position.y = static_cast<float>(ui.cursorY) + kGhostOffsetY;
+                    inst->position.z = -1.0f;
+                } else {
+                    inst->text.clear();
+                    inst->position = glm::vec3(-10000.0f);
+                }
+                continue;
+            }
+            size_t itemIndex = i - 1;
+            if (ctx.midaClipsCollapsed || itemIndex >= ctx.availableMidaClips.size()) {
+                inst->text.clear();
+                inst->position = glm::vec3(-10000.0f);
+                continue;
+            }
+            inst->text = ctx.availableMidaClips[itemIndex].name;
+            float rowY = midaClipsListRect.y + ctx.midaClipsScroll + static_cast<float>(itemIndex) * kRowHeight;
+            inst->position.x = midaClipsListRect.x;
             inst->position.y = rowY + kRowHeight * 0.75f;
             inst->position.z = -1.0f;
         }

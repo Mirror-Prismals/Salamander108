@@ -77,6 +77,12 @@ namespace SpawnSystemLogic {
         }
     }
 
+    int floorDivInt(int value, int divisor) {
+        if (divisor <= 0) return 0;
+        if (value >= 0) return value / divisor;
+        return -(((-value) + divisor - 1) / divisor);
+    }
+
     std::string getRegistryString(const BaseSystem& baseSystem,
                                   const std::string& key,
                                   const std::string& fallback = "") {
@@ -405,6 +411,75 @@ namespace SpawnSystemLogic {
         placePreview(leafFanPineID, kPreviewOffsets[1]);
     }
 
+    void placeSpawnDebugSlopeRamp(BaseSystem& baseSystem,
+                                  std::vector<Entity>& prototypes,
+                                  const glm::ivec2& centerXZ,
+                                  int nominalSurfaceY) {
+        if (!baseSystem.voxelWorld) return;
+        if (!getRegistryBool(baseSystem, "SpawnDebugSlopeRampEnabled", true)) return;
+
+        const int slopeID = findPrototypeIDByName(prototypes, "DebugSlopeTexPosX");
+        int solidID = findPrototypeIDByName(prototypes, "StoneBlockTex");
+        if (solidID < 0) solidID = findPrototypeIDByName(prototypes, "DebugBlockTex");
+        if (slopeID < 0 || solidID < 0) return;
+
+        const int lowCenterX = centerXZ.x + 7;
+        const int lowCenterZ = centerXZ.y + 1;
+        int supportY = nominalSurfaceY;
+        (void)findTopSolidAtCell(baseSystem,
+                                 prototypes,
+                                 lowCenterX,
+                                 lowCenterZ,
+                                 nominalSurfaceY - 8,
+                                 nominalSurfaceY + 8,
+                                 &supportY);
+        const glm::ivec3 lowCenter(lowCenterX, supportY + 1, lowCenterZ);
+        const glm::ivec3 highDir(1, 0, 0);
+        const glm::ivec3 lateralDir(0, 0, 1);
+        const uint32_t color = packWhiteColor();
+        std::unordered_set<VoxelSectionKey, VoxelSectionKeyHash> touchedSections;
+
+        auto rememberTouched = [&](const glm::ivec3& cell) {
+            const int sectionSize = baseSystem.voxelWorld->sectionSize > 0
+                ? baseSystem.voxelWorld->sectionSize
+                : 16;
+            touchedSections.insert(VoxelSectionKey{
+                glm::ivec3(
+                    floorDivInt(cell.x, sectionSize),
+                    floorDivInt(cell.y, sectionSize),
+                    floorDivInt(cell.z, sectionSize)
+                )
+            });
+        };
+        auto writeCell = [&](const glm::ivec3& cell, uint32_t id) {
+            baseSystem.voxelWorld->setBlockWorld(cell, id, id == 0u ? 0u : color);
+            rememberTouched(cell);
+        };
+
+        for (int depth = 0; depth < 3; ++depth) {
+            for (int yStep = 0; yStep < 3; ++yStep) {
+                for (int lateral = -1; lateral <= 1; ++lateral) {
+                    const glm::ivec3 cell =
+                        lowCenter + highDir * depth + lateralDir * lateral + glm::ivec3(0, yStep, 0);
+                    if (yStep == depth) {
+                        writeCell(cell, static_cast<uint32_t>(slopeID));
+                    } else if (yStep < depth) {
+                        writeCell(cell, static_cast<uint32_t>(solidID));
+                    } else {
+                        writeCell(cell, 0u);
+                    }
+                }
+            }
+        }
+
+        for (const VoxelSectionKey& key : touchedSections) {
+            const glm::ivec3 sectionCenter =
+                key.coord * (baseSystem.voxelWorld->sectionSize > 0 ? baseSystem.voxelWorld->sectionSize : 16)
+                + glm::ivec3(8);
+            VoxelMeshingSystemLogic::RequestPriorityVoxelRemesh(baseSystem, prototypes, sectionCenter);
+        }
+    }
+
     void placeSpawnSecurityCamera(BaseSystem& baseSystem,
                                   std::vector<Entity>& prototypes,
                                   const glm::ivec2& centerXZ,
@@ -641,6 +716,7 @@ namespace SpawnSystemLogic {
             BookSystemLogic::PlaceSpawnBookCluster(baseSystem, prototypes, hit.cellXZ, hit.topY);
         }
         placeSpawnLeafFanPreview(baseSystem, prototypes, hit.cellXZ, hit.topY, spawnKey);
+        placeSpawnDebugSlopeRamp(baseSystem, prototypes, hit.cellXZ, hit.topY);
         if (baseSystem.registry) (*baseSystem.registry)["spawn_ready"] = true;
     }
 }

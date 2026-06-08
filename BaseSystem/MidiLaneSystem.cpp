@@ -19,10 +19,15 @@ namespace DawLaneTimelineSystemLogic {
     struct LaneLayout;
     LaneLayout ComputeLaneLayout(const BaseSystem& baseSystem, const DawContext& daw, PlatformWindowHandle win);
     double GridSecondsForZoom(double secondsPerScreen, double secondsPerBeat);
+    bool hasDawUiWorld(const LevelContext& level);
 }
 namespace PianoRollResourceSystemLogic { void NoteColor(int noteIndex, float& r, float& g, float& b); }
 namespace DawLaneInputSystemLogic { void ApplyLaneResizeCursor(PlatformWindowHandle win, bool active); }
 namespace DawTimelineRebaseLogic { void ShiftTimelineRight(BaseSystem& baseSystem, uint64_t shiftSamples); }
+namespace MidaInterpreterSystemLogic {
+    bool OpenMidiClipEditor(BaseSystem& baseSystem, int trackIndex, int clipIndex);
+    bool RegenerateMidiClipSource(BaseSystem& baseSystem, int trackIndex, int clipIndex);
+}
 
 namespace MidiLaneSystemLogic {
     namespace {
@@ -72,6 +77,12 @@ namespace MidiLaneSystemLogic {
         static double g_lastClipClickTime = -1.0;
         static int g_lastClipClickTrack = -1;
         static int g_lastClipClickIndex = -1;
+        static bool g_rightMouseWasDown = false;
+        static bool g_midaClipMenuOpen = false;
+        static int g_midaClipMenuTrack = -1;
+        static int g_midaClipMenuClip = -1;
+        static float g_midaClipMenuX = 0.0f;
+        static float g_midaClipMenuY = 0.0f;
         static bool g_clipDragActive = false;
         static int g_clipDragTrack = -1;
         static int g_clipDragIndex = -1;
@@ -144,6 +155,26 @@ namespace MidiLaneSystemLogic {
                          pixelToNDC(v3, width, height),
                          color);
             }
+        }
+
+        void pushScreenRect(std::vector<UiVertex>& verts,
+                            float left,
+                            float top,
+                            float right,
+                            float bottom,
+                            const glm::vec3& color,
+                            double width,
+                            double height) {
+            pushQuad(verts,
+                     pixelToNDC({left, top}, width, height),
+                     pixelToNDC({right, top}, width, height),
+                     pixelToNDC({right, bottom}, width, height),
+                     pixelToNDC({left, bottom}, width, height),
+                     color);
+        }
+
+        bool containsScreenRect(float left, float top, float right, float bottom, double x, double y) {
+            return x >= left && x <= right && y >= top && y <= bottom;
         }
 
         void computeClipRect(float centerY,
@@ -454,9 +485,10 @@ namespace MidiLaneSystemLogic {
 
     void UpdateMidiLane(BaseSystem& baseSystem, std::vector<Entity>& prototypes, float dt, PlatformWindowHandle win) {
         (void)prototypes; (void)dt;
-        if (!baseSystem.ui || !baseSystem.midi || !baseSystem.daw || !baseSystem.renderer || !baseSystem.world || !win) return;
+        if (!baseSystem.ui || !baseSystem.midi || !baseSystem.daw || !baseSystem.renderer || !baseSystem.world || !baseSystem.level || !win) return;
         UIContext& ui = *baseSystem.ui;
         if (!ui.active || ui.loadingActive) return;
+        if (!DawLaneTimelineSystemLogic::hasDawUiWorld(*baseSystem.level)) return;
 
         RendererContext& renderer = *baseSystem.renderer;
         WorldContext& world = *baseSystem.world;
@@ -627,6 +659,104 @@ namespace MidiLaneSystemLogic {
                                         startY,
                                         secondsPerScreen);
             trimCursorWanted = trimHover.valid;
+        }
+
+        bool rightDown = PlatformInput::IsMouseButtonDown(win, PlatformInput::MouseButton::Right);
+        bool rightPressed = rightDown && !g_rightMouseWasDown;
+        constexpr float kMidaClipMenuWidth = 132.0f;
+        constexpr float kMidaClipMenuHeight = 28.0f;
+        auto menuContainsCursor = [&]() {
+            return containsScreenRect(g_midaClipMenuX,
+                                      g_midaClipMenuY,
+                                      g_midaClipMenuX + kMidaClipMenuWidth,
+                                      g_midaClipMenuY + kMidaClipMenuHeight,
+                                      ui.cursorX,
+                                      ui.cursorY);
+        };
+        auto closeMidaClipMenu = [&]() {
+            g_midaClipMenuOpen = false;
+            g_midaClipMenuTrack = -1;
+            g_midaClipMenuClip = -1;
+        };
+        auto findClipUnderCursor = [&](int& outTrack, int& outClip) {
+            outTrack = -1;
+            outClip = -1;
+            double offsetSamples = static_cast<double>(daw.timelineOffsetSamples);
+            double windowSamples = secondsPerScreen * static_cast<double>(daw.sampleRate);
+            if (windowSamples <= 0.0) windowSamples = 1.0;
+            for (int t = 0; t < midiTrackCount; ++t) {
+                const auto& clips = midi.tracks[static_cast<size_t>(t)].clips;
+                if (clips.empty()) continue;
+                int laneIndex = midiLaneIndex[static_cast<size_t>(t)];
+                if (laneIndex < 0) continue;
+                float centerY = startY + static_cast<float>(laneIndex) * rowSpan;
+                float top = 0.0f;
+                float bottom = 0.0f;
+                float lipBottom = 0.0f;
+                computeClipRect(centerY, laneHalfH, top, bottom, lipBottom);
+                (void)lipBottom;
+                if (ui.cursorY < top || ui.cursorY > bottom) continue;
+                for (size_t ci = 0; ci < clips.size(); ++ci) {
+                    const MidiClip& clip = clips[ci];
+                    if (clip.length == 0) continue;
+                    double clipStart = static_cast<double>(clip.startSample);
+                    double clipEnd = static_cast<double>(clip.startSample + clip.length);
+                    if (clipEnd <= offsetSamples || clipStart >= offsetSamples + windowSamples) continue;
+                    double visibleStart = std::max(clipStart, offsetSamples);
+                    double visibleEnd = std::min(clipEnd, offsetSamples + windowSamples);
+                    float t0 = static_cast<float>((visibleStart - offsetSamples) / windowSamples);
+                    float t1 = static_cast<float>((visibleEnd - offsetSamples) / windowSamples);
+                    float x0 = laneLeft + (laneRight - laneLeft) * t0 - kClipHorizontalPad;
+                    float x1 = laneLeft + (laneRight - laneLeft) * t1 + kClipHorizontalPad;
+                    x0 = std::max(x0, laneLeft);
+                    x1 = std::min(x1, laneRight);
+                    if (x1 <= x0) continue;
+                    if (ui.cursorX >= x0 && ui.cursorX <= x1) {
+                        outTrack = t;
+                        outClip = static_cast<int>(ci);
+                        return true;
+                    }
+                }
+            }
+            return false;
+        };
+
+        if (g_midaClipMenuOpen && ui.uiLeftPressed && !ui.consumeClick) {
+            if (menuContainsCursor()) {
+                MidaInterpreterSystemLogic::OpenMidiClipEditor(baseSystem, g_midaClipMenuTrack, g_midaClipMenuClip);
+            }
+            closeMidaClipMenu();
+            ui.consumeClick = true;
+        }
+
+        if (allowLaneInput && rightPressed && !ui.consumeClick) {
+            int hitTrack = -1;
+            int hitClip = -1;
+            if (findClipUnderCursor(hitTrack, hitClip)
+                && hitTrack >= 0
+                && hitTrack < midiTrackCount
+                && hitClip >= 0
+                && hitClip < static_cast<int>(midi.tracks[static_cast<size_t>(hitTrack)].clips.size())) {
+                MidiTrack& track = midi.tracks[static_cast<size_t>(hitTrack)];
+                MidiClip& clip = track.clips[static_cast<size_t>(hitClip)];
+                if (track.midaMidiTrack || clip.hasMidaSource) {
+                    g_midaClipMenuOpen = true;
+                    g_midaClipMenuTrack = hitTrack;
+                    g_midaClipMenuClip = hitClip;
+                    g_midaClipMenuX = std::clamp(static_cast<float>(ui.cursorX), 8.0f, static_cast<float>(screenWidth) - kMidaClipMenuWidth - 8.0f);
+                    g_midaClipMenuY = std::clamp(static_cast<float>(ui.cursorY), 8.0f, static_cast<float>(screenHeight) - kMidaClipMenuHeight - 8.0f);
+                    midi.selectedTrackIndex = hitTrack;
+                    midi.selectedClipTrack = hitTrack;
+                    midi.selectedClipIndex = hitClip;
+                    daw.selectedClipTrack = -1;
+                    daw.selectedClipIndex = -1;
+                    ui.consumeClick = true;
+                } else {
+                    closeMidaClipMenu();
+                }
+            } else {
+                closeMidaClipMenu();
+            }
         }
 
         if (!g_clipDragActive && !g_clipTrimActive
@@ -801,6 +931,15 @@ namespace MidiLaneSystemLogic {
                         }
                         midi.selectedClipTrack = dstTrack;
                         midi.selectedClipIndex = selectedIndex;
+                        for (size_t i = 0; i < toTrack.clips.size(); ++i) {
+                            MidiClip& candidate = toTrack.clips[i];
+                            if (static_cast<int>(i) == selectedIndex && candidate.hasMidaSource) continue;
+                            if (toTrack.midaMidiTrack || candidate.hasMidaSource) {
+                                candidate.hasMidaSource = true;
+                                candidate.midaSourceDirty = true;
+                                MidaInterpreterSystemLogic::RegenerateMidiClipSource(baseSystem, dstTrack, static_cast<int>(i));
+                            }
+                        }
                         const MidiClip* selectedClip = nullptr;
                         if (selectedIndex >= 0 && selectedIndex < static_cast<int>(toTrack.clips.size())) {
                             selectedClip = &toTrack.clips[static_cast<size_t>(selectedIndex)];
@@ -917,6 +1056,11 @@ namespace MidiLaneSystemLogic {
                 MidiTrack& track = midi.tracks[static_cast<size_t>(g_clipTrimTrack)];
                 MidiClip& clip = track.clips[static_cast<size_t>(g_clipTrimIndex)];
                 applyTrimToMidiClip(clip, g_clipTrimTargetStart, g_clipTrimTargetLength);
+                if (track.midaMidiTrack || clip.hasMidaSource) {
+                    clip.hasMidaSource = true;
+                    clip.midaSourceDirty = true;
+                    MidaInterpreterSystemLogic::RegenerateMidiClipSource(baseSystem, g_clipTrimTrack, g_clipTrimIndex);
+                }
                 g_clipTrimActive = false;
                 g_clipTrimTrack = -1;
                 g_clipTrimIndex = -1;
@@ -1414,7 +1558,10 @@ namespace MidiLaneSystemLogic {
         }
         g_cachedPreviewSlot = previewSlot;
 
-        if (g_laneVertices.empty()) return;
+        if (g_laneVertices.empty()) {
+            g_rightMouseWasDown = rightDown;
+            return;
+        }
 
         g_laneVertices.resize(g_staticVertexCount);
         glm::vec3 selectedColor(0.45f, 0.72f, 1.0f);
@@ -1699,6 +1846,16 @@ namespace MidiLaneSystemLogic {
                 }
             }
         }
+        if (g_midaClipMenuOpen) {
+            float left = g_midaClipMenuX;
+            float top = g_midaClipMenuY;
+            float right = left + 132.0f;
+            float bottom = top + 28.0f;
+            pushScreenRect(g_laneVertices, left + 3.0f, top + 3.0f, right + 3.0f, bottom + 3.0f, {0.01f, 0.012f, 0.014f}, screenWidth, screenHeight);
+            pushScreenRect(g_laneVertices, left, top, right, bottom, {0.08f, 0.12f, 0.12f}, screenWidth, screenHeight);
+            pushScreenRect(g_laneVertices, left, top, right, top + 3.0f, {0.18f, 0.45f, 0.34f}, screenWidth, screenHeight);
+            pushText(g_laneVertices, left + 10.0f, top + 8.0f, "Edit Mida", {0.88f, 0.98f, 0.90f}, screenWidth, screenHeight);
+        }
         if (daw.selectedLaneType == 1 && daw.selectedLaneIndex >= 0) {
             int displayIndex = computeDisplayIndex(daw.selectedLaneIndex);
             if (displayIndex < 0) {
@@ -1820,6 +1977,7 @@ namespace MidiLaneSystemLogic {
         renderBackend.drawArraysTriangles(0, static_cast<int>(g_laneVertices.size()));
         setBlendModeAlpha();
         setDepthTestEnabled(true);
+        g_rightMouseWasDown = rightDown;
     }
 
     void OnTimelineRebased(uint64_t shiftSamples) {

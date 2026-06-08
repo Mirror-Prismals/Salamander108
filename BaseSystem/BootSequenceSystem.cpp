@@ -5,8 +5,8 @@
 
 namespace BootSequenceSystemLogic {
     namespace {
-        constexpr float kBootLoadingSeconds = 10.0f;
-        constexpr float kSwitchLoadingSeconds = 6.0f;
+        constexpr float kBootLoadingSeconds = 1.0f;
+        constexpr float kSwitchLoadingSeconds = 1.0f;
 
         struct UiVertex { glm::vec2 pos; glm::vec3 color; };
         static const std::vector<VertexAttribLayout> kUiVertexLayout = {

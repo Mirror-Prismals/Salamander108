@@ -1,168 +1,311 @@
 #pragma once
 
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cctype>
+#include <ctime>
+#include <iostream>
+#include <sstream>
+#include <string>
+
 namespace CloudSystemLogic {
 
     namespace {
-        uint32_t mixBits(uint32_t x) {
-            x ^= x >> 16;
-            x *= 0x7feb352du;
-            x ^= x >> 15;
-            x *= 0x846ca68bu;
-            x ^= x >> 16;
-            return x;
+        std::string toLowerCopy(std::string value) {
+            std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+            return value;
         }
 
-        float hash01(int x, int y, int z, int salt) {
-            uint32_t h = 0x9e3779b9u;
-            h ^= mixBits(static_cast<uint32_t>(x) + 0x85ebca6bu);
-            h ^= mixBits(static_cast<uint32_t>(y) + 0xc2b2ae35u);
-            h ^= mixBits(static_cast<uint32_t>(z) + 0x27d4eb2fu);
-            h ^= mixBits(static_cast<uint32_t>(salt) + 0x165667b1u);
-            return static_cast<float>(h & 0x00ffffffu) / 16777216.0f;
+        bool parseBool(const std::string& value, bool fallback) {
+            const std::string lower = toLowerCopy(value);
+            if (lower == "1" || lower == "true" || lower == "yes" || lower == "on") return true;
+            if (lower == "0" || lower == "false" || lower == "no" || lower == "off") return false;
+            return fallback;
+        }
+
+        bool registryBool(const BaseSystem& baseSystem, const std::string& key, bool fallback) {
+            if (!baseSystem.registry) return fallback;
+            auto it = baseSystem.registry->find(key);
+            if (it == baseSystem.registry->end()) return fallback;
+            if (std::holds_alternative<bool>(it->second)) return std::get<bool>(it->second);
+            if (std::holds_alternative<std::string>(it->second)) return parseBool(std::get<std::string>(it->second), fallback);
+            return fallback;
+        }
+
+        float registryFloat(const BaseSystem& baseSystem, const std::string& key, float fallback) {
+            if (!baseSystem.registry) return fallback;
+            auto it = baseSystem.registry->find(key);
+            if (it == baseSystem.registry->end()) return fallback;
+            if (std::holds_alternative<std::string>(it->second)) {
+                try {
+                    return std::stof(std::get<std::string>(it->second));
+                } catch (...) {
+                    return fallback;
+                }
+            }
+            if (std::holds_alternative<bool>(it->second)) return std::get<bool>(it->second) ? 1.0f : 0.0f;
+            return fallback;
+        }
+
+        int registryInt(const BaseSystem& baseSystem, const std::string& key, int fallback) {
+            if (!baseSystem.registry) return fallback;
+            auto it = baseSystem.registry->find(key);
+            if (it == baseSystem.registry->end()) return fallback;
+            if (std::holds_alternative<std::string>(it->second)) {
+                try {
+                    return std::stoi(std::get<std::string>(it->second));
+                } catch (...) {
+                    return fallback;
+                }
+            }
+            if (std::holds_alternative<bool>(it->second)) return std::get<bool>(it->second) ? 1 : 0;
+            return fallback;
+        }
+
+        void setRegistryString(BaseSystem& baseSystem, const std::string& key, const std::string& value) {
+            if (!baseSystem.registry) return;
+            (*baseSystem.registry)[key] = value;
+        }
+
+        std::string activeDimensionId(const BaseSystem& baseSystem) {
+            if (baseSystem.worldSave && !baseSystem.worldSave->activeDimensionId.empty()) {
+                return baseSystem.worldSave->activeDimensionId;
+            }
+            if (baseSystem.registry) {
+                auto it = baseSystem.registry->find("ActiveDimensionId");
+                if (it != baseSystem.registry->end() && std::holds_alternative<std::string>(it->second)) {
+                    return std::get<std::string>(it->second);
+                }
+            }
+            return "overworld";
+        }
+
+        float currentDayFraction(const BaseSystem& baseSystem) {
+            auto now = std::chrono::system_clock::now();
+            double epochSeconds = std::chrono::duration<double>(now.time_since_epoch()).count();
+            time_t ct = static_cast<time_t>(std::floor(epochSeconds));
+            double subSecond = epochSeconds - static_cast<double>(ct);
+            tm lt;
+            #ifdef _WIN32
+            localtime_s(&lt, &ct);
+            #else
+            localtime_r(&ct, &lt);
+            #endif
+            double daySeconds = static_cast<double>(lt.tm_hour) * 3600.0
+                              + static_cast<double>(lt.tm_min) * 60.0
+                              + static_cast<double>(lt.tm_sec)
+                              + subSecond;
+            float dayFraction = static_cast<float>(daySeconds / 86400.0);
+            if (activeDimensionId(baseSystem) == "nightworld") {
+                dayFraction += 0.5f;
+                dayFraction -= std::floor(dayFraction);
+            }
+            return dayFraction;
+        }
+
+        glm::vec3 currentLightDir(float dayFraction) {
+            const float hour = dayFraction * 24.0f;
+            glm::vec3 sunDir;
+            glm::vec3 moonDir;
+            {
+                const float u = (hour - 6.0f) / 12.0f;
+                sunDir = glm::normalize(glm::vec3(0.0f, std::sin(u * 3.14159265359f), -std::cos(u * 3.14159265359f)));
+            }
+            {
+                const float adjustedHour = (hour < 6.0f) ? hour + 24.0f : hour;
+                const float u = (adjustedHour - 18.0f) / 12.0f;
+                moonDir = glm::normalize(glm::vec3(0.0f, std::sin(u * 3.14159265359f), -std::cos(u * 3.14159265359f)));
+            }
+            return (hour >= 6.0f && hour < 18.0f) ? sunDir : moonDir;
+        }
+
+        bool isRainActiveForClouds(const BaseSystem& baseSystem) {
+            if (!registryBool(baseSystem, "RainSystemEnabled", true)) return false;
+            const bool forceRain = registryBool(baseSystem, "RainForceEnabled", false)
+                || registryBool(baseSystem, "WeatherForceRaining", false);
+            const bool weatherRaining = registryBool(baseSystem, "WeatherRaining", false);
+            return forceRain || weatherRaining;
+        }
+
+        bool shouldRenderClouds(const BaseSystem& baseSystem) {
+            if (!registryBool(baseSystem, "CloudSystem", true)) return false;
+            if (!registryBool(baseSystem, "CloudRenderEnabled", true)) return false;
+            const bool rainOnly = registryBool(
+                baseSystem,
+                "CloudsWhenRainingOnly",
+                registryBool(baseSystem, "CloudRenderWhenRainingOnly", true)
+            );
+            if (!rainOnly) return true;
+
+            return isRainActiveForClouds(baseSystem);
+        }
+
+        bool renderToWaterSceneTarget(const RendererContext& renderer) {
+            return renderer.waterCompositeShader
+                && renderer.waterSceneFBO != 0
+                && renderer.waterSceneTex != 0
+                && renderer.waterSceneWidth > 0
+                && renderer.waterSceneHeight > 0;
+        }
+
+        bool ensureCloudShader(BaseSystem& baseSystem) {
+            if (!baseSystem.renderer || !baseSystem.world) return false;
+            RendererContext& renderer = *baseSystem.renderer;
+            if (renderer.cloudShader && renderer.cloudShader->isValid()) return true;
+
+            const auto vertexIt = baseSystem.world->shaders.find("CLOUD_VERTEX_SHADER");
+            const auto fragmentIt = baseSystem.world->shaders.find("CLOUD_FRAGMENT_SHADER");
+            if (vertexIt == baseSystem.world->shaders.end() || fragmentIt == baseSystem.world->shaders.end()) {
+                static bool warnedMissingShaders = false;
+                if (!warnedMissingShaders) {
+                    std::cerr << "CloudSystem: missing shader sources." << std::endl;
+                    warnedMissingShaders = true;
+                }
+                return false;
+            }
+
+            renderer.cloudShader = std::make_unique<Shader>(vertexIt->second.c_str(), fragmentIt->second.c_str());
+            if (!renderer.cloudShader->isValid()) {
+                std::cerr << "CloudSystem: failed to create shader." << std::endl;
+                renderer.cloudShader.reset();
+                return false;
+            }
+            return true;
+        }
+
+        void resolveCamera(const BaseSystem& baseSystem,
+                           glm::mat4& outView,
+                           glm::mat4& outProjection,
+                           glm::vec3& outCameraPos,
+                           const PlayerContext*& outPlayer) {
+            const PlayerContext& player = *baseSystem.player;
+            outPlayer = &player;
+            outView = player.viewMatrix;
+            outProjection = player.projectionMatrix;
+            outCameraPos = player.cameraPosition;
+            if (baseSystem.securityCamera && baseSystem.securityCamera->dawViewActive) {
+                const SecurityCameraContext& securityCamera = *baseSystem.securityCamera;
+                if (glm::length(securityCamera.viewForward) > 1e-4f) {
+                    outCameraPos = securityCamera.viewPosition;
+                    outView = glm::lookAt(
+                        outCameraPos,
+                        outCameraPos + glm::normalize(securityCamera.viewForward),
+                        glm::vec3(0.0f, 1.0f, 0.0f)
+                    );
+                }
+            }
+        }
+
+        void publishCloudDebug(BaseSystem& baseSystem, bool active, const char* reason = nullptr) {
+            std::ostringstream ss;
+            ss << "CLOUDS: active=" << (active ? "true" : "false")
+               << " mode=volumetric"
+               << " rain_only=" << (registryBool(baseSystem, "CloudRenderWhenRainingOnly", true) ? "true" : "false")
+               << " force=" << ((registryBool(baseSystem, "RainForceEnabled", false)
+                    || registryBool(baseSystem, "WeatherForceRaining", false)) ? "true" : "false")
+               << " raining=" << (registryBool(baseSystem, "WeatherRaining", false) ? "true" : "false")
+               << " rain_active=" << (isRainActiveForClouds(baseSystem) ? "true" : "false");
+            if (reason && *reason) ss << " reason=" << reason;
+            setRegistryString(baseSystem, "CloudDebugState", ss.str());
         }
     }
 
     void RenderClouds(BaseSystem& baseSystem, const glm::vec3& lightDir, float time, float dayFraction) {
-        if (!baseSystem.renderer || !baseSystem.player || !baseSystem.voxelWorld) return;
+        (void)dayFraction;
+        if (!baseSystem.renderer || !baseSystem.player || !baseSystem.renderBackend) return;
+        const bool active = shouldRenderClouds(baseSystem);
+        publishCloudDebug(baseSystem, active);
+        if (!active) return;
+
         RendererContext& renderer = *baseSystem.renderer;
-        PlayerContext& player = *baseSystem.player;
-        VoxelWorldContext& voxelWorld = *baseSystem.voxelWorld;
-        if (!voxelWorld.enabled || voxelWorld.sections.empty()) return;
-        if (!renderer.faceShader || !renderer.faceVAO || !renderer.faceInstanceVBO) return;
+        IRenderBackend& renderBackend = *baseSystem.renderBackend;
+        if (!ensureCloudShader(baseSystem)) return;
+        if (!renderer.cloudShader || renderer.godrayQuadVAO == 0) return;
 
-        glm::mat4 view = player.viewMatrix;
-        float fovY = 2.0f * std::atan(1.0f / std::max(player.projectionMatrix[1][1], 1e-5f));
-        float aspect = std::abs(player.projectionMatrix[0][0]) > 1e-5f
-            ? (player.projectionMatrix[1][1] / player.projectionMatrix[0][0])
-            : 16.0f / 9.0f;
-        glm::mat4 projection = glm::perspective(fovY, aspect, 0.1f, 12000.0f);
-        glm::vec3 playerPos = player.cameraPosition;
+        glm::mat4 view(1.0f);
+        glm::mat4 projection(1.0f);
+        glm::vec3 cameraPos(0.0f);
+        const PlayerContext* projectionPlayer = nullptr;
+        resolveCamera(baseSystem, view, projection, cameraPos, projectionPlayer);
 
-        constexpr float kCloudBase = 1650.0f;
-        constexpr float kCloudHeightRange = 850.0f;
-        constexpr float kCloudSpawnRadius = 4200.0f;
-        constexpr float kCloudSpawnRadiusSq = kCloudSpawnRadius * kCloudSpawnRadius;
-        constexpr size_t kMaxCloudInstances = 2800;
+        const float cloudBase = registryFloat(baseSystem, "CloudBase", 1600.0f);
+        const float cloudThickness = registryFloat(baseSystem, "CloudThickness", 900.0f);
+        const float cloudScale = registryFloat(baseSystem, "CloudScale", 1.0f);
+        const int steps = std::clamp(registryInt(baseSystem, "CloudRaymarchSteps", 28), 4, 96);
+        const float density = registryFloat(baseSystem, "CloudDensityMultiplier", 0.006f);
+        const float light = registryFloat(baseSystem, "CloudLightMultiplier", 1.0f);
+        const float radius = registryFloat(baseSystem, "CloudRadius", 12000.0f);
+        const float fadeBand = registryFloat(baseSystem, "CloudFadeBand", 1000.0f);
+        const float maxSkip = registryFloat(baseSystem, "CloudMaxSkip", 7.0f);
 
-        float driftPhase = dayFraction * 6.28318530718f * 100.0f;
-        glm::vec2 drift = glm::vec2(std::cos(driftPhase), std::sin(driftPhase)) * 1800.0f;
+        Shader& shader = *renderer.cloudShader;
+        shader.use();
+        shader.setMat4("model", glm::inverse(view));
+        shader.setMat4("view", view);
+        shader.setMat4("projection", projection);
+        if (projectionPlayer) {
+            PaniniProjectionSystemLogic::ApplyPostProjectionWarpUniforms(*projectionPlayer, shader);
+        } else {
+            PaniniProjectionSystemLogic::DisableProjectionWarpUniforms(shader);
+        }
+        shader.setVec3("cameraPos", cameraPos);
+        shader.setVec3("lightDir", lightDir);
+        shader.setFloat("time", time);
+        shader.setFloat("mapZoom", cloudBase);
+        shader.setFloat("exposure", std::max(1.0f, cloudThickness));
+        shader.setFloat("decay", std::max(0.01f, cloudScale));
+        shader.setFloat("density", std::max(0.0f, density));
+        shader.setFloat("weight", std::max(0.0f, light));
+        shader.setInt("samples", steps);
+        shader.setVec2("lightPos", glm::vec2(std::max(100.0f, radius), std::max(1.0f, fadeBand)));
+        shader.setFloat("waterReflectionPlaneY", std::max(0.0f, maxSkip));
 
-        std::vector<FaceInstanceRenderData> cloudInstances;
-        cloudInstances.reserve(768);
-        for (const auto& [key, section] : voxelWorld.sections) {
-            if (section.nonAirCount <= 0) continue;
-            int scale = 1;
-            float sectionWorldSize = static_cast<float>(section.size * scale);
-            float sectionCenterX = (static_cast<float>(section.coord.x) + 0.5f) * sectionWorldSize;
-            float sectionCenterZ = (static_cast<float>(section.coord.z) + 0.5f) * sectionWorldSize;
-            float dx = sectionCenterX - playerPos.x;
-            float dz = sectionCenterZ - playerPos.z;
-            if (dx * dx + dz * dz > kCloudSpawnRadiusSq) continue;
+        renderBackend.setDepthTestEnabled(false);
+        renderBackend.setDepthWriteEnabled(false);
+        renderBackend.setBlendEnabled(true);
+        renderBackend.setBlendModeAlpha();
+        renderBackend.setCullEnabled(false);
+        renderBackend.bindVertexArray(renderer.godrayQuadVAO);
+        renderBackend.drawArraysTriangles(0, 6);
+        renderBackend.unbindVertexArray();
 
-            int saltBase = 97;
-            float presence = hash01(section.coord.x, section.coord.y, section.coord.z, saltBase);
-            if (presence < 0.42f) continue;
+        renderBackend.setCullEnabled(true);
+        renderBackend.setBlendEnabled(false);
+        renderBackend.setDepthWriteEnabled(true);
+        renderBackend.setDepthTestEnabled(true);
+    }
 
-            int clusters = 1;
-            if (hash01(section.coord.x, section.coord.y, section.coord.z, saltBase + 1) > 0.65f) ++clusters;
-            if (hash01(section.coord.x, section.coord.y, section.coord.z, saltBase + 2) > 0.88f) ++clusters;
+    void RenderClouds(BaseSystem& baseSystem, std::vector<Entity>& prototypes, float dt, PlatformWindowHandle win) {
+        (void)prototypes;
+        (void)dt;
+        (void)win;
+        if (!baseSystem.renderer || !baseSystem.renderBackend) return;
 
-            for (int i = 0; i < clusters; ++i) {
-                float seedA = hash01(section.coord.x, section.coord.y, section.coord.z, saltBase + 11 + i * 7);
-                float seedB = hash01(section.coord.x, section.coord.y, section.coord.z, saltBase + 21 + i * 11);
-                float seedC = hash01(section.coord.x, section.coord.y, section.coord.z, saltBase + 31 + i * 13);
-                float angle = seedA * 6.28318530718f + static_cast<float>(i) * 1.61803f;
-                float radius = (0.15f + 0.70f * seedB) * sectionWorldSize * 0.45f;
-                glm::vec2 off = glm::vec2(std::cos(angle), std::sin(angle)) * radius;
+        const bool active = shouldRenderClouds(baseSystem);
+        publishCloudDebug(baseSystem, active);
+        if (!active) return;
 
-                glm::vec3 basePos(sectionCenterX + off.x + drift.x,
-                                  kCloudBase + kCloudHeightRange * seedC,
-                                  sectionCenterZ + off.y + drift.y);
-                float tint = 0.95f + 0.05f * hash01(section.coord.x, section.coord.y, section.coord.z, saltBase + 41 + i * 17);
-                float scaleX = 180.0f + 220.0f * hash01(section.coord.x, section.coord.y, section.coord.z, saltBase + 51 + i * 19);
-                float scaleY = 120.0f + 170.0f * hash01(section.coord.x, section.coord.y, section.coord.z, saltBase + 61 + i * 23);
-                float alpha = 0.32f + 0.20f * hash01(section.coord.x, section.coord.y, section.coord.z, saltBase + 71 + i * 29);
-
-                FaceInstanceRenderData instA;
-                instA.position = basePos;
-                instA.color = glm::vec3(tint);
-                instA.tileIndex = -1;
-                instA.alpha = alpha;
-                instA.ao = glm::vec4(1.0f);
-                instA.scale = glm::vec2(scaleX, scaleY);
-                instA.uvScale = glm::vec2(3.0f, 2.0f);
-                cloudInstances.push_back(instA);
-                if (cloudInstances.size() >= kMaxCloudInstances) break;
-
-                FaceInstanceRenderData instB = instA;
-                instB.position += glm::vec3((hash01(section.coord.x, section.coord.y, section.coord.z, saltBase + 81 + i * 31) - 0.5f) * 80.0f,
-                                            45.0f,
-                                            (hash01(section.coord.x, section.coord.y, section.coord.z, saltBase + 91 + i * 37) - 0.5f) * 80.0f);
-                instB.scale *= glm::vec2(0.72f, 0.62f);
-                instB.alpha *= 0.85f;
-                instB.color = glm::vec3(tint * 0.98f);
-                cloudInstances.push_back(instB);
-                if (cloudInstances.size() >= kMaxCloudInstances) break;
-            }
-            if (cloudInstances.size() >= kMaxCloudInstances) break;
+        RendererContext& renderer = *baseSystem.renderer;
+        IRenderBackend& renderBackend = *baseSystem.renderBackend;
+        const bool renderToSceneTarget = renderToWaterSceneTarget(renderer);
+        if (renderToSceneTarget) {
+            renderBackend.resumeOffscreenColorPass(
+                renderer.waterSceneFBO,
+                renderer.waterSceneWidth,
+                renderer.waterSceneHeight
+            );
         }
 
-        if (cloudInstances.empty() || !baseSystem.renderBackend) return;
-        auto& renderBackend = *baseSystem.renderBackend;
+        const float dayFraction = currentDayFraction(baseSystem);
+        const float time = static_cast<float>(PlatformInput::GetTimeSeconds());
+        RenderClouds(baseSystem, currentLightDir(dayFraction), time, dayFraction);
 
-        auto setDepthTestEnabled = [&](bool enabled) {
-            renderBackend.setDepthTestEnabled(enabled);
-        };
-        auto setDepthWriteEnabled = [&](bool enabled) {
-            renderBackend.setDepthWriteEnabled(enabled);
-        };
-        auto setBlendEnabled = [&](bool enabled) {
-            renderBackend.setBlendEnabled(enabled);
-        };
-        auto setBlendModeAlpha = [&]() {
-            renderBackend.setBlendModeAlpha();
-        };
-        auto setCullEnabled = [&](bool enabled) {
-            renderBackend.setCullEnabled(enabled);
-        };
-
-        setDepthTestEnabled(false);
-        setDepthWriteEnabled(false);
-        setBlendEnabled(true);
-        setBlendModeAlpha();
-        setCullEnabled(false);
-
-        renderer.faceShader->use();
-        renderer.faceShader->setMat4("view", view);
-        renderer.faceShader->setMat4("projection", projection);
-        PaniniProjectionSystemLogic::ApplyProjectionWarpUniforms(player, *renderer.faceShader);
-        renderer.faceShader->setMat4("model", glm::mat4(1.0f));
-        renderer.faceShader->setVec3("cameraPos", playerPos);
-        renderer.faceShader->setVec3("lightDir", lightDir);
-        renderer.faceShader->setVec3("ambientLight", glm::vec3(0.95f));
-        renderer.faceShader->setVec3("diffuseLight", glm::vec3(0.05f));
-        renderer.faceShader->setInt("wireframeDebug", 0);
-        renderer.faceShader->setInt("atlasEnabled", 0);
-        renderer.faceShader->setVec2("atlasTileSize", glm::vec2(1.0f));
-        renderer.faceShader->setVec2("atlasTextureSize", glm::vec2(1.0f));
-        renderer.faceShader->setInt("tilesPerRow", 1);
-        renderer.faceShader->setInt("tilesPerCol", 1);
-        renderer.faceShader->setInt("atlasTexture", 0);
-        renderer.faceShader->setInt("leafBackfacesWhenInside", 0);
-        renderer.faceShader->setInt("faceType", 2); // Horizontal (+Y) cloud sheet.
-
-        renderBackend.bindVertexArray(renderer.faceVAO);
-        renderBackend.uploadArrayBufferData(
-            renderer.faceInstanceVBO,
-            cloudInstances.data(),
-            cloudInstances.size() * sizeof(FaceInstanceRenderData),
-            true);
-        renderBackend.drawArraysTrianglesInstanced(0, 6, static_cast<int>(cloudInstances.size()));
-
-        setCullEnabled(true);
-        setBlendEnabled(false);
-        setDepthWriteEnabled(true);
-        setDepthTestEnabled(true);
+        if (renderToSceneTarget) {
+            renderBackend.endOffscreenColorPass();
+        }
     }
 
 }

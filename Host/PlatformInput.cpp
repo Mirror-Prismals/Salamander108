@@ -75,6 +75,8 @@ namespace PlatformInput {
                 case Key::Equal: return GLFW_KEY_EQUAL;
                 case Key::Minus: return GLFW_KEY_MINUS;
                 case Key::Period: return GLFW_KEY_PERIOD;
+                case Key::Backslash: return GLFW_KEY_BACKSLASH;
+                case Key::GraveAccent: return GLFW_KEY_GRAVE_ACCENT;
                 case Key::LeftSuper: return GLFW_KEY_LEFT_SUPER;
                 case Key::RightSuper: return GLFW_KEY_RIGHT_SUPER;
                 case Key::LeftControl: return GLFW_KEY_LEFT_CONTROL;

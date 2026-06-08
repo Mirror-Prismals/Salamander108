@@ -1,0 +1,21 @@
+{
+  "update_steps": {
+    "UpdateRollerCoasters": {
+      "dependencies": [
+        "RollerCoasterContext",
+        "PlayerContext",
+        "RendererContext",
+        "WorldContext",
+        "LevelContext"
+      ]
+    }
+  },
+  "cleanup_steps": {
+    "CleanupRollerCoasters": {
+      "dependencies": [
+        "RollerCoasterContext",
+        "RendererContext"
+      ]
+    }
+  }
+}

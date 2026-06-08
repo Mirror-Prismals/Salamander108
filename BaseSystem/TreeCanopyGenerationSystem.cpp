@@ -229,6 +229,51 @@
             }
         }
 
+        bool placeSinglePineBeeHiveUnderLeaves(VoxelWorldContext& voxelWorld,
+                                               int sectionSize,
+                                               int beeHivePrototypeID,
+                                               int worldX,
+                                               int groundY,
+                                               int worldZ,
+                                               const std::vector<glm::ivec3>& placedLeafCells,
+                                               std::unordered_set<glm::ivec3, IVec3Hash>& outTouchedSections,
+                                               bool& modified) {
+            if (beeHivePrototypeID < 0 || placedLeafCells.empty()) return false;
+
+            bool found = false;
+            uint32_t bestScore = std::numeric_limits<uint32_t>::max();
+            glm::ivec3 bestCell(0);
+            const uint32_t treeSeed = hash2D(worldX - 1471, worldZ + 5449);
+
+            for (const glm::ivec3& leafCell : placedLeafCells) {
+                const glm::ivec3 hangingCell = leafCell + glm::ivec3(0, -1, 0);
+                if (hangingCell.y <= groundY) continue;
+                if (getBlockAt(voxelWorld, hangingCell) != 0u) continue;
+
+                const int dx = hangingCell.x - worldX;
+                const int dz = hangingCell.z - worldZ;
+                if (dx == 0 && dz == 0) continue;
+
+                const uint32_t score =
+                    hash3D(hangingCell.x + 4201, hangingCell.y - 6653, hangingCell.z + 2377) ^ treeSeed;
+                if (!found || score < bestScore) {
+                    found = true;
+                    bestScore = score;
+                    bestCell = hangingCell;
+                }
+            }
+
+            if (!found) return false;
+            voxelWorld.setBlock(bestCell,
+                static_cast<uint32_t>(beeHivePrototypeID),
+                packColor(glm::vec3(1.0f)),
+                false
+            );
+            outTouchedSections.insert(sectionCoordForWorldCell(bestCell, sectionSize));
+            modified = true;
+            return true;
+        }
+
         void convertExposedLeafShellInSection(VoxelWorldContext& voxelWorld,
                                               const std::vector<Entity>& prototypes,
                                               int sectionTier,
@@ -292,6 +337,7 @@
                               int nubPrototypeID,
                               int leafPrototypeID,
                               int leafFanPrototypeID,
+                              int beeHivePrototypeID,
                               uint32_t trunkColor,
                               uint32_t leafColor,
                               int worldX,
@@ -348,6 +394,17 @@
                 rootSectionCoord,
                 leafFanPrototypeID,
                 leafColor,
+                placedLeafCells,
+                outTouchedSections,
+                modified
+            );
+            placeSinglePineBeeHiveUnderLeaves(
+                voxelWorld,
+                sectionSize,
+                beeHivePrototypeID,
+                worldX,
+                groundY,
+                worldZ,
                 placedLeafCells,
                 outTouchedSections,
                 modified

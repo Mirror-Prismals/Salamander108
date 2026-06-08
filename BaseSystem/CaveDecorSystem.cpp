@@ -39,13 +39,6 @@
                     && cell.z >= minZ && cell.z <= maxZ;
             };
 
-            auto isStoneSurfaceCell = [&](const glm::ivec3& cell) {
-                const uint32_t id = getBlockAt(voxelWorld, cell);
-                if (id == 0u || id >= prototypes.size()) return false;
-                const Entity& proto = prototypes[id];
-                if (!proto.isBlock) return false;
-                return proto.isSolid && isStoneSurfacePrototypeName(proto.name);
-            };
             auto isWallStonePrototypeID = [&](uint32_t id) {
                 if (id == 0u || id >= prototypes.size()) return false;
                 return isWallStonePrototypeName(prototypes[id].name);
@@ -56,6 +49,12 @@
                 const Entity& proto = prototypes[id];
                 if (!proto.isBlock || !proto.isSolid) return false;
                 return proto.name != "Water";
+            };
+            auto isOpenPocketCell = [&](const glm::ivec3& cell) {
+                const uint32_t id = getBlockAt(voxelWorld, cell);
+                if (id == 0u) return true;
+                if (id >= prototypes.size()) return false;
+                return isWallStonePrototypeName(prototypes[id].name);
             };
 
             const int kNoSurface = std::numeric_limits<int>::min();
@@ -80,13 +79,6 @@
                         floorDivInt(static_cast<int>(std::floor(terrainHeight)), sectionScale);
                 }
             }
-            const std::array<glm::ivec3, 4> sideOffsets = {
-                glm::ivec3(1, 0, 0),
-                glm::ivec3(-1, 0, 0),
-                glm::ivec3(0, 0, 1),
-                glm::ivec3(0, 0, -1)
-            };
-
             for (int tierZ = minZ; tierZ <= maxZ; ++tierZ) {
                 for (int tierX = minX; tierX <= maxX; ++tierX) {
                     const int worldX = tierX * sectionScale;
@@ -99,64 +91,83 @@
                     for (int tierY = minY; tierY <= maxPlaceY; ++tierY) {
                         const int worldY = tierY * sectionScale;
                         const glm::ivec3 cell(tierX, tierY, tierZ);
-                        if (!isStoneSurfaceCell(cell)) continue;
-                        // Simple rule: block must have free air above.
-                        if (getBlockAt(voxelWorld, cell + glm::ivec3(0, 1, 0)) != 0u) continue;
+                        if (!isOpenPocketCell(cell)) continue;
 
                         const uint32_t seed = hash3D(worldX, worldY, worldZ);
                         if (static_cast<int>(seed % 100u) >= slopeChance) continue;
 
-                        glm::ivec3 exposedAir(0);
-                        int sideAirCount = 0;
-                        for (const glm::ivec3& side : sideOffsets) {
-                            const glm::ivec3 sideCell = cell + side;
-                            // Keep writes local to this section: do not classify neighbors
-                            // outside the current section as open candidates.
-                            if (!inSection(sideCell)) continue;
-                            const uint32_t sideID = getBlockAt(voxelWorld, sideCell);
-                            if (sideID == 0u || isWallStonePrototypeID(sideID)) {
-                                exposedAir = side;
-                                sideAirCount += 1;
-                            }
-                        }
-                        // Keep slope facing stable: only place when exactly one side is open.
-                        if (sideAirCount != 1) continue;
+                        struct RampCandidate {
+                            CaveSlopeDir dir = CaveSlopeDir::None;
+                            uint32_t solidID = 0u;
+                        };
+                        std::array<RampCandidate, 4> candidateDirs{};
+                        int candidateDirCount = 0;
+                        auto addCandidateDir = [&](CaveSlopeDir dir, uint32_t solidID) {
+                            if (dir == CaveSlopeDir::None || candidateDirCount >= static_cast<int>(candidateDirs.size())) return;
+                            candidateDirs[static_cast<size_t>(candidateDirCount)] = RampCandidate{dir, solidID};
+                            candidateDirCount += 1;
+                        };
 
-                        const CaveSlopeDir slopeDir = caveSlopeDirFromExposedAirSide(exposedAir);
+                        const std::array<CaveSlopeDir, 4> dirs = {
+                            CaveSlopeDir::PosX,
+                            CaveSlopeDir::NegX,
+                            CaveSlopeDir::PosZ,
+                            CaveSlopeDir::NegZ
+                        };
+                        for (CaveSlopeDir dir : dirs) {
+                            const glm::ivec3 lowDir = caveSlopeLowDirection(dir);
+                            const glm::ivec3 perpDir = caveSlopePerpDirection(dir);
+                            if (lowDir == glm::ivec3(0) || perpDir == glm::ivec3(0)) continue;
+
+                            bool volumeOpen = true;
+                            for (int depth = 0; depth < 3 && volumeOpen; ++depth) {
+                                for (int yStep = 0; yStep < 3 && volumeOpen; ++yStep) {
+                                    for (int lateral = -1; lateral <= 1; ++lateral) {
+                                        const glm::ivec3 volumeCell =
+                                            cell - lowDir * depth + perpDir * lateral + glm::ivec3(0, yStep, 0);
+                                        if (!inSection(volumeCell) || !isOpenPocketCell(volumeCell)) {
+                                            volumeOpen = false;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            if (!volumeOpen) continue;
+
+                            bool hasBackWall = true;
+                            uint32_t solidID = 0u;
+                            for (int yStep = 0; yStep < 3 && hasBackWall; ++yStep) {
+                                for (int lateral = -1; lateral <= 1; ++lateral) {
+                                    const glm::ivec3 wallCell =
+                                        cell - lowDir * 3 + perpDir * lateral + glm::ivec3(0, yStep, 0);
+                                    if (!inSection(wallCell) || !isSolidSupportCell(wallCell)) {
+                                        hasBackWall = false;
+                                        break;
+                                    }
+                                    if (solidID == 0u) {
+                                        solidID = getBlockAt(voxelWorld, wallCell);
+                                    }
+                                }
+                            }
+                            if (!hasBackWall || solidID == 0u) continue;
+
+                            addCandidateDir(dir, solidID);
+                        }
+                        if (candidateDirCount <= 0) continue;
+                        const RampCandidate candidate = candidateDirs[static_cast<size_t>(
+                            (seed >> 8u) % static_cast<uint32_t>(candidateDirCount)
+                        )];
+                        const CaveSlopeDir slopeDir = candidate.dir;
                         if (slopeDir == CaveSlopeDir::None) continue;
                         const int slopeID = caveSlopePrototypeForDir(slopeDir, slopeProtoPosX, slopeProtoNegX, slopeProtoPosZ, slopeProtoNegZ);
                         if (slopeID < 0) continue;
-                        const uint32_t solidStoneID = getBlockAt(voxelWorld, cell);
+                        const uint32_t solidStoneID = candidate.solidID;
                         if (solidStoneID == 0u || solidStoneID >= prototypes.size()) continue;
-
-                        // If the open side is currently a wall-stone hold, clear it first.
-                        bool clearedOpenWallStone = false;
-                        glm::ivec3 clearedOpenWallStoneCell(0);
-                        uint32_t clearedOpenWallStoneID = 0u;
-                        uint32_t clearedOpenWallStoneColor = 0u;
-                        const glm::ivec3 sideCell = cell + exposedAir;
-                        if (inSection(sideCell)) {
-                            const uint32_t sideID = getBlockAt(voxelWorld, sideCell);
-                            if (isWallStonePrototypeID(sideID)) {
-                                clearedOpenWallStone = true;
-                                clearedOpenWallStoneCell = sideCell;
-                                clearedOpenWallStoneID = sideID;
-                                clearedOpenWallStoneColor = getColorAt(voxelWorld, sideCell);
-                                voxelWorld.setBlock(sideCell, 0u, 0u, false);
-                            }
-                        }
 
                         const glm::ivec3 lowDir = caveSlopeLowDirection(slopeDir);
                         const glm::ivec3 perpDir = caveSlopePerpDirection(slopeDir);
                         auto canReplaceWithSlope = [&](const glm::ivec3& target) {
-                            if (!inSection(target)) return false;
-                            const uint32_t id = getBlockAt(voxelWorld, target);
-                            if (id == 0u) return true;
-                            if (id >= prototypes.size()) return false;
-                            const Entity& proto = prototypes[id];
-                            if (!proto.isBlock) return false;
-                            if (proto.name == "Water") return false;
-                            return true;
+                            return inSection(target) && isOpenPocketCell(target);
                         };
                         struct PriorCellState {
                             glm::ivec3 pos{0};
@@ -165,11 +176,7 @@
                         };
                         std::vector<PriorCellState> placedSlopePriorStates;
                         std::unordered_set<glm::ivec3, IVec3Hash> placedSlopeCells;
-                        std::vector<glm::ivec3> centerStepCells;
-                        centerStepCells.reserve(4);
-                        glm::ivec3 lowestCenterCell = cell;
-                        bool hasLowestCenterCell = false;
-                        auto placeSlopeCell = [&](const glm::ivec3& target) -> bool {
+                        auto writeRampCell = [&](const glm::ivec3& target, uint32_t id, uint32_t color) -> bool {
                             if (!canReplaceWithSlope(target)) return false;
                             if (placedSlopeCells.insert(target).second) {
                                 placedSlopePriorStates.push_back(
@@ -181,105 +188,52 @@
                                 );
                             }
                             voxelWorld.setBlock(target,
-                                static_cast<uint32_t>(slopeID),
-                                caveStoneColorForCell(
-                                    target.x * sectionScale,
-                                    target.y * sectionScale,
-                                    target.z * sectionScale
-                                ),
-                                false
-                            );
+                                id,
+                                color,
+                                false);
                             modified = true;
                             return true;
                         };
 
-                        // Build up to 4 chained steps (origin + 3 down/forward checks).
-                        for (int chainStep = 0; chainStep <= 3; ++chainStep) {
-                            const glm::ivec3 stepCell =
-                                cell + (lowDir * chainStep) + glm::ivec3(0, -chainStep, 0);
-                            if (!inSection(stepCell)) break;
-                            // Chained continuation still requires the next center cell to be air.
-                            if (chainStep > 0 && getBlockAt(voxelWorld, stepCell) != 0u) break;
-                            if (!placeSlopeCell(stepCell)) break;
-                            centerStepCells.push_back(stepCell);
-                            lowestCenterCell = stepCell;
-                            hasLowestCenterCell = true;
-
-                            // Widen each step: clear side blocks and place parallel slopes.
-                            for (int lateralSign = -1; lateralSign <= 1; lateralSign += 2) {
-                                const glm::ivec3 sideStep = stepCell + perpDir * lateralSign;
-                                if (!inSection(sideStep)) continue;
-                                placeSlopeCell(sideStep);
-                            }
-                        }
-
-                        // Support validation is applied only once after generating the full ramp:
-                        // check only under the lowest center step.
                         bool rampAccepted = true;
-                        if (hasLowestCenterCell) {
-                            const glm::ivec3 supportCell = lowestCenterCell + glm::ivec3(0, -1, 0);
-                            if (!isSolidSupportCell(supportCell)) {
-                                for (const auto& prior : placedSlopePriorStates) {
-                                    voxelWorld.setBlock(prior.pos, prior.id, prior.color, false);
-                                }
-                                if (clearedOpenWallStone) {
-                                    voxelWorld.setBlock(clearedOpenWallStoneCell,
-                                        clearedOpenWallStoneID,
-                                        clearedOpenWallStoneColor,
-                                        false
-                                    );
-                                }
-                                modified = true;
-                                rampAccepted = false;
-                            }
-                        }
-                        if (!rampAccepted) continue;
-
-                        // For 4-step ramps, add solid supports under the two middle rows (2 x 3 cells).
-                        // Keep ramp cells intact; supports are placed one block below.
-                        for (int midRow = 1; midRow <= 2; ++midRow) {
-                            if (midRow >= static_cast<int>(centerStepCells.size())) break;
-                            const glm::ivec3 midCenter = centerStepCells[static_cast<size_t>(midRow)];
-                            for (int lateral = -1; lateral <= 1; ++lateral) {
-                                const glm::ivec3 target = midCenter + perpDir * lateral + glm::ivec3(0, -1, 0);
-                                if (!inSection(target)) continue;
-                                const uint32_t existingID = getBlockAt(voxelWorld, target);
-                                if (existingID != 0u && existingID < prototypes.size()) {
-                                    const Entity& existingProto = prototypes[existingID];
-                                    if (existingProto.name == "Water") continue;
-                                }
-                                voxelWorld.setBlock(target,
-                                    solidStoneID,
-                                    caveStoneColorForCell(
+                        for (int depth = 0; depth < 3 && rampAccepted; ++depth) {
+                            for (int yStep = 0; yStep < 3 && rampAccepted; ++yStep) {
+                                for (int lateral = -1; lateral <= 1; ++lateral) {
+                                    const glm::ivec3 target =
+                                        cell - lowDir * depth + perpDir * lateral + glm::ivec3(0, yStep, 0);
+                                    const uint32_t color = caveStoneColorForCell(
                                         target.x * sectionScale,
                                         target.y * sectionScale,
                                         target.z * sectionScale
-                                    ),
-                                    false
-                                );
-                                modified = true;
-
-                                // The higher/back support row gets one extra block under it.
-                                if (midRow == 1) {
-                                    const glm::ivec3 extraUnder = target + glm::ivec3(0, -1, 0);
-                                    if (!inSection(extraUnder)) continue;
-                                    const uint32_t extraID = getBlockAt(voxelWorld, extraUnder);
-                                    if (extraID != 0u && extraID < prototypes.size()) {
-                                        const Entity& extraProto = prototypes[extraID];
-                                        if (extraProto.name == "Water") continue;
-                                    }
-                                    voxelWorld.setBlock(extraUnder,
-                                        solidStoneID,
-                                        caveStoneColorForCell(
-                                            extraUnder.x * sectionScale,
-                                            extraUnder.y * sectionScale,
-                                            extraUnder.z * sectionScale
-                                        ),
-                                        false
                                     );
-                                    modified = true;
+                                    if (yStep == depth) {
+                                        if (!writeRampCell(target, static_cast<uint32_t>(slopeID), color)) {
+                                            rampAccepted = false;
+                                            break;
+                                        }
+                                    } else if (yStep < depth) {
+                                        if (!writeRampCell(target, solidStoneID, color)) {
+                                            rampAccepted = false;
+                                            break;
+                                        }
+                                    } else {
+                                        const uint32_t existingID = getBlockAt(voxelWorld, target);
+                                        if (isWallStonePrototypeID(existingID)) {
+                                            if (!writeRampCell(target, 0u, 0u)) {
+                                                rampAccepted = false;
+                                                break;
+                                            }
+                                        }
+                                    }
                                 }
                             }
+                        }
+
+                        if (!rampAccepted) {
+                            for (const auto& prior : placedSlopePriorStates) {
+                                voxelWorld.setBlock(prior.pos, prior.id, prior.color, false);
+                            }
+                            modified = true;
                         }
                     }
                 }

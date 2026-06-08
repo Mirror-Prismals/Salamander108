@@ -1014,14 +1014,30 @@ int jack_process_callback(jack_nframes_t nframes, void* arg) {
             }
         }
 
+        const bool headMainChuckActive = audioContext->chuckHeadHasActiveShreds.load(std::memory_order_relaxed);
+        const bool headRainChuckActive = audioContext->chuckHeadRainHasActiveShreds.load(std::memory_order_relaxed);
+        const bool headWaterChuckActive = audioContext->chuckHeadWaterHasActiveShreds.load(std::memory_order_relaxed);
+        const bool headLavaChuckActive = audioContext->chuckHeadLavaHasActiveShreds.load(std::memory_order_relaxed);
         if (audioContext->headRayActive
-            && audioContext->chuckHeadHasActiveShreds.load(std::memory_order_relaxed)
+            && (headMainChuckActive || headRainChuckActive || headWaterChuckActive || headLavaChuckActive)
             && chuckChannels > 0
             && !audioContext->chuckInterleavedBuffer.empty()) {
             jack_default_audio_sample_t* outL = (totalOutputs > 0) ? outBuffers[0] : nullptr;
             jack_default_audio_sample_t* outR = (totalOutputs > 1) ? outBuffers[1] : nullptr;
             if (outL || outR) {
                 const int sourceChannel = std::clamp(audioContext->chuckHeadChannel, 0, chuckChannels - 1);
+                const int rainChannel = audioContext->chuckHeadRainChannel;
+                const int waterChannel = audioContext->chuckHeadWaterChannel;
+                const int lavaChannel = audioContext->chuckHeadLavaChannel;
+                const float rainAmbientGain = headRainChuckActive
+                    ? audioContext->headRainAmbientGain.load(std::memory_order_relaxed)
+                    : 0.0f;
+                const float waterAmbientGain = headWaterChuckActive
+                    ? audioContext->headWaterAmbientGain.load(std::memory_order_relaxed)
+                    : 0.0f;
+                const float lavaAmbientGain = headLavaChuckActive
+                    ? audioContext->headLavaAmbientGain.load(std::memory_order_relaxed)
+                    : 0.0f;
                 const float playerHeadGain = audioContext->playerHeadSpeakerLevelGain.load(std::memory_order_relaxed);
                 const float monoScale = 0.5f;
                 const float panStrength = audioContext->rayPanStrength;
@@ -1058,8 +1074,16 @@ int jack_process_callback(jack_nframes_t nframes, void* arg) {
                 }
 
                 for (jack_nframes_t i = 0; i < nframes; ++i) {
-                    float raw = audioContext->chuckInterleavedBuffer[static_cast<size_t>(i) * static_cast<size_t>(chuckChannels)
-                                                                     + static_cast<size_t>(sourceChannel)];
+                    auto sampleChannel = [&](int channel, float gain) {
+                        if (channel < 0 || channel >= chuckChannels || gain <= 0.0f) return 0.0f;
+                        return audioContext->chuckInterleavedBuffer[
+                            static_cast<size_t>(i) * static_cast<size_t>(chuckChannels) + static_cast<size_t>(channel)
+                        ] * gain;
+                    };
+                    float raw = headMainChuckActive ? sampleChannel(sourceChannel, 1.0f) : 0.0f;
+                    raw += sampleChannel(rainChannel, rainAmbientGain);
+                    raw += sampleChannel(waterChannel, waterAmbientGain);
+                    raw += sampleChannel(lavaChannel, lavaAmbientGain);
                     float sample = raw * audioContext->headRayGain * playerHeadGain;
 
                     if (echoBufferSize > 1) {
@@ -2472,10 +2496,19 @@ namespace AudioSystemLogic {
         audio.sparkleRayEnabled = false;
         audio.sparkleRayEmitterInstanceID = -1;
         audio.sparkleRayEmitterWorldIndex = -1;
+        audio.chuckHeadRainShredId = 0;
+        audio.chuckHeadWaterShredId = 0;
+        audio.chuckHeadLavaShredId = 0;
+        audio.chuckHeadRainCompileRequested = true;
+        audio.chuckHeadWaterCompileRequested = true;
+        audio.chuckHeadLavaCompileRequested = true;
         audio.chuckMainLevelGain.store(0.0f, std::memory_order_relaxed);
         audio.soundtrackLevelGain.store(0.0f, std::memory_order_relaxed);
         audio.speakerBlockLevelGain.store(0.0f, std::memory_order_relaxed);
         audio.playerHeadSpeakerLevelGain.store(1.0f, std::memory_order_relaxed);
+        audio.headRainAmbientGain.store(0.0f, std::memory_order_relaxed);
+        audio.headWaterAmbientGain.store(0.0f, std::memory_order_relaxed);
+        audio.headLavaAmbientGain.store(0.0f, std::memory_order_relaxed);
         audio.chuckMainMeterLevel.store(0.0f, std::memory_order_relaxed);
         audio.soundtrackMeterLevel.store(0.0f, std::memory_order_relaxed);
         audio.speakerBlockMeterLevel.store(0.0f, std::memory_order_relaxed);
@@ -2484,6 +2517,12 @@ namespace AudioSystemLogic {
         audio.chuckMainHasActiveShreds.store(false, std::memory_order_relaxed);
         audio.chuckHeadActiveShredCount.store(0, std::memory_order_relaxed);
         audio.chuckHeadHasActiveShreds.store(false, std::memory_order_relaxed);
+        audio.chuckHeadRainActiveShredCount.store(0, std::memory_order_relaxed);
+        audio.chuckHeadRainHasActiveShreds.store(false, std::memory_order_relaxed);
+        audio.chuckHeadWaterActiveShredCount.store(0, std::memory_order_relaxed);
+        audio.chuckHeadWaterHasActiveShreds.store(false, std::memory_order_relaxed);
+        audio.chuckHeadLavaActiveShredCount.store(0, std::memory_order_relaxed);
+        audio.chuckHeadLavaHasActiveShreds.store(false, std::memory_order_relaxed);
         preloadGameplaySfx(baseSystem, audio);
         // Keep default ChucK stereo/mono dac routing audible.
         if (audio.chuckMainChannel >= 0 && audio.chuckMainChannel < audio.chuckOutputChannels) {
@@ -2494,6 +2533,18 @@ namespace AudioSystemLogic {
         }
         if (audio.chuckOutputChannels > 1) {
             audio.channelGains[1] = 1.0f;
+        }
+        if (audio.chuckHeadChannel >= 0 && audio.chuckHeadChannel < audio.chuckOutputChannels) {
+            audio.channelGains[audio.chuckHeadChannel] = 0.0f;
+        }
+        if (audio.chuckHeadRainChannel >= 0 && audio.chuckHeadRainChannel < audio.chuckOutputChannels) {
+            audio.channelGains[audio.chuckHeadRainChannel] = 0.0f;
+        }
+        if (audio.chuckHeadWaterChannel >= 0 && audio.chuckHeadWaterChannel < audio.chuckOutputChannels) {
+            audio.channelGains[audio.chuckHeadWaterChannel] = 0.0f;
+        }
+        if (audio.chuckHeadLavaChannel >= 0 && audio.chuckHeadLavaChannel < audio.chuckOutputChannels) {
+            audio.channelGains[audio.chuckHeadLavaChannel] = 0.0f;
         }
         if (audio.soundtrackChuckChannel >= 0 && audio.soundtrackChuckChannel < audio.chuckOutputChannels) {
             audio.channelGains[audio.soundtrackChuckChannel] = 0.0f;
