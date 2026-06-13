@@ -133,6 +133,7 @@
 #include "BaseSystem/ComputerCursorSystem.cpp"
 #include "BaseSystem/ButtonSystem.cpp"
 #include "BaseSystem/DawSfxSystem.cpp"
+#include "BaseSystem/PauseMenuSystem.cpp"
 #include "BaseSystem/RegistryEditorSystem.cpp"
 #include "BaseSystem/BootSequenceSystem.cpp"
 #include "BaseSystem/ChucKSystem.cpp"

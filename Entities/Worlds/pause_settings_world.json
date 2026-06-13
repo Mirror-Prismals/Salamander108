@@ -1,0 +1,83 @@
+{
+  "name": "PauseSettingsWorld",
+  "isWorld": true,
+  "isVolume": false,
+  "instances": [
+    {
+      "prototypeID": -1,
+      "name": "Text",
+      "position": [960.0, 320.0, 0.0],
+      "color": "White",
+      "size": [32.0, 32.0, 32.0],
+      "text": "SETTINGS",
+      "textType": "UIOnly",
+      "font": "AlegreyaSans-Regular.ttf",
+      "controlId": "pause_settings_heading",
+      "controlRole": "label"
+    },
+    {
+      "prototypeID": -1,
+      "name": "Text",
+      "position": [960.0, 430.0, 0.0],
+      "color": "ButtonGlyph",
+      "size": [22.0, 22.0, 22.0],
+      "text": "PROJECTION MODE",
+      "textType": "UIOnly",
+      "font": "AlegreyaSans-Regular.ttf",
+      "controlId": "pause_settings_projection_label",
+      "controlRole": "label"
+    },
+    {
+      "prototypeID": -1,
+      "name": "ActionButton",
+      "position": [960.0, 510.0, 0.0],
+      "color": "ButtonFront",
+      "topColor": "ButtonTopHighlight",
+      "sideColor": "ButtonSideShadow",
+      "size": [250.0, 34.0, 10.0],
+      "action": "PauseMenu",
+      "actionKey": "toggle_panini",
+      "buttonMode": "managed",
+      "controlId": "pause_settings_panini",
+      "controlRole": "button"
+    },
+    {
+      "prototypeID": -1,
+      "name": "Text",
+      "position": [960.0, 510.0, 0.0],
+      "color": "ButtonGlyph",
+      "size": [24.0, 24.0, 24.0],
+      "text": "PANINI: ON",
+      "textType": "UIOnly",
+      "font": "AlegreyaSans-Regular.ttf",
+      "controlId": "pause_settings_panini",
+      "controlRole": "label"
+    },
+    {
+      "prototypeID": -1,
+      "name": "ActionButton",
+      "position": [960.0, 660.0, 0.0],
+      "color": "ButtonFront",
+      "topColor": "ButtonTopHighlight",
+      "sideColor": "ButtonSideShadow",
+      "size": [180.0, 34.0, 10.0],
+      "action": "PauseMenu",
+      "actionKey": "settings_back",
+      "buttonMode": "managed",
+      "controlId": "pause_settings_back",
+      "controlRole": "button"
+    },
+    {
+      "prototypeID": -1,
+      "name": "Text",
+      "position": [960.0, 660.0, 0.0],
+      "color": "ButtonGlyph",
+      "size": [24.0, 24.0, 24.0],
+      "text": "BACK",
+      "textType": "UIOnly",
+      "font": "AlegreyaSans-Regular.ttf",
+      "controlId": "pause_settings_back",
+      "controlRole": "label"
+    }
+  ]
+}

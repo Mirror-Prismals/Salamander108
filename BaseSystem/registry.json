@@ -22,6 +22,7 @@
   "KeyboardInputSystem": true,
   "MouseInputSystem": true,
   "RegistryEditorSystem": true,
+  "PauseMenuSystem": true,
   "MirrorSystem": true,
   "PanelSystem": true,
   "Vst3BrowserSystem": true,

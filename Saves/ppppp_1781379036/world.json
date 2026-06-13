@@ -1,0 +1,42 @@
+{
+  "activeDimensionId": "overworld",
+  "createdAt": 1781379036,
+  "dawSession": "daw/session.salmproj",
+  "dimension": "overworld",
+  "dimensions": {
+    "overworld": {
+      "modifiedAt": 1781379169,
+      "player": {
+        "pitch": -22.400001525878906,
+        "position": [
+          -7.552345275878906,
+          100.67982482910156,
+          7.686931610107422
+        ],
+        "yaw": -297.8999938964844
+      }
+    }
+  },
+  "displayName": "ppppp",
+  "format": "salamander_world",
+  "levelKey": "the_expanse",
+  "modifiedAt": 1781379169,
+  "player": {
+    "pitch": -22.400001525878906,
+    "position": [
+      -7.552345275878906,
+      100.67982482910156,
+      7.686931610107422
+    ],
+    "yaw": -297.8999938964844
+  },
+  "spawnInitialized": true,
+  "terrainSchemaVersion": "terrain_schema_column_chunks_v22",
+  "version": 1,
+  "voxel": {
+    "columnMaxYExclusive": 320,
+    "columnMinY": -64,
+    "sectionSize": 16
+  },
+  "worldId": "ppppp_1781379036"
+}

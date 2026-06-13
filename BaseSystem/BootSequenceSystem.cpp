@@ -113,7 +113,7 @@ namespace BootSequenceSystemLogic {
         // UI active when in menu or loading overlay is up.
         if (isMenuLevel || ui.loadingActive) {
             ui.active = true;
-        } else if (!ui.loadingActive && ui.active && ui.bootLoadingStarted && !isMenuLevel) {
+        } else if (!ui.loadingActive && ui.active && ui.bootLoadingStarted && !isMenuLevel && !ui.pauseMenuActive) {
             // Ensure non-menu starts release UI once boot path is done.
             ui.active = false;
             ui.cursorReleased = false;

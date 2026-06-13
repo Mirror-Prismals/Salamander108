@@ -1,0 +1,12 @@
+{
+    "update_steps": {
+        "UpdatePauseMenu": {
+            "dependencies": [
+                "UIContext",
+                "LevelContext",
+                "MirrorContext",
+                "RegistryContext"
+            ]
+        }
+    }
+}

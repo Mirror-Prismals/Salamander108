@@ -1,0 +1,97 @@
+{
+  "name": "PauseMenuWorld",
+  "isWorld": true,
+  "isVolume": false,
+  "instances": [
+    {
+      "prototypeID": -1,
+      "name": "Text",
+      "position": [960.0, 350.0, 0.0],
+      "color": "White",
+      "size": [32.0, 32.0, 32.0],
+      "text": "PAUSED",
+      "textType": "UIOnly",
+      "font": "AlegreyaSans-Regular.ttf",
+      "controlId": "pause_heading",
+      "controlRole": "label"
+    },
+    {
+      "prototypeID": -1,
+      "name": "ActionButton",
+      "position": [960.0, 480.0, 0.0],
+      "color": "ButtonFront",
+      "topColor": "ButtonTopHighlight",
+      "sideColor": "ButtonSideShadow",
+      "size": [250.0, 34.0, 10.0],
+      "action": "PauseMenu",
+      "actionKey": "quit_to_title",
+      "buttonMode": "managed",
+      "controlId": "pause_quit_to_title",
+      "controlRole": "button"
+    },
+    {
+      "prototypeID": -1,
+      "name": "Text",
+      "position": [960.0, 480.0, 0.0],
+      "color": "ButtonGlyph",
+      "size": [24.0, 24.0, 24.0],
+      "text": "QUIT TO TITLE",
+      "textType": "UIOnly",
+      "font": "AlegreyaSans-Regular.ttf",
+      "controlId": "pause_quit_to_title",
+      "controlRole": "label"
+    },
+    {
+      "prototypeID": -1,
+      "name": "ActionButton",
+      "position": [960.0, 570.0, 0.0],
+      "color": "ButtonFront",
+      "topColor": "ButtonTopHighlight",
+      "sideColor": "ButtonSideShadow",
+      "size": [250.0, 34.0, 10.0],
+      "action": "PauseMenu",
+      "actionKey": "settings",
+      "buttonMode": "managed",
+      "controlId": "pause_settings",
+      "controlRole": "button"
+    },
+    {
+      "prototypeID": -1,
+      "name": "Text",
+      "position": [960.0, 570.0, 0.0],
+      "color": "ButtonGlyph",
+      "size": [24.0, 24.0, 24.0],
+      "text": "SETTINGS",
+      "textType": "UIOnly",
+      "font": "AlegreyaSans-Regular.ttf",
+      "controlId": "pause_settings",
+      "controlRole": "label"
+    },
+    {
+      "prototypeID": -1,
+      "name": "ActionButton",
+      "position": [960.0, 660.0, 0.0],
+      "color": "ButtonFront",
+      "topColor": "ButtonTopHighlight",
+      "sideColor": "ButtonSideShadow",
+      "size": [250.0, 34.0, 10.0],
+      "action": "PauseMenu",
+      "actionKey": "quit_game",
+      "buttonMode": "managed",
+      "controlId": "pause_quit_game",
+      "controlRole": "button"
+    },
+    {
+      "prototypeID": -1,
+      "name": "Text",
+      "position": [960.0, 660.0, 0.0],
+      "color": "ButtonGlyph",
+      "size": [24.0, 24.0, 24.0],
+      "text": "QUIT GAME",
+      "textType": "UIOnly",
+      "font": "AlegreyaSans-Regular.ttf",
+      "controlId": "pause_quit_game",
+      "controlRole": "label"
+    }
+  ]
+}

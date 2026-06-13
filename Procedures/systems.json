@@ -12,6 +12,7 @@
         "SecurityCameraSystem.json",
         "DimensionSystem.json",
         "RegistryEditorSystem.json",
+        "PauseMenuSystem.json",
         "MirrorSystem.json",
         "PanelSystem.json",
         "Vst3BrowserSystem.json",

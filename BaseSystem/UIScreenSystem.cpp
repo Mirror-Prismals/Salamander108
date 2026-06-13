@@ -151,10 +151,14 @@ namespace UIScreenSystemLogic {
             }
         }
 
-        // Exit on rising edge of Return
-        static bool pPressedLast = false;
-        bool pDown = PlatformInput::IsKeyDown(win, PlatformInput::Key::Enter);
-        if (ui.active && pDown && !pPressedLast) {
+        // Exit the computer on rising edge of Return or Escape.
+        static bool enterPressedLast = false;
+        static bool escapePressedLast = false;
+        bool enterDown = PlatformInput::IsKeyDown(win, PlatformInput::Key::Enter)
+            || PlatformInput::IsKeyDown(win, PlatformInput::Key::KpEnter);
+        bool escapeDown = PlatformInput::IsKeyDown(win, PlatformInput::Key::Escape);
+        const bool exitPressed = (enterDown && !enterPressedLast) || (escapeDown && !escapePressedLast);
+        if (ui.active && ui.fullscreenActive && exitPressed) {
             ui.active = false;
             ui.fullscreenActive = false;
             DawSfxSystemLogic::QueueClose(baseSystem);
@@ -163,7 +167,8 @@ namespace UIScreenSystemLogic {
                 if (it != baseSystem.world->colorLibrary.end()) setComputerColor(baseSystem, it->second);
             }
         }
-        pPressedLast = pDown;
+        enterPressedLast = enterDown;
+        escapePressedLast = escapeDown;
 
         if (!ui.active) {
             // Ensure the computer remains untinted when idle.

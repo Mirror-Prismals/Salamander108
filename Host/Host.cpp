@@ -443,6 +443,7 @@ void Host::registerSystemFunctions() {
     functionRegistry["UpdateAudioRayVisualizer"] = AudioRayVisualizerSystemLogic::UpdateAudioRayVisualizer;
     functionRegistry["UpdateSoundPhysics"] = SoundPhysicsSystemLogic::UpdateSoundPhysics;
     functionRegistry["UpdateRegistry"] = RegistryEditorSystemLogic::UpdateRegistry;
+    functionRegistry["UpdatePauseMenu"] = PauseMenuSystemLogic::UpdatePauseMenu;
     functionRegistry["UpdateMirrors"] = MirrorSystemLogic::UpdateMirrors;
     functionRegistry["UpdateDawTracks"] = DawTrackSystemLogic::UpdateDawTracks;
     functionRegistry["CleanupDawTracks"] = DawTrackSystemLogic::CleanupDawTracks;
@@ -726,6 +727,10 @@ void Host::reloadLevel(const std::string& levelName) {
         baseSystem.ui->fullscreenActive = false;
         baseSystem.ui->loadingActive = false;
         baseSystem.ui->levelSwitchPending = false;
+        baseSystem.ui->pauseMenuActive = false;
+        baseSystem.ui->pauseMenuScreen = "main";
+        baseSystem.ui->pausePreviousMirrorIndex = -1;
+        baseSystem.ui->pauseEscapeDownLast = false;
         baseSystem.ui->bootLoadingStarted = false;
         baseSystem.ui->cursorReleased = false;
         baseSystem.ui->uiLeftDown = baseSystem.ui->uiLeftPressed = baseSystem.ui->uiLeftReleased = false;
@@ -1206,9 +1211,6 @@ void Host::mainLoop() {
         auto frameStart = std::chrono::steady_clock::now();
         if (!runOptions.headlessPerf) {
             PlatformInput::PollEvents();
-            if (PlatformInput::IsKeyDown(window, PlatformInput::Key::Escape)) {
-                PlatformInput::SetWindowShouldClose(window, true);
-            }
         }
         static bool shaderReloadShortcutWasDown = false;
         bool shaderReloadShortcutDown = runOptions.headlessPerf ? false : isShaderReloadShortcutDown(window);

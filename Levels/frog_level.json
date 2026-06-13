@@ -9,6 +9,8 @@
         "debug_hud_world.json"
     ],
     "mirrors": [
-        "daw_mirror.json"
+        "daw_mirror.json",
+        "pause_mirror.json",
+        "pause_settings_mirror.json"
     ]
 }

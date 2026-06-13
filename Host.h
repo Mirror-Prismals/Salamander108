@@ -1273,6 +1273,10 @@ struct UIContext {
     bool loadingActive = false;
     float loadingTimer = 0.0f;
     float loadingDuration = 0.0f;
+    bool pauseMenuActive = false;
+    std::string pauseMenuScreen = "main";
+    int pausePreviousMirrorIndex = -1;
+    bool pauseEscapeDownLast = false;
     bool levelSwitchPending = false;
     std::string levelSwitchTarget;
     int actionDelayFrames = 0;

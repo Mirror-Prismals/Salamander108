@@ -1,0 +1,10 @@
+{
+  "name": "PauseMirror",
+  "uiTransform": {
+    "scale": 1.0,
+    "offset": [0.0, 0.0]
+  },
+  "worldInstances": [
+    { "world": "pause_menu_world.json" }
+  ]
+}
