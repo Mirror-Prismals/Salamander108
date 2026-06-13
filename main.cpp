@@ -61,7 +61,6 @@
 #include "BaseSystem/VoxelMeshInitSystem.cpp"
 #include "BaseSystem/VoxelLightingSystem.cpp"
 #include "BaseSystem/VoxelMeshingSystem.cpp"
-#include "Structures/BinaryGreedyMesher.cpp"
 #include "BaseSystem/VoxelMeshUploadSystem.cpp"
 #include "BaseSystem/VoxelMeshDebugSystem.cpp"
 #include "BaseSystem/OcclusionCullingSystem.cpp"

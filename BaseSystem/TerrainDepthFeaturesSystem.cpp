@@ -20,9 +20,9 @@ namespace TerrainSystemLogic {
             int chalkCursor = 0;
             std::vector<WaterfallCascadeSeed> waterfallCascadeQueue;
             size_t waterfallCascadeQueueHead = 0;
-            int depthDecorSubphase = 0;
-            int depthDecorLayerCursor = 0;
-            int depthDecorBeamStartsPlaced = 0;
+            int depthFeatureSubphase = 0;
+            int depthFeatureLayerCursor = 0;
+            int depthFeatureBeamStartsPlaced = 0;
             int depthLavaContinuationCursor = 0;
             int depthLavaSourceCursor = 0;
             int obsidianLayerCursor = 0;
@@ -112,16 +112,15 @@ namespace TerrainSystemLogic {
             if (inserted && !pendingChalkPlacements.empty()) {
                 jobState.pendingChalkPlacements = pendingChalkPlacements;
             }
-            const int phasesPerUpdate = std::max(
-                1,
-                getRegistryInt(baseSystem, "TerrainDepthFeaturePhasesPerUpdate", 1)
-            );
+            constexpr int kFeaturePhaseLoopCap = 64;
             const std::vector<glm::ivec3>& chalkPlacements = jobState.pendingChalkPlacements;
             auto phaseEnabled = [&](int phase) -> bool {
                 switch (phase) {
                     case 0:
-                        return isExpanseLevel && unifiedDepthsEnabled;
+                        return false;
                     case 1:
+                        return isExpanseLevel && unifiedDepthsEnabled;
+                    case 2:
                         {
                             const int sectionMinY = sectionCoord.y * size;
                             const int sectionMaxY = sectionMinY + size - 1;
@@ -160,12 +159,12 @@ namespace TerrainSystemLogic {
                                 && chalkProto->prototypeID > 0
                                 && !chalkPlacements.empty());
                         }
-                    case 2:
+                    case 3:
                         return isExpanseLevel
                             && unifiedDepthsEnabled
                             && depthLavaFloorEnabled
                             && !depthLavaTileProtos.empty();
-                    case 3:
+                    case 4:
                         return obsidianProto
                             && obsidianProto->prototypeID > 0
                             && waterProto
@@ -174,17 +173,17 @@ namespace TerrainSystemLogic {
                         return false;
                 }
             };
-            while (jobState.phase < 4 && !phaseEnabled(jobState.phase)) {
+            while (jobState.phase < 5 && !phaseEnabled(jobState.phase)) {
                 jobState.phase += 1;
             }
-            for (int phaseStep = 0; phaseStep < phasesPerUpdate && jobState.phase < 4; ++phaseStep) {
+            for (int phaseStep = 0; phaseStep < kFeaturePhaseLoopCap && jobState.phase < 5; ++phaseStep) {
                 bool phaseComplete = true;
-                const bool runDepthDecorPhase = (jobState.phase == 0);
-                const bool runWaterfallPhase = (jobState.phase == 1);
-                const bool runLavaCascadePhase = (jobState.phase == 2);
-                const bool runObsidianPhase = (jobState.phase == 3);
+                const bool runDepthFeaturePhase = (jobState.phase == 1);
+                const bool runWaterfallPhase = (jobState.phase == 2);
+                const bool runLavaCascadePhase = (jobState.phase == 3);
+                const bool runObsidianPhase = (jobState.phase == 4);
 
-                if (runDepthDecorPhase && isExpanseLevel && unifiedDepthsEnabled) {
+                if (runDepthFeaturePhase && isExpanseLevel && unifiedDepthsEnabled) {
                 const int sectionMinX = sectionCoord.x * size;
                 const int sectionMaxX = sectionMinX + size - 1;
                 const int sectionMinYDepth = sectionCoord.y * size;
@@ -245,28 +244,25 @@ namespace TerrainSystemLogic {
                     return false;
                 };
 
-                const int depthDecorLayersPerUpdate = std::max(
-                    1,
-                    getRegistryInt(baseSystem, "DepthDecorLayersPerUpdate", 2)
-                );
+                const int depthFeatureLayersPerPass = size;
                 auto clampLayerCursor = [&](int maxLayerExclusive) {
                     if (maxLayerExclusive <= 0) return 0;
-                    return std::max(0, std::min(jobState.depthDecorLayerCursor, maxLayerExclusive));
+                    return std::max(0, std::min(jobState.depthFeatureLayerCursor, maxLayerExclusive));
                 };
-                auto advanceDepthDecorSubphase = [&](int nextSubphase) {
-                    jobState.depthDecorSubphase = nextSubphase;
-                    jobState.depthDecorLayerCursor = 0;
+                auto advanceDepthFeatureSubphase = [&](int nextSubphase) {
+                    jobState.depthFeatureSubphase = nextSubphase;
+                    jobState.depthFeatureLayerCursor = 0;
                 };
-                if (jobState.depthDecorSubphase < 0 || jobState.depthDecorSubphase > 5) {
-                    jobState.depthDecorSubphase = 0;
-                    jobState.depthDecorLayerCursor = 0;
-                    jobState.depthDecorBeamStartsPlaced = 0;
+                if (jobState.depthFeatureSubphase < 0 || jobState.depthFeatureSubphase > 5) {
+                    jobState.depthFeatureSubphase = 0;
+                    jobState.depthFeatureLayerCursor = 0;
+                    jobState.depthFeatureBeamStartsPlaced = 0;
                 }
 
-                switch (jobState.depthDecorSubphase) {
+                switch (jobState.depthFeatureSubphase) {
                     case 0: {
                         if (!(depthPurpleDirtProto && depthPurplePatchPercent > 0)) {
-                            advanceDepthDecorSubphase(1);
+                            advanceDepthFeatureSubphase(1);
                             phaseComplete = false;
                             break;
                         }
@@ -275,7 +271,7 @@ namespace TerrainSystemLogic {
                         constexpr int kDepthPurplePatchMaxRadius = 5;
                         constexpr int kDepthPurplePatchSeed = 911;
                         const int startLayer = clampLayerCursor(size);
-                        const int endLayer = std::min(size, startLayer + depthDecorLayersPerUpdate);
+                        const int endLayer = std::min(size, startLayer + depthFeatureLayersPerPass);
                         for (int localY = startLayer; localY < endLayer; ++localY) {
                             const int y = sectionMinYDepth + localY;
                             if (y > unifiedDepthsTopY || y <= unifiedDepthsMinY) continue;
@@ -326,16 +322,16 @@ namespace TerrainSystemLogic {
                                 }
                             }
                         }
-                        jobState.depthDecorLayerCursor = endLayer;
+                        jobState.depthFeatureLayerCursor = endLayer;
                         if (endLayer >= size) {
-                            advanceDepthDecorSubphase(1);
+                            advanceDepthFeatureSubphase(1);
                         }
                         phaseComplete = false;
                         break;
                     }
                     case 1: {
                         if (!(depthRustBeamProto && depthRustBeamPercent > 0)) {
-                            advanceDepthDecorSubphase(2);
+                            advanceDepthFeatureSubphase(2);
                             phaseComplete = false;
                             break;
                         }
@@ -347,14 +343,14 @@ namespace TerrainSystemLogic {
                         };
                         const int maxBeamStarts = 24;
                         const int startLayer = clampLayerCursor(size);
-                        const int endLayer = std::min(size, startLayer + depthDecorLayersPerUpdate);
+                        const int endLayer = std::min(size, startLayer + depthFeatureLayersPerPass);
                         for (int localY = startLayer;
-                             localY < endLayer && jobState.depthDecorBeamStartsPlaced < maxBeamStarts;
+                             localY < endLayer && jobState.depthFeatureBeamStartsPlaced < maxBeamStarts;
                              ++localY) {
                             const int y = sectionMinYDepth + localY;
                             if (y > unifiedDepthsTopY || y <= unifiedDepthsMinY) continue;
-                            for (int z = sectionMinZ; z <= sectionMaxZ && jobState.depthDecorBeamStartsPlaced < maxBeamStarts; ++z) {
-                                for (int x = sectionMinX; x <= sectionMaxX && jobState.depthDecorBeamStartsPlaced < maxBeamStarts; ++x) {
+                            for (int z = sectionMinZ; z <= sectionMaxZ && jobState.depthFeatureBeamStartsPlaced < maxBeamStarts; ++z) {
+                                for (int x = sectionMinX; x <= sectionMaxX && jobState.depthFeatureBeamStartsPlaced < maxBeamStarts; ++x) {
                                     const glm::ivec3 startCell(x, y, z);
                                     const uint32_t id = VoxelMeshInitSystemLogic::GetVoxelIdAt(voxelWorld, startCell);
                                     if (id != depthStoneId && id != fallbackStoneId && id != depthPurpleDirtId) continue;
@@ -380,14 +376,14 @@ namespace TerrainSystemLogic {
                                         wroteAny = true;
                                     }
                                     if (placedAny) {
-                                        jobState.depthDecorBeamStartsPlaced += 1;
+                                        jobState.depthFeatureBeamStartsPlaced += 1;
                                     }
                                 }
                             }
                         }
-                        jobState.depthDecorLayerCursor = endLayer;
-                        if (jobState.depthDecorBeamStartsPlaced >= maxBeamStarts || endLayer >= size) {
-                            advanceDepthDecorSubphase(2);
+                        jobState.depthFeatureLayerCursor = endLayer;
+                        if (jobState.depthFeatureBeamStartsPlaced >= maxBeamStarts || endLayer >= size) {
+                            advanceDepthFeatureSubphase(2);
                         }
                         phaseComplete = false;
                         break;
@@ -398,13 +394,13 @@ namespace TerrainSystemLogic {
                         const bool hasBigLilypadZ =
                             depthBigLilypadProtosZ[0] && depthBigLilypadProtosZ[1] && depthBigLilypadProtosZ[2] && depthBigLilypadProtosZ[3];
                         if (!((hasBigLilypadX || hasBigLilypadZ) && depthBigLilypadPercent > 0)) {
-                            advanceDepthDecorSubphase(3);
+                            advanceDepthFeatureSubphase(3);
                             phaseComplete = false;
                             break;
                         }
                         const int layerCount = std::max(0, size - 1);
                         const int startLayer = clampLayerCursor(layerCount);
-                        const int endLayer = std::min(layerCount, startLayer + depthDecorLayersPerUpdate);
+                        const int endLayer = std::min(layerCount, startLayer + depthFeatureLayersPerPass);
                         for (int localY = startLayer; localY < endLayer; ++localY) {
                             const int y = sectionMinYDepth + localY;
                             if (y > unifiedDepthsTopY || y <= unifiedDepthsMinY) continue;
@@ -442,16 +438,16 @@ namespace TerrainSystemLogic {
                                 }
                             }
                         }
-                        jobState.depthDecorLayerCursor = endLayer;
+                        jobState.depthFeatureLayerCursor = endLayer;
                         if (endLayer >= layerCount) {
-                            advanceDepthDecorSubphase(3);
+                            advanceDepthFeatureSubphase(3);
                         }
                         phaseComplete = false;
                         break;
                     }
                     case 3: {
                         if (!(depthRiverCrystalPercent > 0)) {
-                            advanceDepthDecorSubphase(4);
+                            advanceDepthFeatureSubphase(4);
                             phaseComplete = false;
                             break;
                         }
@@ -473,7 +469,7 @@ namespace TerrainSystemLogic {
                         addCrystalChoice(depthCrystalBlueBigProto, 18);
                         addCrystalChoice(depthCrystalMagentaBigProto, 16);
                         if (crystalChoices.empty()) {
-                            advanceDepthDecorSubphase(4);
+                            advanceDepthFeatureSubphase(4);
                             phaseComplete = false;
                             break;
                         }
@@ -486,7 +482,7 @@ namespace TerrainSystemLogic {
                             glm::ivec3(0, 0, -1)
                         };
                         const int startLayer = clampLayerCursor(size);
-                        const int endLayer = std::min(size, startLayer + depthDecorLayersPerUpdate);
+                        const int endLayer = std::min(size, startLayer + depthFeatureLayersPerPass);
                         for (int localY = startLayer; localY < endLayer; ++localY) {
                             const int y = sectionMinYDepth + localY;
                             if (y > unifiedDepthsTopY || y <= unifiedDepthsMinY) continue;
@@ -541,9 +537,9 @@ namespace TerrainSystemLogic {
                                 }
                             }
                         }
-                        jobState.depthDecorLayerCursor = endLayer;
+                        jobState.depthFeatureLayerCursor = endLayer;
                         if (endLayer >= size) {
-                            advanceDepthDecorSubphase(4);
+                            advanceDepthFeatureSubphase(4);
                         }
                         phaseComplete = false;
                         break;
@@ -552,7 +548,7 @@ namespace TerrainSystemLogic {
                         if (!(depthMossPercent > 0
                             && depthMossWallProtoPosX && depthMossWallProtoNegX
                             && depthMossWallProtoPosZ && depthMossWallProtoNegZ)) {
-                            jobState.depthDecorSubphase = 5;
+                            jobState.depthFeatureSubphase = 5;
                             phaseComplete = false;
                             break;
                         }
@@ -563,7 +559,7 @@ namespace TerrainSystemLogic {
                             glm::ivec3(0, 0, -1)
                         };
                         const int startLayer = clampLayerCursor(size);
-                        const int endLayer = std::min(size, startLayer + depthDecorLayersPerUpdate);
+                        const int endLayer = std::min(size, startLayer + depthFeatureLayersPerPass);
                         for (int localY = startLayer; localY < endLayer; ++localY) {
                             const int y = sectionMinYDepth + localY;
                             if (y > unifiedDepthsTopY || y <= unifiedDepthsMinY) continue;
@@ -603,9 +599,9 @@ namespace TerrainSystemLogic {
                                 }
                             }
                         }
-                        jobState.depthDecorLayerCursor = endLayer;
+                        jobState.depthFeatureLayerCursor = endLayer;
                         if (endLayer >= size) {
-                            jobState.depthDecorSubphase = 5;
+                            jobState.depthFeatureSubphase = 5;
                         }
                         phaseComplete = false;
                         break;
@@ -614,10 +610,10 @@ namespace TerrainSystemLogic {
                         break;
                 }
 
-                if (jobState.depthDecorSubphase >= 5) {
-                    jobState.depthDecorSubphase = 0;
-                    jobState.depthDecorLayerCursor = 0;
-                    jobState.depthDecorBeamStartsPlaced = 0;
+                if (jobState.depthFeatureSubphase >= 5) {
+                    jobState.depthFeatureSubphase = 0;
+                    jobState.depthFeatureLayerCursor = 0;
+                    jobState.depthFeatureBeamStartsPlaced = 0;
                     phaseComplete = true;
                 } else {
                     phaseComplete = false;
@@ -992,16 +988,10 @@ namespace TerrainSystemLogic {
                         }
                     };
 
-                    const int waterfallContinuationCellsPerUpdate = std::max(
-                        1,
-                        getRegistryInt(baseSystem, "WaterfallContinuationCellsPerUpdate", 32)
-                    );
-                    const int waterfallSourceCellsPerUpdate = std::max(
-                        1,
-                        getRegistryInt(baseSystem, "WaterfallSourceCellsPerUpdate", 96)
-                    );
                     const int continuationCellCount = size * size;
                     const int sourceCellCount = size * size * size;
+                    const int waterfallContinuationCellsPerUpdate = continuationCellCount;
+                    const int waterfallSourceCellsPerUpdate = sourceCellCount;
                     jobState.waterfallContinuationCursor = std::max(0, std::min(jobState.waterfallContinuationCursor, continuationCellCount));
                     jobState.waterfallSourceCursor = std::max(0, std::min(jobState.waterfallSourceCursor, sourceCellCount));
 
@@ -1014,10 +1004,7 @@ namespace TerrainSystemLogic {
                             ? 0u
                             : (jobState.waterfallCascadeQueue.size() - jobState.waterfallCascadeQueueHead);
                     };
-                    const int waterfallCascadeSeedsPerUpdate = std::max(
-                        1,
-                        getRegistryInt(baseSystem, "WaterfallCascadeSeedsPerUpdate", 16)
-                    );
+                    const int waterfallCascadeSeedsPerUpdate = std::max(1, sourceCellCount);
                     const size_t waterfallCascadeQueueSoftCap = static_cast<size_t>(std::max(
                         waterfallCascadeSeedsPerUpdate,
                         getRegistryInt(baseSystem, "WaterfallCascadeQueueSoftCap", 512)
@@ -1237,11 +1224,8 @@ namespace TerrainSystemLogic {
                     return false;
                 };
 
-                const int chalkPlacementsPerUpdate = std::max(
-                    1,
-                    getRegistryInt(baseSystem, "ChalkPlacementsPerUpdate", 128)
-                );
                 const int chalkPlacementCount = static_cast<int>(chalkPlacements.size());
+                const int chalkPlacementsPerUpdate = std::max(1, chalkPlacementCount);
                 jobState.chalkCursor = std::max(0, std::min(jobState.chalkCursor, chalkPlacementCount));
                 int chalkProcessed = 0;
                 while (jobState.chalkCursor < chalkPlacementCount
@@ -1372,15 +1356,9 @@ namespace TerrainSystemLogic {
                         }
                     };
 
-                    const int depthLavaContinuationColumnsPerUpdate = std::max(
-                        1,
-                        getRegistryInt(baseSystem, "DepthLavaContinuationColumnsPerUpdate", 128)
-                    );
-                    const int depthLavaSourceColumnsPerUpdate = std::max(
-                        1,
-                        getRegistryInt(baseSystem, "DepthLavaSourceColumnsPerUpdate", 128)
-                    );
                     const int columnCount = size * size;
+                    const int depthLavaContinuationColumnsPerUpdate = columnCount;
+                    const int depthLavaSourceColumnsPerUpdate = columnCount;
                     jobState.depthLavaContinuationCursor = std::max(
                         0,
                         std::min(jobState.depthLavaContinuationCursor, columnCount)
@@ -1483,10 +1461,7 @@ namespace TerrainSystemLogic {
                     glm::ivec3(0, 0, -1)
                 };
 
-                const int obsidianLayersPerUpdate = std::max(
-                    1,
-                    getRegistryInt(baseSystem, "ObsidianReactionLayersPerUpdate", 2)
-                );
+                const int obsidianLayersPerUpdate = size;
                 jobState.obsidianLayerCursor = std::max(0, std::min(jobState.obsidianLayerCursor, size));
                 const int startLayer = jobState.obsidianLayerCursor;
                 const int endLayer = std::min(size, startLayer + obsidianLayersPerUpdate);
@@ -1538,17 +1513,40 @@ namespace TerrainSystemLogic {
                     break;
                 }
                 jobState.phase += 1;
-                while (jobState.phase < 4 && !phaseEnabled(jobState.phase)) {
+                while (jobState.phase < 5 && !phaseEnabled(jobState.phase)) {
                     jobState.phase += 1;
                 }
             }
 
-            const bool finished = (jobState.phase >= 4);
+            const bool finished = (jobState.phase >= 5);
             if (finished) {
                 g_depthFeatureJobs.erase(sectionKey);
             }
             return finished;
         }
+    }
+
+    void ConsumeTerrainCaveRampPerfStats(uint64_t& ramps,
+                                         uint64_t& blockWrites,
+                                         uint64_t& sections,
+                                         uint64_t& pocketCandidates,
+                                         uint64_t& validatorCalls,
+                                         uint64_t& volumeDirs,
+                                         uint64_t& supportDirs) {
+        ramps = g_terrainCaveRampFrameRamps;
+        blockWrites = g_terrainCaveRampFrameBlockWrites;
+        sections = g_terrainCaveRampFrameSections;
+        pocketCandidates = g_terrainCaveRampFramePocketCandidates;
+        validatorCalls = g_terrainCaveRampFrameValidatorCalls;
+        volumeDirs = g_terrainCaveRampFrameVolumeDirs;
+        supportDirs = g_terrainCaveRampFrameSupportDirs;
+        g_terrainCaveRampFrameRamps = 0;
+        g_terrainCaveRampFrameBlockWrites = 0;
+        g_terrainCaveRampFrameSections = 0;
+        g_terrainCaveRampFramePocketCandidates = 0;
+        g_terrainCaveRampFrameValidatorCalls = 0;
+        g_terrainCaveRampFrameVolumeDirs = 0;
+        g_terrainCaveRampFrameSupportDirs = 0;
     }
 
 }

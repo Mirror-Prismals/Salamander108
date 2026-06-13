@@ -106,7 +106,7 @@ struct VoxelMeshingPrototypeTraits {
     bool renderableBlock = false;
     bool opaqueBlock = false;
     bool leaf = false;
-    bool binaryGreedyRenderable = false;
+    bool columnHiddenFaceRenderable = false;
     bool tallGrass = false;
     bool shortGrass = false;
     bool flower = false;
@@ -129,11 +129,13 @@ struct VoxelMeshingPrototypeTraits {
 };
 struct VoxelMeshingSnapshot {
     VoxelSectionKey sectionKey{};
+    VoxelColumnKey columnKey{};
+    bool columnMesh = false;
     glm::ivec3 sectionBase{0};
     int sectionSize = 0;
+    glm::ivec3 volumeSize{0};
     int nonAirCount = 0;
     uint64_t dirtyTicket = 0;
-    bool binaryGreedyEnabled = true;
     bool voxelLightingEnabled = true;
     float voxelLightingStrength = 1.0f;
     float voxelLightingMinBrightness = 0.08f;
@@ -148,6 +150,9 @@ struct PreparedVoxelSectionMesh {
     std::array<std::vector<WaterFaceInstanceRenderData>, 6> waterSurfaceFaces;
     std::array<std::vector<WaterFaceInstanceRenderData>, 6> waterBodyFaces;
     uint64_t dirtyTicket = 0;
+    bool columnMesh = false;
+    glm::ivec3 volumeBase{0};
+    glm::ivec3 volumeSize{0};
     bool usesTexturedFaceBuffers = true;
     bool builtWithFaceCulling = false;
 };
@@ -372,6 +377,11 @@ struct VoxelRenderContext {
     std::unordered_map<VoxelSectionKey, PreparedVoxelSectionMesh, VoxelSectionKeyHash> preparedMeshes;
     std::unordered_map<VoxelSectionKey, PreparedVoxelSectionMesh, VoxelSectionKeyHash> wireframeMeshes;
     std::unordered_set<VoxelSectionKey, VoxelSectionKeyHash> renderBuffersDirty;
+    std::unordered_map<VoxelColumnKey, ChunkRenderBuffers, VoxelColumnKeyHash> columnRenderBuffers;
+    std::unordered_map<VoxelColumnKey, std::vector<VoxelRenderCluster>, VoxelColumnKeyHash> columnRenderClusters;
+    std::unordered_map<VoxelColumnKey, PreparedVoxelSectionMesh, VoxelColumnKeyHash> preparedColumnMeshes;
+    std::unordered_map<VoxelColumnKey, PreparedVoxelSectionMesh, VoxelColumnKeyHash> wireframeColumnMeshes;
+    std::unordered_set<VoxelColumnKey, VoxelColumnKeyHash> columnRenderBuffersDirty;
     size_t wireframeOverlayNearFaces = 0;
     size_t wireframeOverlayFarFaces = 0;
     size_t wireframeOverlayLineSegments = 0;
@@ -527,6 +537,7 @@ struct FrustumCullingContext {
 struct PlayerContext {
     float cameraYaw=-90.0f;
     float cameraPitch=0.0f;
+    float cameraRoll=0.0f;
     glm::vec3 cameraPosition=glm::vec3(0.0f,1.0f,5.0f);
     glm::vec3 prevCameraPosition=glm::vec3(0.0f,1.0f,5.0f);
     float mouseOffsetX=0.0f;
@@ -842,14 +853,14 @@ struct AudioContext {
     bool chuckRunning = false;
     std::vector<SAMPLE> chuckInterleavedBuffer;
     // ChucK script management
-    std::string chuckMainScript = "Procedures/chuck/head.ck";
-    std::string chuckHeadScript = "Procedures/chuck/main.ck";
+    std::string chuckMainScript;
+    std::string chuckHeadScript = "Procedures/chuck/head.ck";
     std::string chuckNoiseScript = "Procedures/chuck/music.ck";
     std::string chuckHeadRainScript = "Procedures/chuck/rain.ck";
     std::string chuckHeadWaterScript = "Procedures/chuck/water.ck";
     std::string chuckHeadLavaScript = "Procedures/chuck/lava.ck";
-    int chuckMainChannel = -1; // head.ck uses normal dac L/R channels
-    int chuckHeadChannel = 2; // channel index for main.ck (ray-traced player-head source)
+    int chuckMainChannel = -1; // main.ck uses normal dac L/R channels
+    int chuckHeadChannel = 2; // channel index for head.ck (ray-traced player-head source)
     int chuckNoiseChannel = 0; // channel index for pink.ck
     int chuckHeadRainChannel = 5; // channel index for rain.ck (ray-traced player-head source)
     int chuckHeadWaterChannel = 6; // channel index for water.ck (ray-traced player-head source)
@@ -2047,6 +2058,13 @@ struct FontContext {
     bool textCacheBuilt = false;
     std::vector<std::pair<int, int>> textInstances;
 };
+struct FontDrawCommand {
+    std::string text;
+    glm::vec2 position = glm::vec2(0.0f);
+    float size = 24.0f;
+    glm::vec3 color = glm::vec3(1.0f);
+    std::string font;
+};
 struct PerfContext {
     bool enabled = false;
     bool configLoaded = false;
@@ -2101,7 +2119,7 @@ struct WorldSaveContext {
     std::string activeDisplayName;
     std::string activeLevelKey = "the_expanse";
     std::string activeDimensionId = "overworld";
-    std::string terrainSchemaVersion = "terrain_schema_column_chunks_v22";
+    std::string terrainSchemaVersion = "terrain_schema_column_chunks_v23";
     int64_t activeCreatedAt = 0;
     int64_t activeModifiedAt = 0;
     std::vector<WorldSaveCatalogEntry> catalog;
@@ -2287,6 +2305,11 @@ namespace WorldSaveSystemLogic {
 }
 namespace TreeGenerationSystemLogic {
     void UpdateExpanseTrees(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle);
+    bool GenerateColumnTerrainFoliage(BaseSystem& baseSystem,
+                                      std::vector<Entity>& prototypes,
+                                      WorldContext& worldCtx,
+                                      VoxelWorldContext& voxelWorld,
+                                      const VoxelColumnKey& columnKey);
     void RequestImmediateSectionFoliage(const VoxelSectionKey& key);
     void SetForceCompleteSectionFoliageTargets(const std::vector<VoxelSectionKey>& keys);
     void ProcessImmediateSectionFoliage(BaseSystem& baseSystem,
@@ -2402,7 +2425,7 @@ namespace ScopeTextSystemLogic { void RenderScopeText(BaseSystem&, std::vector<E
 namespace GlyphSystemLogic { void UpdateGlyphs(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
 namespace DecibelMeterSystemLogic { void UpdateDecibelMeters(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); void RenderDecibelMeters(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
 namespace DawFaderSystemLogic { void UpdateDawFaders(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); void RenderDawFaders(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
-namespace FontSystemLogic { void UpdateFonts(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); void CleanupFonts(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
+namespace FontSystemLogic { void UpdateFonts(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); void RenderImmediateText(BaseSystem&, const std::vector<FontDrawCommand>&, PlatformWindowHandle); void CleanupFonts(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
 namespace DebugHudSystemLogic { void UpdateDebugHud(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
 namespace DebugWireframeSystemLogic { void UpdateDebugWireframe(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }
 namespace PerfSystemLogic { void UpdatePerf(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle); }

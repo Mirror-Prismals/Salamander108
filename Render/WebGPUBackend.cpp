@@ -1212,10 +1212,8 @@ fn fs_main() -> @location(0) vec4<f32> {
     }
 
     WGPUCullMode toCullMode(const WebGPUBackend::BackendState::RenderState& state) {
-        (void)state;
-        // Temporary stabilization: disable culling while WebGPU face winding parity
-        // is finalized. This avoids inside-out and missing-face artifacts.
-        return WGPUCullMode_None;
+        if (!state.cullEnabled) return WGPUCullMode_None;
+        return state.cullBackFace ? WGPUCullMode_Back : WGPUCullMode_Front;
     }
 
     bool toBlendState(const WebGPUBackend::BackendState::RenderState& drawState, WGPUBlendState& outBlend) {

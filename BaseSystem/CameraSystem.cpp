@@ -145,7 +145,14 @@ namespace CameraSystemLogic {
         front = glm::normalize(front);
         glm::vec3 eyePos = cameraEyePosition(baseSystem, player);
         eyePos += computeViewBobOffset(baseSystem, player, front, std::max(0.0f, dt));
-        player.viewMatrix = glm::lookAt(eyePos, eyePos + front, glm::vec3(0.0f, 1.0f, 0.0f));
+        glm::vec3 cameraUp(0.0f, 1.0f, 0.0f);
+        if (std::fabs(player.cameraRoll) > 0.001f) {
+            cameraUp = glm::normalize(glm::vec3(
+                glm::rotate(glm::mat4(1.0f), glm::radians(player.cameraRoll), front)
+                * glm::vec4(cameraUp, 0.0f)
+            ));
+        }
+        player.viewMatrix = glm::lookAt(eyePos, eyePos + front, cameraUp);
         player.projectionMatrix = glm::perspective(glm::radians(103.0f), (float)app.windowWidth / (float)app.windowHeight, 0.1f, 2000.0f);
     }
 }

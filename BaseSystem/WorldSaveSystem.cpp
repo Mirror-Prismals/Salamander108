@@ -459,12 +459,15 @@ namespace WorldSaveSystemLogic {
             column.maxYExclusive = maxYExclusive;
             column.ids.assign(expectedCount, 0u);
             column.colors.assign(expectedCount, 0u);
-            column.skyLight.assign(expectedCount, voxelWorld.defaultSkyLightLevel);
-            column.blockLight.assign(expectedCount, static_cast<uint8_t>(0));
+            column.skyLight.clear();
+            column.blockLight.clear();
             column.editVersion = editVersion;
+            column.contentMinY = column.maxYExclusive;
+            column.contentMaxY = column.minY - 1;
 
             size_t writeCursor = 0;
             int nonAir = 0;
+            const int height = std::max(0, maxYExclusive - minY);
             for (uint32_t i = 0; i < runCount; ++i) {
                 ColumnRun run;
                 if (!readPod(bytes, offset, run.length)) return false;
@@ -476,12 +479,24 @@ namespace WorldSaveSystemLogic {
                 for (uint32_t j = 0; j < run.length; ++j) {
                     column.ids[writeCursor] = run.id;
                     column.colors[writeCursor] = storedColor;
-                    if (run.id != 0u) ++nonAir;
+                    if (run.id != 0u) {
+                        ++nonAir;
+                        if (height > 0) {
+                            const int yOffset = static_cast<int>((writeCursor / static_cast<size_t>(size)) % static_cast<size_t>(height));
+                            const int worldY = minY + yOffset;
+                            column.contentMinY = std::min(column.contentMinY, worldY);
+                            column.contentMaxY = std::max(column.contentMaxY, worldY);
+                        }
+                    }
                     ++writeCursor;
                 }
             }
             if (writeCursor != expectedCount) return false;
             column.nonAirCount = nonAir;
+            if (column.nonAirCount <= 0) {
+                column.contentMinY = column.maxYExclusive;
+                column.contentMaxY = column.minY - 1;
+            }
 
             voxelWorld.releaseColumn(expectedKey);
             if (nonAir <= 0 || savedNonAir <= 0) {
@@ -1231,11 +1246,11 @@ namespace WorldSaveSystemLogic {
                               "world_menu_create",
                               "CREATE NEW WORLD",
                               centerX,
-                              620.0f,
+                              650.0f,
                               "screen_create",
                               "");
             } else if (ctx.menuScreen == "create") {
-                setTitleChromeVisibility(*menuWorld, centerX, true, false);
+                setTitleChromeVisibility(*menuWorld, centerX, false, false);
                 addMenuText(baseSystem, prototypes, *menuWorld,
                             "world_menu_create_heading",
                             "CREATE NEW WORLD",

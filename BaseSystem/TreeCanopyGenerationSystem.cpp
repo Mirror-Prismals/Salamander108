@@ -264,11 +264,13 @@
             }
 
             if (!found) return false;
-            voxelWorld.setBlock(bestCell,
-                static_cast<uint32_t>(beeHivePrototypeID),
-                packColor(glm::vec3(1.0f)),
-                false
-            );
+            if (!voxelWorld.setBlockIfEmpty(
+                    bestCell,
+                    static_cast<uint32_t>(beeHivePrototypeID),
+                    packColor(glm::vec3(1.0f)),
+                    false)) {
+                return false;
+            }
             outTouchedSections.insert(sectionCoordForWorldCell(bestCell, sectionSize));
             modified = true;
             return true;
@@ -348,8 +350,7 @@
                               bool& modified) {
             (void)rootSectionCoord;
             auto setIfEmpty = [&](const glm::ivec3& cell, uint32_t id, uint32_t color) -> bool {
-                if (getBlockAt(voxelWorld, cell) != 0u) return false;
-                voxelWorld.setBlock(cell, id, color, false);
+                if (!voxelWorld.setBlockIfEmpty(cell, id, color, false)) return false;
                 outTouchedSections.insert(sectionCoordForWorldCell(cell, sectionSize));
                 modified = true;
                 return true;
@@ -439,8 +440,7 @@
             (void)rootSectionCoord;
             if (trunkPrototypeID < 0 || trunkHeight < 2) return;
             auto setIfEmpty = [&](const glm::ivec3& cell, uint32_t id, uint32_t color) -> bool {
-                if (getBlockAt(voxelWorld, cell) != 0u) return false;
-                voxelWorld.setBlock(cell, id, color, false);
+                if (!voxelWorld.setBlockIfEmpty(cell, id, color, false)) return false;
                 outTouchedSections.insert(sectionCoordForWorldCell(cell, sectionSize));
                 modified = true;
                 return true;
@@ -545,8 +545,7 @@
             (void)sectionTier;
             (void)rootSectionCoord;
             auto setIfEmpty = [&](const glm::ivec3& cell, uint32_t id, uint32_t color) -> bool {
-                if (getBlockAt(voxelWorld, cell) != 0u) return false;
-                voxelWorld.setBlock(cell, id, color, false);
+                if (!voxelWorld.setBlockIfEmpty(cell, id, color, false)) return false;
                 outTouchedSections.insert(sectionCoordForWorldCell(cell, sectionSize));
                 modified = true;
                 return true;

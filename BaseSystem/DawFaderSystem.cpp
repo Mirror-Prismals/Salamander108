@@ -44,6 +44,8 @@ namespace DawFaderSystemLogic {
         constexpr float kFxInsertDepth = 8.0f;
         constexpr float kFxRemoveSize = 28.0f;
         constexpr float kFxRemoveGap = 8.0f;
+        constexpr float kFaderLabelBand = 22.0f;
+        constexpr float kFaderLabelFontSize = 13.0f;
         constexpr int kAuxStripCount = 4;
         constexpr int kAuxStripMainCk = 0;
         constexpr int kAuxStripSoundtrack = 1;
@@ -79,6 +81,42 @@ namespace DawFaderSystemLogic {
             db = std::clamp(db, kMinDb, kMaxDb);
             float t = (db - kMinDb) / (kMaxDb - kMinDb);
             return std::clamp(kDeadZone + t * (1.0f - kDeadZone), 0.0f, 1.0f);
+        }
+
+        std::string fitFaderLabel(const std::string& label) {
+            constexpr size_t kMaxLabelChars = 10;
+            if (label.size() <= kMaxLabelChars) return label;
+            if (kMaxLabelChars <= 1) return label.substr(0, kMaxLabelChars);
+            return label.substr(0, kMaxLabelChars - 1) + ".";
+        }
+
+        std::string labelForMixerStrip(const BaseSystem& baseSystem,
+                                       const DawContext& daw,
+                                       int stripIndex,
+                                       int audioTrackCount,
+                                       int midiTrackCount,
+                                       int fxTrackCount) {
+            if (stripIndex < audioTrackCount) {
+                return fitFaderLabel("AUDIO " + std::to_string(stripIndex + 1));
+            }
+            if (stripIndex < fxTrackCount) {
+                int midiIndex = stripIndex - audioTrackCount;
+                if (baseSystem.midi
+                    && midiIndex >= 0
+                    && midiIndex < static_cast<int>(baseSystem.midi->trackNames.size())
+                    && !baseSystem.midi->trackNames[static_cast<size_t>(midiIndex)].empty()) {
+                    return fitFaderLabel(baseSystem.midi->trackNames[static_cast<size_t>(midiIndex)]);
+                }
+                return fitFaderLabel("MIDI " + std::to_string(midiIndex + 1));
+            }
+
+            int auxIndex = stripIndex - fxTrackCount;
+            if (auxIndex == kAuxStripMainCk) return "SFX";
+            if (auxIndex == kAuxStripSoundtrack) return "SOUNDTRACK";
+            if (auxIndex == kAuxStripSpeakerBlock) return "SPEAKER";
+            if (auxIndex == kAuxStripPlayerHead) return "AMBIENT";
+            (void)daw;
+            return "";
         }
 
         glm::vec2 pixelToNDC(const glm::vec2& pixel, double width, double height) {
@@ -212,28 +250,29 @@ namespace DawFaderSystemLogic {
                 ctx.pressAnim[i] = oldPress[i];
             }
 
-            // Aux startup defaults: keep soundtrack/title music and head-follow audible,
-            // keep speaker-block strip audible at a low level, and start the remaining aux strips down.
+            // Aux startup defaults keep the DAW/game audio buses audible on launch.
             size_t auxStart = (target >= static_cast<size_t>(kAuxStripCount))
                 ? (target - static_cast<size_t>(kAuxStripCount))
                 : target;
             const float unityFaderValue = gainToFaderValue(1.0f);
-            const float downFaderValue = 0.0f;
+            const float defaultFaderValue = 0.75f;
             const float speakerBlockFaderValue = gainToFaderValue(glm::clamp(speakerBlockStartupGain, 0.0f, 1.0f));
             for (size_t i = keep; i < target; ++i) {
                 bool isAux = i >= auxStart;
                 if (!isAux) {
-                    ctx.values[i] = 0.75f;
+                    ctx.values[i] = defaultFaderValue;
                     continue;
                 }
                 size_t auxIndex = i - auxStart;
-                if (auxIndex == static_cast<size_t>(kAuxStripSoundtrack)
-                    || auxIndex == static_cast<size_t>(kAuxStripPlayerHead)) {
+                if (auxIndex == static_cast<size_t>(kAuxStripMainCk)
+                    || auxIndex == static_cast<size_t>(kAuxStripSoundtrack)) {
+                    ctx.values[i] = defaultFaderValue;
+                } else if (auxIndex == static_cast<size_t>(kAuxStripPlayerHead)) {
                     ctx.values[i] = unityFaderValue;
                 } else if (auxIndex == static_cast<size_t>(kAuxStripSpeakerBlock)) {
                     ctx.values[i] = speakerBlockFaderValue;
                 } else {
-                    ctx.values[i] = downFaderValue;
+                    ctx.values[i] = defaultFaderValue;
                 }
             }
 
@@ -843,7 +882,7 @@ namespace DawFaderSystemLogic {
         }
 
         float trackTop = contentTop + DawMixerLayout::kFaderTrackInset;
-        float trackBottom = contentTop + contentHeight - DawMixerLayout::kFaderTrackInset;
+        float trackBottom = contentTop + contentHeight - DawMixerLayout::kFaderTrackInset - kFaderLabelBand;
         float knobHalf = DawMixerLayout::kKnobHalfSize;
         float usableHeight = std::max(1.0f, (trackBottom - trackTop) - 2.0f * knobHalf);
 
@@ -947,6 +986,7 @@ namespace DawFaderSystemLogic {
 
         std::vector<UiVertex> vertices;
         vertices.reserve(static_cast<size_t>(mixerStripCount) * 60 + 240);
+        std::vector<FontDrawCommand> labels;
 
         PanelRectF pagePrev{}, pageNext{}, trackPrev{}, trackNext{};
         computeNavRects(bottomRect, pagePrev, pageNext, trackPrev, trackNext);
@@ -968,9 +1008,11 @@ namespace DawFaderSystemLogic {
         } else {
             float columnSpacing = DawMixerLayout::columnSpacing();
             float trackTop = contentTop + DawMixerLayout::kFaderTrackInset;
-            float trackBottom = contentTop + contentHeight - DawMixerLayout::kFaderTrackInset;
+            float trackBottom = contentTop + contentHeight - DawMixerLayout::kFaderTrackInset - kFaderLabelBand;
             float knobHalf = DawMixerLayout::kKnobHalfSize;
             float usableHeight = std::max(1.0f, (trackBottom - trackTop) - 2.0f * knobHalf);
+            float labelY = contentTop + contentHeight - kFaderLabelBand * 0.5f;
+            glm::vec3 labelColor = resolveColor(&world, "ButtonGlyph", glm::vec3(0.12f));
 
             for (int i = 0; i < mixerStripCount; ++i) {
                 float columnX = contentLeft + faders.scrollX + static_cast<float>(i) * columnSpacing;
@@ -993,6 +1035,31 @@ namespace DawFaderSystemLogic {
                 glm::vec2 knobHalfSize(knobHalf, knobHalf);
                 buildButtonGeometry(knobCenter, knobHalfSize, DawMixerLayout::kFaderHousingDepth, faders.pressAnim[i],
                                     front, top, side, screenWidth, screenHeight, vertices);
+
+                labels.push_back(FontDrawCommand{
+                    labelForMixerStrip(baseSystem, daw, i, audioTrackCount, midiTrackCount, fxTrackCount),
+                    glm::vec2(trackCenterX, labelY),
+                    kFaderLabelFontSize,
+                    labelColor,
+                    ""
+                });
+            }
+
+            constexpr int kMasterMeterCount = 4;
+            const std::array<const char*, kMasterMeterCount> masterLabels{"M-L", "M-S", "M-F", "M-R"};
+            float masterStartX = contentLeft + faders.scrollX + static_cast<float>(mixerStripCount) * columnSpacing
+                + DawMixerLayout::kColumnGap;
+            float masterSpacing = DawMixerLayout::meterBlockWidth() + DawMixerLayout::kColumnGap * 0.5f;
+            for (int i = 0; i < kMasterMeterCount; ++i) {
+                float meterLeft = masterStartX + static_cast<float>(i) * masterSpacing;
+                float meterCenterX = meterLeft + DawMixerLayout::meterBlockWidth() * 0.5f;
+                labels.push_back(FontDrawCommand{
+                    masterLabels[static_cast<size_t>(i)],
+                    glm::vec2(meterCenterX, labelY),
+                    kFaderLabelFontSize,
+                    labelColor,
+                    ""
+                });
             }
         }
 
@@ -1041,6 +1108,9 @@ namespace DawFaderSystemLogic {
         renderer.uiColorShader->use();
         renderBackend.drawArraysTriangles(0, static_cast<int>(vertices.size()));
         setBlendModeAlpha();
+        if (!labels.empty()) {
+            FontSystemLogic::RenderImmediateText(baseSystem, labels, win);
+        }
         setDepthTestEnabled(true);
         setScissorEnabled(false);
     }

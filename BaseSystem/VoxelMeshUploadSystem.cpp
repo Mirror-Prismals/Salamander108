@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Host/PlatformInput.h"
-#include "Structures/BinaryGreedyMesher.h"
 #include <algorithm>
 #include <cmath>
 #include <chrono>
@@ -28,7 +27,6 @@ namespace VoxelMeshInitSystemLogic {
     int FloorDivInt(int value, int divisor);
 }
 namespace VoxelMeshUploadSystemLogic {
-    namespace BinaryGreedyMesher = SalamanderBinaryGreedyMesher;
     namespace {
         bool startsWith(const std::string& value, const char* prefix) {
             if (!prefix) return false;
@@ -378,70 +376,22 @@ namespace VoxelMeshUploadSystemLogic {
             return kLayout;
         }
 
-        struct BinaryGreedyMaterialKey {
-            uint32_t prototypeID = 0;
-            uint32_t packedColor = 0;
-            bool opaqueOnly = false;
-
-            bool operator==(const BinaryGreedyMaterialKey& other) const noexcept {
-                return prototypeID == other.prototypeID
-                    && packedColor == other.packedColor
-                    && opaqueOnly == other.opaqueOnly;
-            }
-        };
-
-        struct BinaryGreedyMaterialKeyHash {
-            std::size_t operator()(const BinaryGreedyMaterialKey& key) const noexcept {
-                std::size_t h = std::hash<uint32_t>()(key.prototypeID);
-                h ^= std::hash<uint32_t>()(key.packedColor) + 0x9e3779b9u + (h << 6u) + (h >> 2u);
-                h ^= std::hash<int>()(key.opaqueOnly ? 1 : 0) + 0x9e3779b9u + (h << 6u) + (h >> 2u);
-                return h;
-            }
-        };
-
-        struct BinaryGreedyTypeInfo {
-            uint32_t prototypeID = 0;
-            uint32_t packedColor = 0;
-            bool opaqueOnly = false;
-        };
-
-        struct BinaryGreedyScratch {
-            std::vector<uint8_t> voxels;
-            std::vector<BinaryGreedyMesher::Quad> quads;
-            BinaryGreedyMesher::MeshData meshData{};
-
-            void ensureCapacity() {
-                if (voxels.size() != static_cast<size_t>(BinaryGreedyMesher::kPaddedChunkVolume)) {
-                    voxels.assign(static_cast<size_t>(BinaryGreedyMesher::kPaddedChunkVolume), 0);
-                } else {
-                    std::fill(voxels.begin(), voxels.end(), static_cast<uint8_t>(0));
-                }
-                quads.clear();
-                meshData.quads = &quads;
-                meshData.quadCount = 0;
-                for (int i = 0; i < 6; ++i) {
-                    meshData.faceQuadBegin[i] = 0;
-                    meshData.faceQuadLength[i] = 0;
-                }
-            }
-        };
-
         struct MeshBuildPerfStats {
             uint64_t buildCount = 0;
-            uint64_t greedyBuiltCount = 0;
+            uint64_t primaryBuiltCount = 0;
             double totalPrepareMs = 0.0;
-            double totalGreedyMs = 0.0;
+            double totalPrimaryMs = 0.0;
             double totalFallbackMs = 0.0;
             float lastPrepareMs = 0.0f;
-            float lastGreedyMs = 0.0f;
+            float lastPrimaryMs = 0.0f;
             float lastFallbackMs = 0.0f;
             float maxPrepareMs = 0.0f;
-            float maxGreedyMs = 0.0f;
+            float maxPrimaryMs = 0.0f;
             float maxFallbackMs = 0.0f;
             int lastSectionSize = 0;
             int lastSectionY = 0;
             int lastNonAir = 0;
-            size_t lastGreedyFaces = 0;
+            size_t lastPrimaryFaces = 0;
             size_t lastFallbackFaces = 0;
             size_t lastFallbackCellsVisited = 0;
             size_t lastFallbackRenderableBlocks = 0;
@@ -559,11 +509,11 @@ namespace VoxelMeshUploadSystemLogic {
         }
 
         void recordMeshBuildPerf(const VoxelMeshingSnapshot& snapshot,
-                                 bool binaryGreedyBuilt,
+                                 bool primaryBuilt,
                                  float prepareMs,
-                                 float greedyMs,
+                                 float primaryMs,
                                  float fallbackMs,
-                                 size_t greedyFaces,
+                                 size_t primaryFaces,
                                  size_t fallbackFaces,
                                  size_t fallbackCellsVisited,
                                  size_t fallbackRenderableBlocks,
@@ -571,22 +521,22 @@ namespace VoxelMeshUploadSystemLogic {
             std::lock_guard<std::mutex> lock(g_meshBuildPerfMutex);
             MeshBuildPerfStats& stats = g_meshBuildPerfStats;
             stats.buildCount += 1;
-            if (binaryGreedyBuilt) {
-                stats.greedyBuiltCount += 1;
+            if (primaryBuilt) {
+                stats.primaryBuiltCount += 1;
             }
             stats.totalPrepareMs += static_cast<double>(prepareMs);
-            stats.totalGreedyMs += static_cast<double>(greedyMs);
+            stats.totalPrimaryMs += static_cast<double>(primaryMs);
             stats.totalFallbackMs += static_cast<double>(fallbackMs);
             stats.lastPrepareMs = prepareMs;
-            stats.lastGreedyMs = greedyMs;
+            stats.lastPrimaryMs = primaryMs;
             stats.lastFallbackMs = fallbackMs;
             stats.maxPrepareMs = std::max(stats.maxPrepareMs, prepareMs);
-            stats.maxGreedyMs = std::max(stats.maxGreedyMs, greedyMs);
+            stats.maxPrimaryMs = std::max(stats.maxPrimaryMs, primaryMs);
             stats.maxFallbackMs = std::max(stats.maxFallbackMs, fallbackMs);
             stats.lastSectionSize = snapshot.sectionSize;
             stats.lastSectionY = snapshot.sectionKey.coord.y;
             stats.lastNonAir = snapshot.nonAirCount;
-            stats.lastGreedyFaces = greedyFaces;
+            stats.lastPrimaryFaces = primaryFaces;
             stats.lastFallbackFaces = fallbackFaces;
             stats.lastFallbackCellsVisited = fallbackCellsVisited;
             stats.lastFallbackRenderableBlocks = fallbackRenderableBlocks;
@@ -636,13 +586,7 @@ namespace VoxelMeshUploadSystemLogic {
             stats.totalUploadedClusters += static_cast<uint64_t>(uploadedClusters);
         }
 
-        int binaryGreedyVoxelIndex(int x, int y, int z) {
-            return z
-                + x * BinaryGreedyMesher::kPaddedChunkSize
-                + y * BinaryGreedyMesher::kPaddedChunkArea;
-        }
-
-        bool isBinaryGreedyRenderableName(const std::string& name) {
+        bool isColumnHiddenFaceRenderableName(const std::string& name) {
             if (name == "Water" || name == "TransparentWave") return false;
             if (isLeafPrototypeName(name)) return false;
             if (isTallGrassPrototypeName(name)) return false;
@@ -658,7 +602,7 @@ namespace VoxelMeshUploadSystemLogic {
             return true;
         }
 
-        bool binaryGreedyMaterialNeedsPackedColor(const VoxelMeshingPrototypeTraits& traits) {
+        bool columnHiddenFaceMaterialNeedsPackedColor(const VoxelMeshingPrototypeTraits& traits) {
             for (int faceType = 0; faceType < 6; ++faceType) {
                 if (traits.faceTiles[static_cast<size_t>(faceType)] < 0) return true;
             }
@@ -695,7 +639,7 @@ namespace VoxelMeshUploadSystemLogic {
                 out.petalPile = isPetalPileName(name);
                 out.water = (name == "Water");
                 out.transparentWave = (name == "TransparentWave");
-                out.binaryGreedyRenderable = out.opaqueBlock && isBinaryGreedyRenderableName(name);
+                out.columnHiddenFaceRenderable = out.opaqueBlock && isColumnHiddenFaceRenderableName(name);
                 for (int faceType = 0; faceType < 6; ++faceType) {
                     out.faceTiles[static_cast<size_t>(faceType)] =
                         ::RenderInitSystemLogic::FaceTileIndexFor(baseSystem.world.get(), proto, faceType);
@@ -704,21 +648,28 @@ namespace VoxelMeshUploadSystemLogic {
             return traits;
         }
 
-        uint8_t decodeQuadCoord(uint64_t quad, int shift) {
-            return static_cast<uint8_t>((quad >> shift) & 63ull);
+        glm::ivec3 snapshotVolumeSize(const VoxelMeshingSnapshot& snapshot) {
+            if (snapshot.volumeSize.x > 0 && snapshot.volumeSize.y > 0 && snapshot.volumeSize.z > 0) {
+                return snapshot.volumeSize;
+            }
+            const int size = std::max(0, snapshot.sectionSize);
+            return glm::ivec3(size);
         }
 
         int paddedSnapshotIndex(const VoxelMeshingSnapshot& snapshot, int x, int y, int z) {
-            const int paddedSize = snapshot.sectionSize + 2;
+            const glm::ivec3 volume = snapshotVolumeSize(snapshot);
+            const int paddedX = volume.x + 2;
+            const int paddedY = volume.y + 2;
             return (x + 1)
-                + (y + 1) * paddedSize
-                + (z + 1) * paddedSize * paddedSize;
+                + (y + 1) * paddedX
+                + (z + 1) * paddedX * paddedY;
         }
 
         uint32_t snapshotBlockAt(const VoxelMeshingSnapshot& snapshot, int x, int y, int z) {
-            if (x < -1 || x > snapshot.sectionSize
-                || y < -1 || y > snapshot.sectionSize
-                || z < -1 || z > snapshot.sectionSize) {
+            const glm::ivec3 volume = snapshotVolumeSize(snapshot);
+            if (x < -1 || x > volume.x
+                || y < -1 || y > volume.y
+                || z < -1 || z > volume.z) {
                 return 0;
             }
             const int idx = paddedSnapshotIndex(snapshot, x, y, z);
@@ -727,9 +678,10 @@ namespace VoxelMeshUploadSystemLogic {
         }
 
         uint32_t snapshotColorAt(const VoxelMeshingSnapshot& snapshot, int x, int y, int z) {
-            if (x < -1 || x > snapshot.sectionSize
-                || y < -1 || y > snapshot.sectionSize
-                || z < -1 || z > snapshot.sectionSize) {
+            const glm::ivec3 volume = snapshotVolumeSize(snapshot);
+            if (x < -1 || x > volume.x
+                || y < -1 || y > volume.y
+                || z < -1 || z > volume.z) {
                 return 0;
             }
             const int idx = paddedSnapshotIndex(snapshot, x, y, z);
@@ -738,9 +690,10 @@ namespace VoxelMeshUploadSystemLogic {
         }
 
         uint8_t snapshotCombinedLightAt(const VoxelMeshingSnapshot& snapshot, int x, int y, int z) {
-            if (x < -1 || x > snapshot.sectionSize
-                || y < -1 || y > snapshot.sectionSize
-                || z < -1 || z > snapshot.sectionSize) {
+            const glm::ivec3 volume = snapshotVolumeSize(snapshot);
+            if (x < -1 || x > volume.x
+                || y < -1 || y > volume.y
+                || z < -1 || z > volume.z) {
                 return static_cast<uint8_t>(0);
             }
             const int idx = paddedSnapshotIndex(snapshot, x, y, z);
@@ -981,7 +934,7 @@ namespace VoxelMeshUploadSystemLogic {
             return outAo;
         }
 
-        bool appendBinaryGreedyQuad(FaceInstanceRenderData& outFace,
+        bool appendVoxelFaceQuadGeometry(FaceInstanceRenderData& outFace,
                                     int mirrorFaceType,
                                     const glm::ivec3& worldMin,
                                     int spanA,
@@ -1016,174 +969,65 @@ namespace VoxelMeshUploadSystemLogic {
             return true;
         }
 
-        bool appendBinaryGreedySectionFaces(const VoxelMeshingSnapshot& snapshot,
-                                            const std::vector<VoxelMeshingPrototypeTraits>& prototypeTraits,
-                                            std::array<std::vector<FaceInstanceRenderData>, 6>& opaqueFaces) {
-            thread_local BinaryGreedyScratch scratch;
-            constexpr int kInteriorSize = BinaryGreedyMesher::kChunkSize;
+        size_t appendColumnHiddenTerrainCellFaces(const VoxelMeshingSnapshot& snapshot,
+                                                  const std::vector<VoxelMeshingPrototypeTraits>& prototypeTraits,
+                                                  const glm::ivec3& localCell,
+                                                  const VoxelMeshingPrototypeTraits& traits,
+                                                  std::array<std::vector<FaceInstanceRenderData>, 6>& opaqueFaces) {
+            static const VoxelMeshingPrototypeTraits kEmptyTraits{};
+            static const std::array<glm::ivec3, 6> kFaceNormals = {
+                glm::ivec3(1, 0, 0),
+                glm::ivec3(-1, 0, 0),
+                glm::ivec3(0, 1, 0),
+                glm::ivec3(0, -1, 0),
+                glm::ivec3(0, 0, 1),
+                glm::ivec3(0, 0, -1)
+            };
+            auto traitsFor = [&](uint32_t id) -> const VoxelMeshingPrototypeTraits& {
+                if (id < prototypeTraits.size()) return prototypeTraits[id];
+                return kEmptyTraits;
+            };
 
-            const int sectionSize = snapshot.sectionSize;
-            if (sectionSize <= 0) return true;
-
-            for (int tileZ = 0; tileZ < sectionSize; tileZ += kInteriorSize) {
-                for (int tileY = 0; tileY < sectionSize; tileY += kInteriorSize) {
-                    for (int tileX = 0; tileX < sectionSize; tileX += kInteriorSize) {
-                        scratch.ensureCapacity();
-                        std::vector<BinaryGreedyTypeInfo> typeInfos;
-                        typeInfos.reserve(64);
-                        typeInfos.push_back({});
-                        std::unordered_map<BinaryGreedyMaterialKey, uint8_t, BinaryGreedyMaterialKeyHash> typeMap;
-                        typeMap.reserve(64);
-
-                        auto assignType = [&](uint32_t prototypeID,
-                                              uint32_t packedColor,
-                                              bool opaqueOnly,
-                                              uint8_t& outType) -> bool {
-                            BinaryGreedyMaterialKey key{prototypeID, packedColor, opaqueOnly};
-                            auto it = typeMap.find(key);
-                            if (it != typeMap.end()) {
-                                outType = it->second;
-                                return true;
-                            }
-                            if (typeInfos.size() >= 255u) {
-                                return false;
-                            }
-                            outType = static_cast<uint8_t>(typeInfos.size());
-                            typeInfos.push_back({prototypeID, packedColor, opaqueOnly});
-                            typeMap.emplace(key, outType);
-                            return true;
-                        };
-
-                        for (int py = 0; py < BinaryGreedyMesher::kPaddedChunkSize; ++py) {
-                            for (int px = 0; px < BinaryGreedyMesher::kPaddedChunkSize; ++px) {
-                                for (int pz = 0; pz < BinaryGreedyMesher::kPaddedChunkSize; ++pz) {
-                                    const bool interior = (px > 0 && px < BinaryGreedyMesher::kPaddedChunkSize - 1
-                                                        && py > 0 && py < BinaryGreedyMesher::kPaddedChunkSize - 1
-                                                        && pz > 0 && pz < BinaryGreedyMesher::kPaddedChunkSize - 1);
-                                    const glm::ivec3 tileLocal(px - 1, py - 1, pz - 1);
-                                    const glm::ivec3 sectionLocal = glm::ivec3(tileX, tileY, tileZ) + tileLocal;
-                                    uint32_t blockId = 0;
-                                    if (!interior
-                                        || (sectionLocal.x >= 0 && sectionLocal.x < sectionSize
-                                            && sectionLocal.y >= 0 && sectionLocal.y < sectionSize
-                                            && sectionLocal.z >= 0 && sectionLocal.z < sectionSize)) {
-                                        blockId = snapshotBlockAt(
-                                            snapshot,
-                                            sectionLocal.x,
-                                            sectionLocal.y,
-                                            sectionLocal.z
-                                        );
-                                    }
-
-                                    uint8_t type = 0;
-                                    if (blockId < prototypeTraits.size()
-                                        && prototypeTraits[blockId].binaryGreedyRenderable) {
-                                        const VoxelMeshingPrototypeTraits& traits = prototypeTraits[blockId];
-                                        const uint32_t packedColor = binaryGreedyMaterialNeedsPackedColor(traits)
-                                            ? snapshotColorAt(
-                                                snapshot,
-                                                sectionLocal.x,
-                                                sectionLocal.y,
-                                                sectionLocal.z
-                                            )
-                                            : 0u;
-                                        if (!assignType(blockId, packedColor, false, type)) {
-                                            return false;
-                                        }
-                                    } else if (blockId < prototypeTraits.size()
-                                               && prototypeTraits[blockId].opaqueBlock) {
-                                        if (!assignType(blockId, 0u, true, type)) {
-                                            return false;
-                                        }
-                                    }
-
-                                    scratch.voxels[static_cast<size_t>(binaryGreedyVoxelIndex(px, py, pz))] = type;
-                                }
-                            }
-                        }
-
-                        BinaryGreedyMesher::mesh(scratch.voxels.data(), scratch.meshData);
-
-                        for (int binaryFace = 0; binaryFace < 6; ++binaryFace) {
-                            const int faceBegin = scratch.meshData.faceQuadBegin[binaryFace];
-                            const int faceLength = scratch.meshData.faceQuadLength[binaryFace];
-                            for (int quadIndex = 0; quadIndex < faceLength; ++quadIndex) {
-                                const BinaryGreedyMesher::Quad& quad =
-                                    scratch.quads[static_cast<size_t>(faceBegin + quadIndex)];
-                                const uint8_t type = quad.type;
-                                if (type == 0 || type >= typeInfos.size()) continue;
-                                const BinaryGreedyTypeInfo& info = typeInfos[static_cast<size_t>(type)];
-                                if (info.opaqueOnly) continue;
-                                if (info.prototypeID == 0 || info.prototypeID >= prototypeTraits.size()) continue;
-                                const VoxelMeshingPrototypeTraits& protoTraits = prototypeTraits[info.prototypeID];
-
-                                int mirrorFaceType = 0;
-                                int spanA = 1;
-                                int spanB = 1;
-                                glm::ivec3 worldMin = snapshot.sectionBase;
-                                switch (quad.face) {
-                                    case BinaryGreedyMesher::Face::PosX:
-                                        mirrorFaceType = 0;
-                                        worldMin += glm::ivec3(tileX + quad.x, tileY + quad.y, tileZ + quad.z);
-                                        spanA = quad.width;
-                                        spanB = quad.height;
-                                        break;
-                                    case BinaryGreedyMesher::Face::NegX:
-                                        mirrorFaceType = 1;
-                                        worldMin += glm::ivec3(tileX + quad.x, tileY + quad.y, tileZ + quad.z);
-                                        spanA = quad.width;
-                                        spanB = quad.height;
-                                        break;
-                                    case BinaryGreedyMesher::Face::PosY:
-                                        mirrorFaceType = 2;
-                                        worldMin += glm::ivec3(tileX + quad.x, tileY + quad.y, tileZ + quad.z);
-                                        spanA = quad.width;
-                                        spanB = quad.height;
-                                        break;
-                                    case BinaryGreedyMesher::Face::NegY:
-                                        mirrorFaceType = 3;
-                                        worldMin += glm::ivec3(tileX + quad.x, tileY + quad.y, tileZ + quad.z);
-                                        spanA = quad.width;
-                                        spanB = quad.height;
-                                        break;
-                                    case BinaryGreedyMesher::Face::PosZ:
-                                        mirrorFaceType = 4;
-                                        worldMin += glm::ivec3(tileX + quad.x, tileY + quad.y, tileZ + quad.z);
-                                        spanA = quad.width;
-                                        spanB = quad.height;
-                                        break;
-                                    case BinaryGreedyMesher::Face::NegZ:
-                                        mirrorFaceType = 5;
-                                        worldMin += glm::ivec3(tileX + quad.x, tileY + quad.y, tileZ + quad.z);
-                                        spanA = quad.width;
-                                        spanB = quad.height;
-                                        break;
-                                }
-
-                                FaceInstanceRenderData face{};
-                                face.tileIndex = protoTraits.faceTiles[static_cast<size_t>(mirrorFaceType)];
-                                face.color = (face.tileIndex >= 0)
-                                    ? glm::vec3(1.0f)
-                                    : VoxelMeshInitSystemLogic::UnpackColor(info.packedColor);
-
-                                if (!appendBinaryGreedyQuad(face, mirrorFaceType, worldMin, spanA, spanB)) continue;
-                                face.ao = computeFaceCornerLighting(
-                                    snapshot,
-                                    prototypeTraits,
-                                    worldMin - snapshot.sectionBase,
-                                    mirrorFaceType,
-                                    spanA,
-                                    spanB,
-                                    true
-                                );
-                                opaqueFaces[static_cast<size_t>(mirrorFaceType)].push_back(face);
-                            }
-                        }
-                    }
-                }
+            glm::vec3 packedColor(1.0f);
+            if (columnHiddenFaceMaterialNeedsPackedColor(traits)) {
+                packedColor = VoxelMeshInitSystemLogic::UnpackColor(
+                    snapshotColorAt(snapshot, localCell.x, localCell.y, localCell.z)
+                );
             }
 
-            return true;
+            size_t facesAdded = 0;
+            const glm::ivec3 worldCell = snapshot.sectionBase + localCell;
+            for (int faceType = 0; faceType < 6; ++faceType) {
+                const glm::ivec3 neighborLocal =
+                    localCell + kFaceNormals[static_cast<size_t>(faceType)];
+                const uint32_t neighborId = snapshotBlockAt(
+                    snapshot,
+                    neighborLocal.x,
+                    neighborLocal.y,
+                    neighborLocal.z
+                );
+                const VoxelMeshingPrototypeTraits& neighborTraits = traitsFor(neighborId);
+                if (neighborTraits.opaqueBlock) continue;
+
+                FaceInstanceRenderData face{};
+                face.tileIndex = traits.faceTiles[static_cast<size_t>(faceType)];
+                face.color = (face.tileIndex >= 0) ? glm::vec3(1.0f) : packedColor;
+                face.alpha = 1.0f;
+                if (!appendVoxelFaceQuadGeometry(face, faceType, worldCell, 1, 1)) continue;
+                face.ao = computeFaceCornerLighting(
+                    snapshot,
+                    prototypeTraits,
+                    localCell,
+                    faceType,
+                    1,
+                    1,
+                    true
+                );
+                opaqueFaces[static_cast<size_t>(faceType)].push_back(face);
+                ++facesAdded;
+            }
+
+            return facesAdded;
         }
 
         bool uploadFaceInstanceBatch(RenderHandle& vao,
@@ -1481,14 +1325,18 @@ namespace VoxelMeshUploadSystemLogic {
         glm::ivec3 clusterCoordForPosition(const glm::vec3& position,
                                            const glm::vec3& sectionBase,
                                            int clusterSize,
-                                           int sectionSize) {
+                                           const glm::ivec3& volumeSize) {
             const glm::vec3 local = position - sectionBase;
-            const auto coordAxis = [&](float v) -> int {
+            const auto coordAxis = [&](float v, int extent) -> int {
                 int c = static_cast<int>(std::floor(v / static_cast<float>(clusterSize)));
-                const int maxCoord = std::max(0, (sectionSize - 1) / clusterSize);
+                const int maxCoord = std::max(0, (std::max(1, extent) - 1) / clusterSize);
                 return std::clamp(c, 0, maxCoord);
             };
-            return glm::ivec3(coordAxis(local.x), coordAxis(local.y), coordAxis(local.z));
+            return glm::ivec3(
+                coordAxis(local.x, volumeSize.x),
+                coordAxis(local.y, volumeSize.y),
+                coordAxis(local.z, volumeSize.z)
+            );
         }
 
         uint64_t packClusterCoord(const glm::ivec3& coord) {
@@ -1525,22 +1373,19 @@ namespace VoxelMeshUploadSystemLogic {
             clusters.clear();
         }
 
-        bool SplitPreparedMeshIntoClusters(const PreparedVoxelSectionMesh& preparedMesh,
-                                           const VoxelSection& section,
-                                           std::vector<VoxelRenderCluster>& outClusters,
-                                           RendererContext& renderer,
-                                           IRenderBackend& renderBackend,
-                                           MeshUploadFrameDetailStats* detailStats) {
+        bool SplitPreparedMeshIntoVolumeClusters(const PreparedVoxelSectionMesh& preparedMesh,
+                                                 const glm::vec3& volumeBase,
+                                                 const glm::ivec3& volumeSize,
+                                                 std::vector<VoxelRenderCluster>& outClusters,
+                                                 RendererContext& renderer,
+                                                 IRenderBackend& renderBackend,
+                                                 MeshUploadFrameDetailStats* detailStats) {
             outClusters.clear();
             if (detailStats) {
                 detailStats->uploadedFaces += countPreparedFaces(preparedMesh);
             }
-            const int clusterSizeBlocks = std::max(4, section.size / 2);
-            const glm::vec3 sectionBase(
-                static_cast<float>(section.coord.x * section.size),
-                static_cast<float>(section.coord.y * section.size),
-                static_cast<float>(section.coord.z * section.size)
-            );
+            const int horizontalSpan = std::max(volumeSize.x, volumeSize.z);
+            const int clusterSizeBlocks = std::max(4, std::min(32, std::max(1, horizontalSpan)));
 
             const auto splitStart = std::chrono::steady_clock::now();
             std::unordered_map<uint64_t, ClusterPreparedMesh> clusterMeshes;
@@ -1556,28 +1401,28 @@ namespace VoxelMeshUploadSystemLogic {
 
             for (int faceType = 0; faceType < 6; ++faceType) {
                 for (const FaceInstanceRenderData& face : preparedMesh.opaqueFaces[static_cast<size_t>(faceType)]) {
-                    const glm::ivec3 clusterCoord = clusterCoordForPosition(face.position, sectionBase, clusterSizeBlocks, section.size);
+                    const glm::ivec3 clusterCoord = clusterCoordForPosition(face.position, volumeBase, clusterSizeBlocks, volumeSize);
                     ClusterPreparedMesh& cluster = getCluster(clusterCoord);
                     cluster.mesh.opaqueFaces[static_cast<size_t>(faceType)].push_back(face);
                     const glm::vec3 halfExt = faceHalfExtents(faceType, face.scale);
                     expandClusterBounds(cluster, face.position - halfExt, face.position + halfExt);
                 }
                 for (const FaceInstanceRenderData& face : preparedMesh.alphaFaces[static_cast<size_t>(faceType)]) {
-                    const glm::ivec3 clusterCoord = clusterCoordForPosition(face.position, sectionBase, clusterSizeBlocks, section.size);
+                    const glm::ivec3 clusterCoord = clusterCoordForPosition(face.position, volumeBase, clusterSizeBlocks, volumeSize);
                     ClusterPreparedMesh& cluster = getCluster(clusterCoord);
                     cluster.mesh.alphaFaces[static_cast<size_t>(faceType)].push_back(face);
                     const glm::vec3 halfExt = faceHalfExtents(faceType, face.scale);
                     expandClusterBounds(cluster, face.position - halfExt, face.position + halfExt);
                 }
                 for (const WaterFaceInstanceRenderData& face : preparedMesh.waterSurfaceFaces[static_cast<size_t>(faceType)]) {
-                    const glm::ivec3 clusterCoord = clusterCoordForPosition(face.position, sectionBase, clusterSizeBlocks, section.size);
+                    const glm::ivec3 clusterCoord = clusterCoordForPosition(face.position, volumeBase, clusterSizeBlocks, volumeSize);
                     ClusterPreparedMesh& cluster = getCluster(clusterCoord);
                     cluster.mesh.waterSurfaceFaces[static_cast<size_t>(faceType)].push_back(face);
                     const glm::vec3 halfExt = faceHalfExtents(faceType, face.scale);
                     expandClusterBounds(cluster, face.position - halfExt, face.position + halfExt);
                 }
                 for (const WaterFaceInstanceRenderData& face : preparedMesh.waterBodyFaces[static_cast<size_t>(faceType)]) {
-                    const glm::ivec3 clusterCoord = clusterCoordForPosition(face.position, sectionBase, clusterSizeBlocks, section.size);
+                    const glm::ivec3 clusterCoord = clusterCoordForPosition(face.position, volumeBase, clusterSizeBlocks, volumeSize);
                     ClusterPreparedMesh& cluster = getCluster(clusterCoord);
                     cluster.mesh.waterBodyFaces[static_cast<size_t>(faceType)].push_back(face);
                     const glm::vec3 halfExt = faceHalfExtents(faceType, face.scale);
@@ -1622,25 +1467,43 @@ namespace VoxelMeshUploadSystemLogic {
             return true;
         }
 
-        bool UploadPreparedMeshAsSingleCluster(const PreparedVoxelSectionMesh& preparedMesh,
-                                               const VoxelSection& section,
-                                               std::vector<VoxelRenderCluster>& outClusters,
-                                               RendererContext& renderer,
-                                               IRenderBackend& renderBackend,
-                                               MeshUploadFrameDetailStats* detailStats) {
+        bool SplitPreparedMeshIntoClusters(const PreparedVoxelSectionMesh& preparedMesh,
+                                           const VoxelSection& section,
+                                           std::vector<VoxelRenderCluster>& outClusters,
+                                           RendererContext& renderer,
+                                           IRenderBackend& renderBackend,
+                                           MeshUploadFrameDetailStats* detailStats) {
+            const glm::vec3 sectionBase(
+                static_cast<float>(section.coord.x * section.size),
+                static_cast<float>(section.coord.y * section.size),
+                static_cast<float>(section.coord.z * section.size)
+            );
+            return SplitPreparedMeshIntoVolumeClusters(
+                preparedMesh,
+                sectionBase,
+                glm::ivec3(section.size),
+                outClusters,
+                renderer,
+                renderBackend,
+                detailStats
+            );
+        }
+
+        bool UploadPreparedVolumeAsSingleCluster(const PreparedVoxelSectionMesh& preparedMesh,
+                                                 const glm::vec3& volumeBase,
+                                                 const glm::ivec3& volumeSize,
+                                                 std::vector<VoxelRenderCluster>& outClusters,
+                                                 RendererContext& renderer,
+                                                 IRenderBackend& renderBackend,
+                                                 MeshUploadFrameDetailStats* detailStats) {
             outClusters.clear();
             if (detailStats) {
                 detailStats->uploadedFaces += countPreparedFaces(preparedMesh);
             }
 
             VoxelRenderCluster cluster{};
-            const glm::vec3 sectionBase(
-                static_cast<float>(section.coord.x * section.size),
-                static_cast<float>(section.coord.y * section.size),
-                static_cast<float>(section.coord.z * section.size)
-            );
-            cluster.minBounds = sectionBase;
-            cluster.maxBounds = sectionBase + glm::vec3(static_cast<float>(section.size));
+            cluster.minBounds = volumeBase;
+            cluster.maxBounds = volumeBase + glm::vec3(volumeSize);
 
             const auto stageStart = std::chrono::steady_clock::now();
             if (!UploadPreparedVoxelSectionMeshImpl(preparedMesh, cluster.buffers, renderer, renderBackend)) {
@@ -1664,6 +1527,28 @@ namespace VoxelMeshUploadSystemLogic {
 
             outClusters.push_back(std::move(cluster));
             return true;
+        }
+
+        bool UploadPreparedMeshAsSingleCluster(const PreparedVoxelSectionMesh& preparedMesh,
+                                               const VoxelSection& section,
+                                               std::vector<VoxelRenderCluster>& outClusters,
+                                               RendererContext& renderer,
+                                               IRenderBackend& renderBackend,
+                                               MeshUploadFrameDetailStats* detailStats) {
+            const glm::vec3 sectionBase(
+                static_cast<float>(section.coord.x * section.size),
+                static_cast<float>(section.coord.y * section.size),
+                static_cast<float>(section.coord.z * section.size)
+            );
+            return UploadPreparedVolumeAsSingleCluster(
+                preparedMesh,
+                sectionBase,
+                glm::ivec3(section.size),
+                outClusters,
+                renderer,
+                renderBackend,
+                detailStats
+            );
         }
 
         float sectionDist2ToCamera(const VoxelSection& section, const glm::vec3& cameraPos) {
@@ -1708,20 +1593,20 @@ namespace VoxelMeshUploadSystemLogic {
     }
 
     void GetVoxelMeshBuildPerfStats(uint64_t& buildCount,
-                                    uint64_t& greedyBuiltCount,
+                                    uint64_t& primaryBuiltCount,
                                     float& lastPrepareMs,
-                                    float& lastGreedyMs,
+                                    float& lastPrimaryMs,
                                     float& lastFallbackMs,
                                     float& avgPrepareMs,
-                                    float& avgGreedyMs,
+                                    float& avgPrimaryMs,
                                     float& avgFallbackMs,
                                     float& maxPrepareMs,
-                                    float& maxGreedyMs,
+                                    float& maxPrimaryMs,
                                     float& maxFallbackMs,
                                     int& lastSectionSize,
                                     int& lastSectionY,
                                     int& lastNonAir,
-                                    size_t& lastGreedyFaces,
+                                    size_t& lastPrimaryFaces,
                                     size_t& lastFallbackFaces,
                                     size_t& lastFallbackCellsVisited,
                                     size_t& lastFallbackRenderableBlocks,
@@ -1732,26 +1617,26 @@ namespace VoxelMeshUploadSystemLogic {
         std::lock_guard<std::mutex> lock(g_meshBuildPerfMutex);
         const MeshBuildPerfStats& stats = g_meshBuildPerfStats;
         buildCount = stats.buildCount;
-        greedyBuiltCount = stats.greedyBuiltCount;
+        primaryBuiltCount = stats.primaryBuiltCount;
         lastPrepareMs = stats.lastPrepareMs;
-        lastGreedyMs = stats.lastGreedyMs;
+        lastPrimaryMs = stats.lastPrimaryMs;
         lastFallbackMs = stats.lastFallbackMs;
         avgPrepareMs = stats.buildCount > 0
             ? static_cast<float>(stats.totalPrepareMs / static_cast<double>(stats.buildCount))
             : 0.0f;
-        avgGreedyMs = stats.buildCount > 0
-            ? static_cast<float>(stats.totalGreedyMs / static_cast<double>(stats.buildCount))
+        avgPrimaryMs = stats.buildCount > 0
+            ? static_cast<float>(stats.totalPrimaryMs / static_cast<double>(stats.buildCount))
             : 0.0f;
         avgFallbackMs = stats.buildCount > 0
             ? static_cast<float>(stats.totalFallbackMs / static_cast<double>(stats.buildCount))
             : 0.0f;
         maxPrepareMs = stats.maxPrepareMs;
-        maxGreedyMs = stats.maxGreedyMs;
+        maxPrimaryMs = stats.maxPrimaryMs;
         maxFallbackMs = stats.maxFallbackMs;
         lastSectionSize = stats.lastSectionSize;
         lastSectionY = stats.lastSectionY;
         lastNonAir = stats.lastNonAir;
-        lastGreedyFaces = stats.lastGreedyFaces;
+        lastPrimaryFaces = stats.lastPrimaryFaces;
         lastFallbackFaces = stats.lastFallbackFaces;
         lastFallbackCellsVisited = stats.lastFallbackCellsVisited;
         lastFallbackRenderableBlocks = stats.lastFallbackRenderableBlocks;
@@ -1817,8 +1702,12 @@ namespace VoxelMeshUploadSystemLogic {
         const auto prepareStart = std::chrono::steady_clock::now();
         outMesh = {};
         outMesh.dirtyTicket = snapshot.dirtyTicket;
+        outMesh.columnMesh = snapshot.columnMesh;
+        outMesh.volumeBase = snapshot.sectionBase;
         outMesh.usesTexturedFaceBuffers = true;
-        if (snapshot.sectionSize <= 0 || snapshot.nonAirCount <= 0) {
+        const glm::ivec3 volume = snapshotVolumeSize(snapshot);
+        outMesh.volumeSize = volume;
+        if (volume.x <= 0 || volume.y <= 0 || volume.z <= 0 || snapshot.nonAirCount <= 0) {
             const float prepareMs = std::chrono::duration<float, std::milli>(
                 std::chrono::steady_clock::now() - prepareStart
             ).count();
@@ -1865,31 +1754,32 @@ namespace VoxelMeshUploadSystemLogic {
             }
         };
 
-        const size_t beforeGreedyFaces = countPreparedFaces(outMesh);
-        const auto greedyStart = std::chrono::steady_clock::now();
-        const bool binaryGreedyBuilt = snapshot.binaryGreedyEnabled
-            && appendBinaryGreedySectionFaces(snapshot, prototypeTraits, outMesh.opaqueFaces);
-        const float greedyMs = std::chrono::duration<float, std::milli>(
-            std::chrono::steady_clock::now() - greedyStart
-        ).count();
-        const size_t afterGreedyFaces = countPreparedFaces(outMesh);
-        const size_t greedyFaces = afterGreedyFaces >= beforeGreedyFaces
-            ? (afterGreedyFaces - beforeGreedyFaces)
-            : 0u;
+        const float primaryMs = 0.0f;
+        size_t primaryFaces = 0;
 
         size_t fallbackCellsVisited = 0;
         size_t fallbackRenderableBlocks = 0;
         const size_t beforeFallbackFaces = countPreparedFaces(outMesh);
         const auto fallbackStart = std::chrono::steady_clock::now();
-        for (int z = 0; z < snapshot.sectionSize; ++z) {
-            for (int y = 0; y < snapshot.sectionSize; ++y) {
-                for (int x = 0; x < snapshot.sectionSize; ++x) {
+        const int maxWaterSamples = std::max(volume.x, std::max(volume.y, volume.z)) + 2;
+        for (int z = 0; z < volume.z; ++z) {
+            for (int y = 0; y < volume.y; ++y) {
+                for (int x = 0; x < volume.x; ++x) {
                     ++fallbackCellsVisited;
                     const uint32_t id = snapshotBlockAt(snapshot, x, y, z);
                     const VoxelMeshingPrototypeTraits& traits = traitsFor(id);
                     if (!traits.renderableBlock) continue;
                     ++fallbackRenderableBlocks;
-                    if (binaryGreedyBuilt && traits.binaryGreedyRenderable) continue;
+                    if (traits.columnHiddenFaceRenderable) {
+                        primaryFaces += appendColumnHiddenTerrainCellFaces(
+                            snapshot,
+                            prototypeTraits,
+                            glm::ivec3(x, y, z),
+                            traits,
+                            outMesh.opaqueFaces
+                        );
+                        continue;
+                    }
 
                     const bool isLeaf = traits.leaf;
                     const bool isTallGrass = traits.tallGrass;
@@ -1918,7 +1808,17 @@ namespace VoxelMeshUploadSystemLogic {
                         constexpr float kSlopeTopPosZ = -8.0f;
                         constexpr float kSlopeTopNegZ = -9.0f;
 
+                        auto slopeFaceVisible = [&](int faceType) {
+                            const glm::ivec3 neighborLocal =
+                                glm::ivec3(x, y, z) + kFaceNormals[static_cast<size_t>(faceType)];
+                            const uint32_t neighborId =
+                                snapshotBlockAt(snapshot, neighborLocal.x, neighborLocal.y, neighborLocal.z);
+                            const VoxelMeshingPrototypeTraits& neighborTraits = traitsFor(neighborId);
+                            return !neighborTraits.opaqueBlock;
+                        };
+
                         auto pushSlopeFace = [&](int faceType, float alphaTag) {
+                            if (!slopeFaceVisible(faceType)) return;
                             FaceInstanceRenderData face{};
                             const glm::vec3 normal = glm::vec3(kFaceNormals[static_cast<size_t>(faceType)]);
                             face.position = glm::vec3(worldCell) + normal * 0.5f;
@@ -2102,14 +2002,14 @@ namespace VoxelMeshUploadSystemLogic {
                                     prototypeTraits,
                                     localCell,
                                     -kFaceNormals[static_cast<size_t>(faceType)],
-                                    snapshot.sectionSize + 2
+                                    maxWaterSamples
                                 ),
                                 countContiguousWater(
                                     snapshot,
                                     prototypeTraits,
                                     localCell,
                                     glm::ivec3(0, -1, 0),
-                                    snapshot.sectionSize + 2
+                                    maxWaterSamples
                                 ),
                                 0.0f,
                                 0.0f
@@ -2204,17 +2104,17 @@ namespace VoxelMeshUploadSystemLogic {
             ? (afterFallbackFaces - beforeFallbackFaces)
             : 0u;
 
-        outMesh.builtWithFaceCulling = false;
+        outMesh.builtWithFaceCulling = true;
         const float prepareMs = std::chrono::duration<float, std::milli>(
             std::chrono::steady_clock::now() - prepareStart
         ).count();
         recordMeshBuildPerf(
             snapshot,
-            binaryGreedyBuilt,
+            primaryFaces > 0,
             prepareMs,
-            greedyMs,
+            primaryMs,
             fallbackMs,
-            greedyFaces,
+            primaryFaces,
             fallbackFaces,
             fallbackCellsVisited,
             fallbackRenderableBlocks,
@@ -2303,7 +2203,60 @@ namespace VoxelMeshUploadSystemLogic {
                 voxelWorld.clearSectionDirty(key);
             }
 
-            const size_t uploadPendingBeforeStats = voxelRender.renderBuffersDirty.size();
+            std::vector<VoxelColumnKey> staleColumnBuffers;
+            for (const auto& [key, _] : voxelRender.columnRenderBuffers) {
+                auto it = voxelWorld.columns.find(key);
+                if (it == voxelWorld.columns.end() || it->second.nonAirCount <= 0) {
+                    staleColumnBuffers.push_back(key);
+                }
+            }
+            for (const auto& key : staleColumnBuffers) {
+                ::RenderInitSystemLogic::DestroyChunkRenderBuffers(voxelRender.columnRenderBuffers[key], renderBackend);
+                voxelRender.columnRenderBuffers.erase(key);
+                auto clustersIt = voxelRender.columnRenderClusters.find(key);
+                if (clustersIt != voxelRender.columnRenderClusters.end()) {
+                    DestroyVoxelRenderClusters(clustersIt->second, renderBackend);
+                    voxelRender.columnRenderClusters.erase(clustersIt);
+                }
+            }
+
+            std::vector<VoxelColumnKey> stalePreparedColumns;
+            std::vector<VoxelColumnKey> clearDirtyColumns;
+            for (const auto& [key, prepared] : voxelRender.preparedColumnMeshes) {
+                (void)prepared;
+                auto it = voxelWorld.columns.find(key);
+                if (it == voxelWorld.columns.end() || it->second.nonAirCount <= 0) {
+                    stalePreparedColumns.push_back(key);
+                    clearDirtyColumns.push_back(key);
+                }
+            }
+            for (const auto& key : stalePreparedColumns) {
+                voxelRender.preparedColumnMeshes.erase(key);
+                voxelRender.wireframeColumnMeshes.erase(key);
+                voxelRender.columnRenderBuffersDirty.erase(key);
+            }
+            for (const auto& key : clearDirtyColumns) {
+                voxelWorld.clearColumnDirty(key);
+            }
+            clearDirtyColumns.clear();
+
+            std::vector<VoxelColumnKey> staleColumnUploadKeys;
+            for (const auto& key : voxelRender.columnRenderBuffersDirty) {
+                auto it = voxelWorld.columns.find(key);
+                if (it == voxelWorld.columns.end() || it->second.nonAirCount <= 0) {
+                    staleColumnUploadKeys.push_back(key);
+                    clearDirtyColumns.push_back(key);
+                }
+            }
+            for (const auto& key : staleColumnUploadKeys) {
+                voxelRender.columnRenderBuffersDirty.erase(key);
+            }
+            for (const auto& key : clearDirtyColumns) {
+                voxelWorld.clearColumnDirty(key);
+            }
+
+            const size_t uploadPendingBeforeStats =
+                voxelRender.renderBuffersDirty.size() + voxelRender.columnRenderBuffersDirty.size();
             size_t uploadedSectionsStats = 0;
             size_t uploadCandidatesStats = 0;
             size_t uploadedClustersStats = 0;
@@ -2320,7 +2273,7 @@ namespace VoxelMeshUploadSystemLogic {
                 "voxelNearClusterSplitEnabled",
                 true
             );
-            if (!voxelRender.renderBuffersDirty.empty()) {
+            if (!voxelRender.renderBuffersDirty.empty() || !voxelRender.columnRenderBuffersDirty.empty()) {
                 auto start = std::chrono::steady_clock::now();
                 const int baseUploadMaxSections = std::max(
                     1,
@@ -2349,9 +2302,10 @@ namespace VoxelMeshUploadSystemLogic {
                     0.05f,
                     1.0f
                 );
-                const size_t sectionCount = voxelWorld.sections.size();
-                const size_t meshCount = voxelRender.renderBuffers.size();
-                const size_t readyUploadBacklog = voxelRender.renderBuffersDirty.size();
+                const size_t sectionCount = voxelWorld.sections.size() + voxelWorld.columns.size();
+                const size_t meshCount = voxelRender.renderBuffers.size() + voxelRender.columnRenderBuffers.size();
+                const size_t readyUploadBacklog =
+                    voxelRender.renderBuffersDirty.size() + voxelRender.columnRenderBuffersDirty.size();
                 const bool uploadBacklogActive =
                     readyUploadBacklog > static_cast<size_t>(std::max(1, uploadMaxSections));
                 const bool bootstrapActive = bootstrapEnabled
@@ -2416,6 +2370,10 @@ namespace VoxelMeshUploadSystemLogic {
                     VoxelSectionKey key;
                     float dist2 = 0.0f;
                 };
+                struct ColumnCandidate {
+                    VoxelColumnKey key;
+                    float dist2 = 0.0f;
+                };
                 std::vector<Candidate> candidates;
                 candidates.reserve(voxelRender.renderBuffersDirty.size());
                 for (const auto& key : voxelRender.renderBuffersDirty) {
@@ -2427,12 +2385,31 @@ namespace VoxelMeshUploadSystemLogic {
                         sectionDist2ToCamera(it->second, playerPos)
                     });
                 }
-                uploadCandidatesStats = candidates.size();
+                std::vector<ColumnCandidate> columnCandidates;
+                columnCandidates.reserve(voxelRender.columnRenderBuffersDirty.size());
+                for (const auto& key : voxelRender.columnRenderBuffersDirty) {
+                    auto it = voxelWorld.columns.find(key);
+                    if (it == voxelWorld.columns.end() || it->second.nonAirCount <= 0) continue;
+                    const VoxelColumn& column = it->second;
+                    const glm::vec3 center(
+                        (static_cast<float>(key.coord.x) + 0.5f) * static_cast<float>(std::max(1, column.chunkSize)),
+                        0.5f * static_cast<float>(column.minY + column.maxYExclusive),
+                        (static_cast<float>(key.coord.y) + 0.5f) * static_cast<float>(std::max(1, column.chunkSize))
+                    );
+                    const glm::vec3 delta = center - playerPos;
+                    columnCandidates.push_back({key, glm::dot(delta, delta)});
+                }
+                uploadCandidatesStats = candidates.size() + columnCandidates.size();
                 std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) {
                     if (a.dist2 != b.dist2) return a.dist2 < b.dist2;
                     if (a.key.coord.x != b.key.coord.x) return a.key.coord.x < b.key.coord.x;
                     if (a.key.coord.y != b.key.coord.y) return a.key.coord.y < b.key.coord.y;
                     return a.key.coord.z < b.key.coord.z;
+                });
+                std::sort(columnCandidates.begin(), columnCandidates.end(), [](const ColumnCandidate& a, const ColumnCandidate& b) {
+                    if (a.dist2 != b.dist2) return a.dist2 < b.dist2;
+                    if (a.key.coord.x != b.key.coord.x) return a.key.coord.x < b.key.coord.x;
+                    return a.key.coord.y < b.key.coord.y;
                 });
 
                 for (const Candidate& c : candidates) {
@@ -2529,6 +2506,113 @@ namespace VoxelMeshUploadSystemLogic {
                         ++uploadedSectionsStats;
                     }
                 }
+                for (const ColumnCandidate& c : columnCandidates) {
+                    if (static_cast<int>(uploadedSectionsStats) >= uploadMaxSections) break;
+                    const auto now = std::chrono::steady_clock::now();
+                    const double elapsedMs = std::chrono::duration<double, std::milli>(now - start).count();
+                    if (elapsedMs >= static_cast<double>(uploadMaxMs)) break;
+
+                    auto it = voxelWorld.columns.find(c.key);
+                    if (it == voxelWorld.columns.end() || it->second.nonAirCount <= 0) {
+                        voxelRender.preparedColumnMeshes.erase(c.key);
+                        voxelRender.wireframeColumnMeshes.erase(c.key);
+                        voxelRender.columnRenderBuffersDirty.erase(c.key);
+                        voxelWorld.clearColumnDirty(c.key);
+                        continue;
+                    }
+
+                    auto preparedIt = voxelRender.preparedColumnMeshes.find(c.key);
+                    if (preparedIt == voxelRender.preparedColumnMeshes.end()) {
+                        continue;
+                    }
+
+                    const uint64_t currentDirtyTicket = voxelWorld.getColumnDirtyTicket(c.key);
+                    if (currentDirtyTicket == 0) {
+                        voxelRender.preparedColumnMeshes.erase(preparedIt);
+                        voxelRender.wireframeColumnMeshes.erase(c.key);
+                        voxelRender.columnRenderBuffersDirty.erase(c.key);
+                        continue;
+                    }
+
+                    if (preparedIt->second.dirtyTicket != currentDirtyTicket) {
+                        voxelRender.preparedColumnMeshes.erase(preparedIt);
+                        continue;
+                    }
+
+                    const VoxelColumn& column = it->second;
+                    glm::ivec3 preparedVolumeSize = preparedIt->second.volumeSize;
+                    if (preparedVolumeSize.x <= 0 || preparedVolumeSize.y <= 0 || preparedVolumeSize.z <= 0) {
+                        const int columnHeight = std::max(0, column.maxYExclusive - column.minY);
+                        preparedVolumeSize = glm::ivec3(column.chunkSize, columnHeight, column.chunkSize);
+                    }
+                    glm::vec3 volumeBase(preparedIt->second.volumeBase);
+                    if (preparedIt->second.volumeSize.x <= 0
+                        || preparedIt->second.volumeSize.y <= 0
+                        || preparedIt->second.volumeSize.z <= 0) {
+                        volumeBase = glm::vec3(
+                            static_cast<float>(c.key.coord.x * column.chunkSize),
+                            static_cast<float>(column.minY),
+                            static_cast<float>(c.key.coord.y * column.chunkSize)
+                        );
+                    }
+
+                    std::vector<VoxelRenderCluster> replacementClusters;
+                    const bool builtReplacementClusters = uploadDetailStats.clusterSplitEnabled
+                        ? SplitPreparedMeshIntoVolumeClusters(
+                              preparedIt->second,
+                              volumeBase,
+                              preparedVolumeSize,
+                              replacementClusters,
+                              renderer,
+                              renderBackend,
+                              &uploadDetailStats
+                          )
+                        : UploadPreparedVolumeAsSingleCluster(
+                              preparedIt->second,
+                              volumeBase,
+                              preparedVolumeSize,
+                              replacementClusters,
+                              renderer,
+                              renderBackend,
+                              &uploadDetailStats
+                          );
+                    if (!builtReplacementClusters) continue;
+
+                    const auto publishStart = std::chrono::steady_clock::now();
+                    ChunkRenderBuffers replacementMarker{};
+                    replacementMarker.usesTexturedFaceBuffers = preparedIt->second.usesTexturedFaceBuffers;
+                    replacementMarker.builtWithFaceCulling = preparedIt->second.builtWithFaceCulling;
+
+                    auto existingClusters = voxelRender.columnRenderClusters.find(c.key);
+                    if (existingClusters != voxelRender.columnRenderClusters.end()) {
+                        std::vector<VoxelRenderCluster> oldClusters = std::move(existingClusters->second);
+                        existingClusters->second = std::move(replacementClusters);
+                        DestroyVoxelRenderClusters(oldClusters, renderBackend);
+                    } else {
+                        voxelRender.columnRenderClusters.emplace(c.key, std::move(replacementClusters));
+                    }
+
+                    auto existingBuffers = voxelRender.columnRenderBuffers.find(c.key);
+                    if (existingBuffers != voxelRender.columnRenderBuffers.end()) {
+                        ::RenderInitSystemLogic::DestroyChunkRenderBuffers(existingBuffers->second, renderBackend);
+                        existingBuffers->second = std::move(replacementMarker);
+                    } else {
+                        voxelRender.columnRenderBuffers.emplace(c.key, std::move(replacementMarker));
+                    }
+
+                    auto publishedClusters = voxelRender.columnRenderClusters.find(c.key);
+                    uploadedClustersStats += publishedClusters != voxelRender.columnRenderClusters.end()
+                        ? publishedClusters->second.size()
+                        : 0u;
+                    uploadDetailStats.publishMs += std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - publishStart
+                    ).count();
+                    voxelRender.wireframeColumnMeshes[c.key] = std::move(preparedIt->second);
+                    voxelRender.preparedColumnMeshes.erase(preparedIt);
+                    voxelRender.columnRenderBuffersDirty.erase(c.key);
+                    voxelWorld.clearColumnDirty(c.key);
+                    ++uploadedSectionsStats;
+                }
                 const float elapsedMs = std::chrono::duration<float, std::milli>(
                     std::chrono::steady_clock::now() - start
                 ).count();
@@ -2541,7 +2625,8 @@ namespace VoxelMeshUploadSystemLogic {
                     std::cout << "RenderSystem: uploaded " << uploadedSectionsStats
                               << " prepared voxel section buffer(s) in "
                               << elapsedMs << " ms"
-                              << " (pending " << voxelRender.renderBuffersDirty.size()
+                              << " (pending " << (voxelRender.renderBuffersDirty.size()
+                                                   + voxelRender.columnRenderBuffersDirty.size())
                               << ", cap " << uploadMaxSections
                               << ", budget " << uploadMaxMs << "ms"
 	                              << ", bootstrap " << (bootstrapActive ? "on" : "off")
@@ -2561,7 +2646,7 @@ namespace VoxelMeshUploadSystemLogic {
                 uploadElapsedMsStats,
                 uploadedSectionsStats,
                 uploadPendingBeforeStats,
-                voxelRender.renderBuffersDirty.size(),
+                voxelRender.renderBuffersDirty.size() + voxelRender.columnRenderBuffersDirty.size(),
                 uploadCandidatesStats,
                 uploadedClustersStats,
                 uploadDetailStats,

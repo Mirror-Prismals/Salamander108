@@ -897,6 +897,10 @@ int jack_process_callback(jack_nframes_t nframes, void* arg) {
         if (chuckOutL || chuckOutR) {
             const float monoScale = 0.5f;
             const float chuckMainGain = audioContext->chuckMainLevelGain.load(std::memory_order_relaxed);
+            auto isMainChuckBusChannel = [&](int ch) {
+                if (ch == 0 || ch == 1) return true;
+                return audioContext->chuckMainChannel >= 0 && ch == audioContext->chuckMainChannel;
+            };
             const int echoChannel = audioContext->rayEchoChannel;
             const float echoGain = audioContext->rayEchoGain;
             const float echoDelaySeconds = audioContext->rayEchoDelaySeconds;
@@ -925,6 +929,7 @@ int jack_process_callback(jack_nframes_t nframes, void* arg) {
                 float outL = 0.0f;
                 float outR = 0.0f;
                 for (int ch = 0; ch < chuckChannels; ++ch) {
+                    if (!isMainChuckBusChannel(ch)) continue;
                     float chGain = (ch < static_cast<int>(audioContext->channelGains.size())) ? audioContext->channelGains[ch] : 1.0f;
                     float sample = audioContext->chuckInterleavedBuffer[i * chuckChannels + ch] * chGain;
                     sample *= chuckMainGain;

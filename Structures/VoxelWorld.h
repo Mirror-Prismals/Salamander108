@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <unordered_map>
 #include <unordered_set>
@@ -17,10 +18,16 @@ struct VoxelSectionKey {
 
 struct VoxelSectionKeyHash {
     std::size_t operator()(const VoxelSectionKey& key) const noexcept {
-        std::size_t hx = std::hash<int>()(key.coord.x);
-        std::size_t hy = std::hash<int>()(key.coord.y);
-        std::size_t hz = std::hash<int>()(key.coord.z);
-        return (hx << 1) ^ (hy << 2) ^ (hz << 3);
+        auto mix = [](uint64_t value) noexcept {
+            value += 0x9e3779b97f4a7c15ull;
+            value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ull;
+            value = (value ^ (value >> 27)) * 0x94d049bb133111ebull;
+            return value ^ (value >> 31);
+        };
+        uint64_t h = mix(static_cast<uint32_t>(key.coord.x));
+        h ^= mix(static_cast<uint32_t>(key.coord.y)) + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+        h ^= mix(static_cast<uint32_t>(key.coord.z)) + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+        return static_cast<std::size_t>(h);
     }
 };
 
@@ -35,9 +42,15 @@ struct VoxelColumnKey {
 
 struct VoxelColumnKeyHash {
     std::size_t operator()(const VoxelColumnKey& key) const noexcept {
-        std::size_t hx = std::hash<int>()(key.coord.x);
-        std::size_t hz = std::hash<int>()(key.coord.y);
-        return (hx << 1) ^ (hz << 3);
+        auto mix = [](uint64_t value) noexcept {
+            value += 0x9e3779b97f4a7c15ull;
+            value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ull;
+            value = (value ^ (value >> 27)) * 0x94d049bb133111ebull;
+            return value ^ (value >> 31);
+        };
+        uint64_t h = mix(static_cast<uint32_t>(key.coord.x));
+        h ^= mix(static_cast<uint32_t>(key.coord.y)) + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+        return static_cast<std::size_t>(h);
     }
 };
 
@@ -50,20 +63,31 @@ struct VoxelSection {
     std::vector<uint8_t> blockLight;
     int nonAirCount = 0;
     uint32_t editVersion = 0;
+    std::array<uint8_t, 6> visibilityFromFace{};
+    uint8_t openFaceMask = 0;
     bool dirty = false;
 };
 
 struct VoxelColumn {
     VoxelColumnKey key{};
     int chunkSize = 16;
-    int minY = -70;
-    int maxYExclusive = 335;
+    int minY = -64;
+    int maxYExclusive = 320;
     std::vector<uint32_t> ids;
     std::vector<uint32_t> colors;
     std::vector<uint8_t> skyLight;
     std::vector<uint8_t> blockLight;
     int nonAirCount = 0;
+    int contentMinY = 0;
+    int contentMaxY = -1;
     uint32_t editVersion = 0;
+};
+
+struct PendingVoxelColumnWrite {
+    glm::ivec3 worldPos{0};
+    uint32_t id = 0;
+    uint32_t color = 0;
+    bool onlyIfEmpty = false;
 };
 
 enum class VoxelChunkLifecycleStage : uint8_t {
@@ -108,8 +132,8 @@ struct VoxelSectionBuffers {
 
 struct VoxelWorldContext {
     int sectionSize = 16;
-    int columnMinY = -70;
-    int columnMaxYExclusive = 335;
+    int columnMinY = -64;
+    int columnMaxYExclusive = 320;
     bool enabled = false;
     uint8_t defaultSkyLightLevel = static_cast<uint8_t>(15);
     std::unordered_map<VoxelColumnKey, VoxelColumn, VoxelColumnKeyHash> columns;
@@ -119,7 +143,11 @@ struct VoxelWorldContext {
     std::unordered_map<VoxelSectionKey, VoxelChunkLifecycleState, VoxelSectionKeyHash> chunkStates;
     std::unordered_map<VoxelColumnKey, VoxelChunkLifecycleState, VoxelColumnKeyHash> columnStates;
     std::unordered_set<VoxelColumnKey, VoxelColumnKeyHash> dirtyColumns;
+    std::unordered_map<VoxelColumnKey, uint64_t, VoxelColumnKeyHash> dirtyColumnTickets;
+    std::unordered_map<VoxelColumnKey, std::vector<PendingVoxelColumnWrite>, VoxelColumnKeyHash> pendingColumnWrites;
     std::unordered_map<int, std::vector<VoxelSectionBuffers>> bufferPools;
+    bool columnFeatureWritesActive = false;
+    VoxelColumnKey columnFeatureOwner{};
     uint64_t nextDirtyTicket = 1;
 
     void reset();
@@ -143,6 +171,17 @@ struct VoxelWorldContext {
     uint8_t getBlockLightWorld(const glm::ivec3& worldPos) const;
     void setBlockWorld(const glm::ivec3& worldPos, uint32_t id, uint32_t color);
     void setBlock(const glm::ivec3& worldPos, uint32_t id, uint32_t color, bool markDirty = true);
+    bool setBlockIfEmpty(const glm::ivec3& worldPos, uint32_t id, uint32_t color, bool markDirty = true);
+    VoxelColumnKey columnKeyForWorldCell(const glm::ivec3& worldPos) const;
+    void beginColumnFeatureWrites(const VoxelColumnKey& ownerKey);
+    void endColumnFeatureWrites();
+    bool isColumnReadyForFeatureWrite(const VoxelColumnKey& key) const;
+    void enqueuePendingColumnWrite(const VoxelColumnKey& targetKey,
+                                   const glm::ivec3& worldPos,
+                                   uint32_t id,
+                                   uint32_t color,
+                                   bool onlyIfEmpty);
+    size_t applyPendingColumnWrites(const VoxelColumnKey& key, bool markDirty = false);
     VoxelColumn* ensureColumnForWrite(const VoxelColumnKey& key);
     bool writeColumnBlock(VoxelColumn& column, int localX, int worldY, int localZ, uint32_t id, uint32_t color);
     int writeColumnRun(VoxelColumn& column, int localX, int localZ, int minY, int maxY, uint32_t id, uint32_t color);
@@ -150,6 +189,9 @@ struct VoxelWorldContext {
     uint64_t markSectionDirty(const VoxelSectionKey& key);
     void clearSectionDirty(const VoxelSectionKey& key);
     uint64_t getSectionDirtyTicket(const VoxelSectionKey& key) const;
+    uint64_t markColumnDirty(const VoxelColumnKey& key);
+    void clearColumnDirty(const VoxelColumnKey& key);
+    uint64_t getColumnDirtyTicket(const VoxelColumnKey& key) const;
     void releaseSection(const VoxelSectionKey& key);
     void releaseColumn(const VoxelColumnKey& key);
 };

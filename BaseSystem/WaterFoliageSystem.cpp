@@ -35,10 +35,14 @@
             constexpr int kDepthFoliageTopY = -99;
 
             const int minX = sectionCoord.x * sectionSize;
-            const int minY = sectionCoord.y * sectionSize;
+            const int minY = voxelWorld.columnFeatureWritesActive
+                ? voxelWorld.columnMinY
+                : sectionCoord.y * sectionSize;
             const int minZ = sectionCoord.z * sectionSize;
             const int maxX = minX + sectionSize - 1;
-            const int maxY = minY + sectionSize - 1;
+            const int maxY = voxelWorld.columnFeatureWritesActive
+                ? voxelWorld.columnMaxYExclusive - 1
+                : minY + sectionSize - 1;
             const int maxZ = minZ + sectionSize - 1;
             auto inSection = [&](const glm::ivec3& cell) {
                 return cell.x >= minX && cell.x <= maxX

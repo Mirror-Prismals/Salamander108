@@ -111,6 +111,7 @@ namespace {
         size_t clusterCapacity = 0;
         if (baseSystem.voxelRender) {
             for (const auto& [_, clusters] : baseSystem.voxelRender->renderClusters) clusterCapacity += clusters.size();
+            for (const auto& [_, clusters] : baseSystem.voxelRender->columnRenderClusters) clusterCapacity += clusters.size();
         }
         const bool farTerrainEnabled = RenderInitSystemLogic::getRegistryBool(baseSystem, "FarTerrainEnabled", true);
         if (farTerrainEnabled && baseSystem.farTerrain && baseSystem.farTerrain->enabled) {
@@ -148,6 +149,13 @@ namespace {
             for (const auto& [sectionKey, clusters] : voxelRender.renderClusters) {
                 auto secIt = voxelWorld.sections.find(sectionKey);
                 if (secIt == voxelWorld.sections.end()) continue;
+                for (const VoxelRenderCluster& cluster : clusters) {
+                    appendCluster(cluster);
+                }
+            }
+            for (const auto& [columnKey, clusters] : voxelRender.columnRenderClusters) {
+                auto columnIt = voxelWorld.columns.find(columnKey);
+                if (columnIt == voxelWorld.columns.end() || columnIt->second.nonAirCount <= 0) continue;
                 for (const VoxelRenderCluster& cluster : clusters) {
                     appendCluster(cluster);
                 }

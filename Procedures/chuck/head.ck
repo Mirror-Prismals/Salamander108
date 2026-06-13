@@ -13,8 +13,8 @@
     chuck plains_ambient_main_loop.ck
 */
 
-// ----- master bus -----
-Gain MASTER => LPF MASTER_TONE => JCRev REV => dac;
+// ----- player-head bus -----
+Gain MASTER => LPF MASTER_TONE => JCRev REV => dac.chan(2);
 0.0 => MASTER.gain;
 6800 => MASTER_TONE.freq;
 0.17 => REV.mix;

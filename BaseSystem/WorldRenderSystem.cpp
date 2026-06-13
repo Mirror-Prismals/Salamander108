@@ -1,9 +1,16 @@
+#include <array>
+#include <deque>
+#include <unordered_set>
+
 namespace {
     struct VoxelRenderCollectStats {
         size_t tested = 0;
         size_t visible = 0;
         size_t frustumRejected = 0;
         size_t occlusionRejected = 0;
+        size_t sectionVisibilityVisited = 0;
+        size_t sectionVisibilityRenderable = 0;
+        size_t sectionVisibilityRejected = 0;
         size_t trimmed = 0;
         size_t ahead = 0;
         size_t behind = 0;
@@ -87,6 +94,256 @@ namespace {
             }
         }
         return false;
+    }
+
+    constexpr uint8_t kAllVoxelSectionFacesMask = 0x3f;
+
+    int floorDivForVoxelRender(int value, int divisor) {
+        if (divisor <= 0) return 0;
+        if (value >= 0) return value / divisor;
+        return -(((-value) + divisor - 1) / divisor);
+    }
+
+    const std::array<glm::ivec3, 6>& voxelSectionFaceOffsets() {
+        static const std::array<glm::ivec3, 6> kOffsets = {
+            glm::ivec3(1, 0, 0),
+            glm::ivec3(-1, 0, 0),
+            glm::ivec3(0, 1, 0),
+            glm::ivec3(0, -1, 0),
+            glm::ivec3(0, 0, 1),
+            glm::ivec3(0, 0, -1)
+        };
+        return kOffsets;
+    }
+
+    int oppositeVoxelSectionFace(int face) {
+        switch (face) {
+            case 0: return 1;
+            case 1: return 0;
+            case 2: return 3;
+            case 3: return 2;
+            case 4: return 5;
+            case 5: return 4;
+            default: return -1;
+        }
+    }
+
+    VoxelSectionKey voxelSectionKeyForWorldPosition(const glm::vec3& worldPos, int sectionSize) {
+        const glm::ivec3 cell(
+            static_cast<int>(std::floor(worldPos.x)),
+            static_cast<int>(std::floor(worldPos.y)),
+            static_cast<int>(std::floor(worldPos.z))
+        );
+        return VoxelSectionKey{glm::ivec3(
+            floorDivForVoxelRender(cell.x, sectionSize),
+            floorDivForVoxelRender(cell.y, sectionSize),
+            floorDivForVoxelRender(cell.z, sectionSize)
+        )};
+    }
+
+    bool voxelSectionOverlapsColumnProfile(const VoxelWorldContext& voxelWorld,
+                                           const VoxelSectionKey& key) {
+        const int size = std::max(1, voxelWorld.sectionSize);
+        const int sectionMinY = key.coord.y * size;
+        const int sectionMaxYExclusive = sectionMinY + size;
+        return sectionMaxYExclusive > voxelWorld.columnMinY
+            && sectionMinY < voxelWorld.columnMaxYExclusive;
+    }
+
+    bool voxelSectionTraversalNodeExists(const VoxelWorldContext& voxelWorld,
+                                         const VoxelSectionKey& key) {
+        if (!voxelSectionOverlapsColumnProfile(voxelWorld, key)) return false;
+        if (voxelWorld.sections.find(key) != voxelWorld.sections.end()) return true;
+
+        const VoxelColumnKey columnKey{glm::ivec2(key.coord.x, key.coord.z)};
+        if (voxelWorld.columns.find(columnKey) == voxelWorld.columns.end()) return false;
+        const VoxelChunkLifecycleState* columnState = voxelWorld.findColumnState(columnKey);
+        return columnState == nullptr || columnState->isFullyReady();
+    }
+
+    uint8_t voxelSectionCameraComponentExitMask(const VoxelSection& section,
+                                                const glm::ivec3& cameraCell) {
+        const int size = section.size;
+        if (size <= 0) return 0;
+        const glm::ivec3 local = cameraCell - section.coord * size;
+        if (local.x < 0 || local.x >= size
+            || local.y < 0 || local.y >= size
+            || local.z < 0 || local.z >= size) {
+            return section.openFaceMask;
+        }
+        const int count = size * size * size;
+        const int startIdx = local.x + local.y * size + local.z * size * size;
+        if (startIdx < 0 || startIdx >= count) return section.openFaceMask;
+        if (static_cast<int>(section.ids.size()) < count) return section.openFaceMask;
+        if (section.ids[static_cast<size_t>(startIdx)] != 0u) return section.openFaceMask;
+
+        std::vector<uint8_t> visited(static_cast<size_t>(count), 0);
+        std::vector<int> stack;
+        stack.reserve(static_cast<size_t>(std::max(1, count - section.nonAirCount)));
+        visited[static_cast<size_t>(startIdx)] = 1;
+        stack.push_back(startIdx);
+
+        uint8_t mask = 0;
+        auto tryPush = [&](int idx) {
+            if (idx < 0 || idx >= count) return;
+            const size_t slot = static_cast<size_t>(idx);
+            if (visited[slot] != 0 || section.ids[slot] != 0u) return;
+            visited[slot] = 1;
+            stack.push_back(idx);
+        };
+
+        while (!stack.empty()) {
+            const int idx = stack.back();
+            stack.pop_back();
+            const int z = idx / (size * size);
+            const int rem = idx - z * size * size;
+            const int y = rem / size;
+            const int x = rem - y * size;
+
+            if (x == size - 1) mask |= static_cast<uint8_t>(1u << 0);
+            if (x == 0) mask |= static_cast<uint8_t>(1u << 1);
+            if (y == size - 1) mask |= static_cast<uint8_t>(1u << 2);
+            if (y == 0) mask |= static_cast<uint8_t>(1u << 3);
+            if (z == size - 1) mask |= static_cast<uint8_t>(1u << 4);
+            if (z == 0) mask |= static_cast<uint8_t>(1u << 5);
+
+            if (x + 1 < size) tryPush(idx + 1);
+            if (x - 1 >= 0) tryPush(idx - 1);
+            if (y + 1 < size) tryPush(idx + size);
+            if (y - 1 >= 0) tryPush(idx - size);
+            if (z + 1 < size) tryPush(idx + size * size);
+            if (z - 1 >= 0) tryPush(idx - size * size);
+        }
+
+        return mask;
+    }
+
+    struct VoxelSectionVisibilityTraversal {
+        bool active = false;
+        size_t visitedNodes = 0;
+        std::unordered_set<VoxelSectionKey, VoxelSectionKeyHash> visibleRenderSections;
+    };
+
+    struct VoxelSectionVisibilityCache {
+        const VoxelWorldContext* voxelWorld = nullptr;
+        const VoxelRenderContext* voxelRender = nullptr;
+        VoxelSectionKey cameraSection{};
+        bool cameraSectionValid = false;
+        int framesUntilRefresh = 0;
+        VoxelSectionVisibilityTraversal traversal;
+    };
+
+    VoxelSectionVisibilityCache gVoxelSectionVisibilityCache;
+
+    VoxelSectionVisibilityTraversal collectVoxelSectionVisibility(const VoxelWorldContext& voxelWorld,
+                                                                  const VoxelRenderContext& voxelRender,
+                                                                  const glm::vec3& cameraPos) {
+        VoxelSectionVisibilityTraversal result;
+        if (!voxelWorld.enabled || voxelWorld.columns.empty() || voxelRender.renderClusters.empty()) {
+            return result;
+        }
+
+        const int size = std::max(1, voxelWorld.sectionSize);
+        const glm::ivec3 cameraCell(
+            static_cast<int>(std::floor(cameraPos.x)),
+            static_cast<int>(std::floor(cameraPos.y)),
+            static_cast<int>(std::floor(cameraPos.z))
+        );
+        VoxelSectionKey startKey = voxelSectionKeyForWorldPosition(cameraPos, size);
+        if (!voxelSectionTraversalNodeExists(voxelWorld, startKey)) {
+            const int minSectionY = floorDivForVoxelRender(voxelWorld.columnMinY, size);
+            const int maxSectionY = floorDivForVoxelRender(voxelWorld.columnMaxYExclusive - 1, size);
+            VoxelSectionKey clampedKey = startKey;
+            clampedKey.coord.y = glm::clamp(startKey.coord.y, minSectionY, maxSectionY);
+            if (voxelSectionTraversalNodeExists(voxelWorld, clampedKey)) {
+                startKey = clampedKey;
+            } else {
+                return result;
+            }
+        }
+
+        result.active = true;
+        result.visibleRenderSections.reserve(voxelRender.renderClusters.size());
+
+        struct TraversalNode {
+            VoxelSectionKey key;
+            int entryFace = -1;
+        };
+        std::deque<TraversalNode> queue;
+        std::unordered_set<VoxelSectionKey, VoxelSectionKeyHash> visited;
+        const int minSectionY = floorDivForVoxelRender(voxelWorld.columnMinY, size);
+        const int maxSectionY = floorDivForVoxelRender(voxelWorld.columnMaxYExclusive - 1, size);
+        const size_t loadedNodeCapacity = voxelWorld.columns.size()
+            * static_cast<size_t>(std::max(1, maxSectionY - minSectionY + 1));
+        visited.reserve(loadedNodeCapacity);
+        visited.insert(startKey);
+        queue.push_back({startKey, -1});
+
+        const auto& offsets = voxelSectionFaceOffsets();
+        while (!queue.empty()) {
+            const TraversalNode node = queue.front();
+            queue.pop_front();
+            ++result.visitedNodes;
+
+            if (voxelRender.renderClusters.find(node.key) != voxelRender.renderClusters.end()) {
+                result.visibleRenderSections.insert(node.key);
+            }
+
+            uint8_t exitMask = kAllVoxelSectionFacesMask;
+            const auto sectionIt = voxelWorld.sections.find(node.key);
+            if (sectionIt != voxelWorld.sections.end()) {
+                const VoxelSection& section = sectionIt->second;
+                if (node.entryFace >= 0 && node.entryFace < 6) {
+                    exitMask = section.visibilityFromFace[static_cast<size_t>(node.entryFace)];
+                } else if (node.key == startKey) {
+                    exitMask = voxelSectionCameraComponentExitMask(section, cameraCell);
+                } else {
+                    exitMask = section.openFaceMask;
+                }
+            }
+            if (exitMask == 0) continue;
+
+            for (int face = 0; face < 6; ++face) {
+                if ((exitMask & static_cast<uint8_t>(1u << face)) == 0) continue;
+                VoxelSectionKey neighborKey{node.key.coord + offsets[static_cast<size_t>(face)]};
+                if (visited.find(neighborKey) != visited.end()) continue;
+                if (!voxelSectionTraversalNodeExists(voxelWorld, neighborKey)) continue;
+                visited.insert(neighborKey);
+                queue.push_back({neighborKey, oppositeVoxelSectionFace(face)});
+            }
+        }
+
+        return result;
+    }
+
+    const VoxelSectionVisibilityTraversal& collectVoxelSectionVisibilityCached(
+        const VoxelWorldContext& voxelWorld,
+        const VoxelRenderContext& voxelRender,
+        const glm::vec3& cameraPos,
+        int refreshFrames) {
+        const int size = std::max(1, voxelWorld.sectionSize);
+        const VoxelSectionKey cameraSection = voxelSectionKeyForWorldPosition(cameraPos, size);
+        refreshFrames = std::max(1, refreshFrames);
+
+        const bool cacheMatches =
+            gVoxelSectionVisibilityCache.voxelWorld == &voxelWorld
+            && gVoxelSectionVisibilityCache.voxelRender == &voxelRender
+            && gVoxelSectionVisibilityCache.cameraSectionValid
+            && gVoxelSectionVisibilityCache.cameraSection == cameraSection;
+
+        if (!cacheMatches || gVoxelSectionVisibilityCache.framesUntilRefresh <= 0) {
+            gVoxelSectionVisibilityCache.voxelWorld = &voxelWorld;
+            gVoxelSectionVisibilityCache.voxelRender = &voxelRender;
+            gVoxelSectionVisibilityCache.cameraSection = cameraSection;
+            gVoxelSectionVisibilityCache.cameraSectionValid = true;
+            gVoxelSectionVisibilityCache.framesUntilRefresh = refreshFrames;
+            gVoxelSectionVisibilityCache.traversal =
+                collectVoxelSectionVisibility(voxelWorld, voxelRender, cameraPos);
+            return gVoxelSectionVisibilityCache.traversal;
+        }
+
+        --gVoxelSectionVisibilityCache.framesUntilRefresh;
+        return gVoxelSectionVisibilityCache.traversal;
     }
 
     float dimensionDayFractionForWorldRender(const BaseSystem& baseSystem, float dayFraction) {
@@ -284,6 +541,15 @@ namespace WorldRenderSystemLogic {
             "OcclusionCullingCullFarTerrain",
             false
         );
+        const bool voxelSectionVisibilityCulling = RenderInitSystemLogic::getRegistryBool(
+            baseSystem,
+            "VoxelSectionVisibilityCulling",
+            true
+        );
+        const int voxelSectionVisibilityRefreshFrames = std::max(
+            1,
+            RenderInitSystemLogic::getRegistryInt(baseSystem, "VoxelSectionVisibilityRefreshFrames", 4)
+        );
         const int voxelSectionSizeBlocks = baseSystem.voxelWorld
             ? std::max(1, baseSystem.voxelWorld->sectionSize)
             : 16;
@@ -347,10 +613,65 @@ namespace WorldRenderSystemLogic {
             VoxelRenderContext& voxelRender = *baseSystem.voxelRender;
             size_t clusterCapacity = 0;
             for (const auto& [_, clusters] : voxelRender.renderClusters) clusterCapacity += clusters.size();
+            for (const auto& [_, clusters] : voxelRender.columnRenderClusters) clusterCapacity += clusters.size();
             outSections.reserve(clusterCapacity);
+
+            const VoxelSectionVisibilityTraversal* sectionVisibility = nullptr;
+            if (!mapViewActive && voxelSectionVisibilityCulling) {
+                sectionVisibility = &collectVoxelSectionVisibilityCached(
+                    voxelWorld,
+                    voxelRender,
+                    cameraPos,
+                    voxelSectionVisibilityRefreshFrames
+                );
+                if (stats) {
+                    stats->sectionVisibilityVisited = sectionVisibility->visitedNodes;
+                    stats->sectionVisibilityRenderable = sectionVisibility->visibleRenderSections.size();
+                }
+            }
+
             for (const auto& [sectionKey, clusters] : voxelRender.renderClusters) {
                 auto secIt = voxelWorld.sections.find(sectionKey);
                 if (secIt == voxelWorld.sections.end()) continue;
+                if (sectionVisibility
+                    && sectionVisibility->active
+                    && sectionVisibility->visibleRenderSections.find(sectionKey)
+                        == sectionVisibility->visibleRenderSections.end()) {
+                    if (stats) stats->sectionVisibilityRejected += clusters.size();
+                    continue;
+                }
+                for (const VoxelRenderCluster& cluster : clusters) {
+                    if (stats) ++stats->tested;
+                    const glm::vec3 center = 0.5f * (cluster.minBounds + cluster.maxBounds);
+                    const glm::vec3 delta = center - cameraPos;
+                    const float depth = glm::dot(delta, cameraForward);
+                    if (stats) {
+                        if (depth >= 0.0f) ++stats->ahead;
+                        else ++stats->behind;
+                    }
+                    if (!mapViewActive
+                        && !FrustumCullingSystemLogic::ShouldRenderVoxelTerrainAabb(baseSystem, cluster.minBounds, cluster.maxBounds)) {
+                        if (stats) {
+                            ++stats->frustumRejected;
+                            if (depth >= 0.0f) ++stats->frustumRejectedAhead;
+                            else ++stats->frustumRejectedBehind;
+                        }
+                        continue;
+                    }
+                    if (!mapViewActive
+                        && occlusionCullFarTerrain
+                        && OcclusionCullingSystemLogic::IsWorldAabbOccluded(baseSystem, cluster.minBounds, cluster.maxBounds)) {
+                        if (stats) ++stats->occlusionRejected;
+                        continue;
+                    }
+                    const float dist2 = glm::dot(delta, delta);
+                    const float viewPriority = voxelTerrainViewPriority(cameraPos, center, delta, dist2);
+                    outSections.push_back({&cluster.buffers, cluster.minBounds, cluster.maxBounds, dist2, viewPriority});
+                    if (stats) ++stats->visible;
+                }
+            }
+            for (const auto& [columnKey, clusters] : voxelRender.columnRenderClusters) {
+                if (voxelWorld.columns.find(columnKey) == voxelWorld.columns.end()) continue;
                 for (const VoxelRenderCluster& cluster : clusters) {
                     if (stats) ++stats->tested;
                     const glm::vec3 center = 0.5f * (cluster.minBounds + cluster.maxBounds);
@@ -532,8 +853,10 @@ namespace WorldRenderSystemLogic {
         MiniModelSystemLogic::AppendWorkbenchFaces(baseSystem, faceInstances);
 
         if (RenderInitSystemLogic::getRegistryBool(baseSystem, "DebugVoxelRender", false) && baseSystem.voxelWorld) {
-            size_t sectionCount = baseSystem.voxelWorld->sections.size();
-            size_t renderCount = baseSystem.voxelRender ? baseSystem.voxelRender->renderBuffers.size() : 0;
+            size_t sectionCount = baseSystem.voxelWorld->sections.size() + baseSystem.voxelWorld->columns.size();
+            size_t renderCount = baseSystem.voxelRender
+                ? baseSystem.voxelRender->renderBuffers.size() + baseSystem.voxelRender->columnRenderBuffers.size()
+                : 0;
             std::cout << "[DebugVoxelRender] sections=" << sectionCount
                       << " renderBuffers=" << renderCount
                       << " useVoxelRendering=" << (useVoxelRendering ? 1 : 0)
@@ -1449,6 +1772,9 @@ namespace WorldRenderSystemLogic {
                           << "/" << mainVoxelCollectStats.frustumRejected
                           << "/" << mainVoxelCollectStats.occlusionRejected
                           << "/" << mainVoxelCollectStats.trimmed
+                          << " sectionVis=" << mainVoxelCollectStats.sectionVisibilityVisited
+                          << "/" << mainVoxelCollectStats.sectionVisibilityRenderable
+                          << "/" << mainVoxelCollectStats.sectionVisibilityRejected
                           << " mainDir=" << mainVoxelCollectStats.ahead
                           << "/" << mainVoxelCollectStats.behind
                           << "/" << mainVoxelCollectStats.frustumRejectedAhead
@@ -1458,6 +1784,9 @@ namespace WorldRenderSystemLogic {
                           << "/" << reflectionVoxelCollectStats.frustumRejected
                           << "/" << reflectionVoxelCollectStats.occlusionRejected
                           << "/" << reflectionVoxelCollectStats.trimmed
+                          << " reflSectionVis=" << reflectionVoxelCollectStats.sectionVisibilityVisited
+                          << "/" << reflectionVoxelCollectStats.sectionVisibilityRenderable
+                          << "/" << reflectionVoxelCollectStats.sectionVisibilityRejected
                           << " draws=" << voxelSubmitStats.terrainDraws
                           << " binds=" << voxelSubmitStats.terrainBinds
                           << " drawKinds=" << voxelSubmitStats.clippedOpaqueDraws

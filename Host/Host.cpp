@@ -382,9 +382,6 @@ void Host::registerSystemFunctions() {
     functionRegistry["UpdateExpanseTrees"] = TreeGenerationSystemLogic::UpdateExpanseTrees;
     functionRegistry["UpdateTreeSectionScheduler"] = TreeSectionSchedulerSystemLogic::UpdateTreeSectionScheduler;
     functionRegistry["UpdateTreeCanopyGeneration"] = TreeGenerationSystemLogic::UpdateTreeCanopyGeneration;
-    functionRegistry["UpdateSurfaceFoliage"] = TreeGenerationSystemLogic::UpdateSurfaceFoliage;
-    functionRegistry["UpdateWaterFoliage"] = TreeGenerationSystemLogic::UpdateWaterFoliage;
-    functionRegistry["UpdateCaveDecor"] = TreeGenerationSystemLogic::UpdateCaveDecor;
     functionRegistry["ProcessStructurePlacement"] = StructurePlacementSystemLogic::ProcessStructurePlacement;
     functionRegistry["ProcessStructureCapture"] = StructureCaptureSystemLogic::ProcessStructureCapture;
     functionRegistry["UpdateBlockSelection"] = BlockSelectionSystemLogic::UpdateBlockSelection;

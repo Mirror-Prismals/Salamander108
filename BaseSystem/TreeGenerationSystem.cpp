@@ -86,10 +86,6 @@ namespace TreeGenerationSystemLogic {
             bool flowerEnabled = true;
             bool stickEnabled = true;
             bool waterFoliageEnabled = true;
-            bool caveStoneEnabled = true;
-            bool caveSlopeEnabled = true;
-            bool caveWallStoneEnabled = true;
-            bool caveCeilingStoneEnabled = true;
             bool temperateOnly = true;
             int grassSpawnModulo = 1;
             int grassCoverPercent = 35;
@@ -108,20 +104,6 @@ namespace TreeGenerationSystemLogic {
             int kelpSpawnPercent = 24;
             int seaUrchinSpawnPercent = 10;
             int sandDollarSpawnPercent = 22;
-            int caveStoneSpawnPercent = 10;
-            int caveStoneMinDepthFromSurface = 4;
-            bool cavePotEnabled = true;
-            int cavePotSpawnPercent = 25;
-            int cavePotMinDepthFromSurface = 3;
-            int cavePotPileMaxCount = 3;
-            int caveSlopeSpawnPercent = 12;
-            int caveSlopeMinDepthFromSurface = 4;
-            int caveSlopeLargePercent = 35;
-            int caveSlopeHugePercent = 18;
-            int caveWallStoneSpawnPercent = 8;
-            int caveWallStoneMinDepthFromSurface = 4;
-            int caveCeilingStoneSpawnPercent = 8;
-            int caveCeilingStoneMinDepthFromSurface = 4;
         };
 
         struct PineNubPlacement {
@@ -134,8 +116,6 @@ namespace TreeGenerationSystemLogic {
         static std::unordered_set<VoxelSectionKey, VoxelSectionKeyHash> g_treeBackfillVisited;
         static std::unordered_set<VoxelSectionKey, VoxelSectionKeyHash> g_treePendingDependencies;
         static std::unordered_set<VoxelSectionKey, VoxelSectionKeyHash> g_treePendingSections;
-        static std::deque<VoxelSectionKey> g_treeCaveContinuationQueue;
-        static std::unordered_set<VoxelSectionKey, VoxelSectionKeyHash> g_treeCaveContinuationQueued;
         static std::deque<VoxelSectionKey> g_treeImmediateQueue;
         static std::unordered_set<VoxelSectionKey, VoxelSectionKeyHash> g_treeImmediateQueued;
         static std::unordered_set<VoxelSectionKey, VoxelSectionKeyHash> g_treeForceCompleteSections;
@@ -150,18 +130,6 @@ namespace TreeGenerationSystemLogic {
             bool surfaceFoliageSeeded = false;
         };
         static std::unordered_map<VoxelSectionKey, TreeSectionProgress, VoxelSectionKeyHash> g_treeSectionProgress;
-        bool isCaveDecorContinuationPhase(int phase) {
-            return phase >= 5 && phase <= 9;
-        }
-        void enqueueCaveDecorContinuation(const VoxelSectionKey& key) {
-            if (g_treeCaveContinuationQueued.insert(key).second) {
-                g_treeCaveContinuationQueue.push_back(key);
-            }
-        }
-        void clearCaveDecorContinuationQueue() {
-            g_treeCaveContinuationQueue.clear();
-            g_treeCaveContinuationQueued.clear();
-        }
         void clearImmediateFoliageQueue() {
             g_treeImmediateQueue.clear();
             g_treeImmediateQueued.clear();
@@ -625,70 +593,6 @@ namespace TreeGenerationSystemLogic {
                 || name == "WallStoneTexNegZ";
         }
 
-        enum class CaveSlopeDir : int { None = 0, PosX = 1, NegX = 2, PosZ = 3, NegZ = 4 };
-
-        CaveSlopeDir caveSlopeDirFromName(const std::string& name) {
-            if (name == "DebugSlopeTexPosX") return CaveSlopeDir::PosX;
-            if (name == "DebugSlopeTexNegX") return CaveSlopeDir::NegX;
-            if (name == "DebugSlopeTexPosZ") return CaveSlopeDir::PosZ;
-            if (name == "DebugSlopeTexNegZ") return CaveSlopeDir::NegZ;
-            return CaveSlopeDir::None;
-        }
-
-        CaveSlopeDir caveSlopeDirFromExposedAirSide(const glm::ivec3& airOffset) {
-            // Exposed air marks the low side; slope high side points opposite.
-            if (airOffset.x > 0) return CaveSlopeDir::NegX;
-            if (airOffset.x < 0) return CaveSlopeDir::PosX;
-            // Z axes are flipped relative to the current slope prototype orientation.
-            if (airOffset.z > 0) return CaveSlopeDir::PosZ;
-            if (airOffset.z < 0) return CaveSlopeDir::NegZ;
-            return CaveSlopeDir::None;
-        }
-
-        glm::ivec3 caveSlopeLowDirection(CaveSlopeDir dir) {
-            switch (dir) {
-                case CaveSlopeDir::PosX: return glm::ivec3(-1, 0, 0);
-                case CaveSlopeDir::NegX: return glm::ivec3(1, 0, 0);
-                case CaveSlopeDir::PosZ: return glm::ivec3(0, 0, -1);
-                case CaveSlopeDir::NegZ: return glm::ivec3(0, 0, 1);
-                default: return glm::ivec3(0, 0, 0);
-            }
-        }
-
-        glm::ivec3 caveSlopePerpDirection(CaveSlopeDir dir) {
-            switch (dir) {
-                case CaveSlopeDir::PosX:
-                case CaveSlopeDir::NegX:
-                    return glm::ivec3(0, 0, 1);
-                case CaveSlopeDir::PosZ:
-                case CaveSlopeDir::NegZ:
-                    return glm::ivec3(1, 0, 0);
-                default:
-                    return glm::ivec3(0, 0, 0);
-            }
-        }
-
-        int caveSlopePrototypeForDir(CaveSlopeDir dir,
-                                     int slopeProtoPosX,
-                                     int slopeProtoNegX,
-                                     int slopeProtoPosZ,
-                                     int slopeProtoNegZ) {
-            switch (dir) {
-                case CaveSlopeDir::PosX: return slopeProtoPosX;
-                case CaveSlopeDir::NegX: return slopeProtoNegX;
-                case CaveSlopeDir::PosZ: return slopeProtoPosZ;
-                case CaveSlopeDir::NegZ: return slopeProtoNegZ;
-                default: return -1;
-            }
-        }
-
-        uint32_t caveStoneColorForCell(int worldX, int worldY, int worldZ) {
-            const uint32_t h = hash3D(worldX - 1021, worldY + 271, worldZ + 733);
-            const float tint = 0.92f + 0.08f * (static_cast<float>(h & 0xffu) / 255.0f);
-            const glm::vec3 c = glm::clamp(glm::vec3(tint), glm::vec3(0.0f), glm::vec3(1.0f));
-            return packColor(c);
-        }
-
         bool hasLeafCanopyNear(const VoxelWorldContext& voxelWorld,
                                int sectionTier,
                                int leafPrototypeID,
@@ -856,7 +760,6 @@ namespace TreeGenerationSystemLogic {
         #include "SurfaceFoliageSystem.cpp"
         #include "WaterFoliageSystem.cpp"
 
-        #include "CaveDecorSystem.cpp"
 
         #include "TreeCanopyGenerationSystem.cpp"
 
@@ -1109,17 +1012,9 @@ namespace TreeGenerationSystemLogic {
                                          int maxPasses) {
         if (maxPasses <= 0) maxPasses = 1;
         auto clearSurfaceOnlyPending = [&]() {
-            auto progressIt = g_treeSectionProgress.find(key);
-            if (progressIt != g_treeSectionProgress.end()
-                && isCaveDecorContinuationPhase(progressIt->second.phase)) {
-                g_treePendingSections.insert(key);
-                enqueueCaveDecorContinuation(key);
-                return;
-            }
             g_treePendingSections.erase(key);
             g_treePendingDependencies.erase(key);
             g_treeSectionProgress.erase(key);
-            g_treeCaveContinuationQueued.erase(key);
         };
         struct ForceCompleteGuard {
             VoxelSectionKey key;
@@ -1159,6 +1054,570 @@ namespace TreeGenerationSystemLogic {
             if (g_treeImmediateQueue.empty()) break;
             UpdateExpanseTrees(baseSystem, prototypes, 0.0f, {});
         }
+    }
+
+    bool GenerateColumnTerrainFoliage(BaseSystem& baseSystem,
+                                      std::vector<Entity>& prototypes,
+                                      WorldContext& worldCtx,
+                                      VoxelWorldContext& voxelWorld,
+                                      const VoxelColumnKey& columnKey) {
+        if (!baseSystem.registry || !worldCtx.expanse.loaded || !voxelWorld.enabled) return false;
+        const auto columnFoliageStart = std::chrono::steady_clock::now();
+
+        const int sectionSize = std::max(1, voxelWorld.sectionSize);
+        const int sectionTier = 0;
+        const int sectionScale = 1;
+        const glm::ivec3 rootSectionCoord(
+            columnKey.coord.x,
+            floorDivInt(voxelWorld.columnMinY, sectionSize),
+            columnKey.coord.y
+        );
+        const int minX = columnKey.coord.x * sectionSize;
+        const int minZ = columnKey.coord.y * sectionSize;
+        const int maxX = minX + sectionSize - 1;
+        const int maxZ = minZ + sectionSize - 1;
+
+        struct ColumnPrototypeNameCache {
+            const Entity* data = nullptr;
+            size_t size = 0;
+            std::unordered_map<std::string, int> idsByName;
+        };
+        static ColumnPrototypeNameCache prototypeNameCache;
+        if (prototypeNameCache.data != prototypes.data()
+            || prototypeNameCache.size != prototypes.size()) {
+            prototypeNameCache.data = prototypes.data();
+            prototypeNameCache.size = prototypes.size();
+            prototypeNameCache.idsByName.clear();
+            prototypeNameCache.idsByName.reserve(prototypes.size());
+            for (const Entity& proto : prototypes) {
+                prototypeNameCache.idsByName[proto.name] = proto.prototypeID;
+            }
+        }
+        auto findColumnPrototype = [&](const char* name) -> const Entity* {
+            if (!name) return nullptr;
+            auto it = prototypeNameCache.idsByName.find(name);
+            if (it == prototypeNameCache.idsByName.end()) return nullptr;
+            const int id = it->second;
+            if (id < 0 || id >= static_cast<int>(prototypes.size())) return nullptr;
+            return &prototypes[static_cast<size_t>(id)];
+        };
+
+        const Entity* trunkProtoA = findColumnPrototype("FirLog1Tex");
+        const Entity* trunkProtoB = findColumnPrototype("FirLog2Tex");
+        if (!trunkProtoA) trunkProtoA = findColumnPrototype("Branch");
+        if (!trunkProtoA) trunkProtoA = findColumnPrototype("Block");
+        if (!trunkProtoB) trunkProtoB = trunkProtoA;
+        const Entity* leafProto = findColumnPrototype("Leaf");
+        const Entity* leafFanOakProto = findColumnPrototype("GrassTuftLeafFanOak");
+        const Entity* leafFanPineProto = findColumnPrototype("GrassTuftLeafFanPine");
+        const Entity* jungleTrunkProto = findColumnPrototype("OakLogTex");
+        const Entity* bareTrunkProto = findColumnPrototype("BareLogTex");
+        const Entity* wallBranchLongProtoPosX = findColumnPrototype("WallBranchLongTexPosX");
+        const Entity* wallBranchLongProtoNegX = findColumnPrototype("WallBranchLongTexNegX");
+        const Entity* wallBranchLongProtoPosZ = findColumnPrototype("WallBranchLongTexPosZ");
+        const Entity* wallBranchLongProtoNegZ = findColumnPrototype("WallBranchLongTexNegZ");
+        const Entity* wallBranchLongTipProtoPosX = findColumnPrototype("WallBranchLongTipTexPosX");
+        const Entity* wallBranchLongTipProtoNegX = findColumnPrototype("WallBranchLongTipTexNegX");
+        const Entity* wallBranchLongTipProtoPosZ = findColumnPrototype("WallBranchLongTipTexPosZ");
+        const Entity* wallBranchLongTipProtoNegZ = findColumnPrototype("WallBranchLongTipTexNegZ");
+        const Entity* pineBeeHiveProto = findColumnPrototype("FlowerBeeHivePineV001");
+
+        const Entity* grassProto = findColumnPrototype("GrassTuft");
+        const Entity* shortGrassProto = findColumnPrototype("GrassTuftShort");
+        const Entity* grassProtoBiome1 = findColumnPrototype("GrassTuftMeadow");
+        const Entity* shortGrassProtoBiome1 = findColumnPrototype("GrassTuftShortMeadow");
+        const Entity* grassProtoBiome3 = findColumnPrototype("GrassTuftJungle");
+        const Entity* flowerProto = findColumnPrototype("Flower");
+        const Entity* grassCoverProtoX = findColumnPrototype("GrassCoverTexX");
+        const Entity* grassCoverProtoZ = findColumnPrototype("GrassCoverTexZ");
+        const Entity* grassCoverMeadowProtoX = findColumnPrototype("GrassCoverMeadowTexX");
+        const Entity* grassCoverMeadowProtoZ = findColumnPrototype("GrassCoverMeadowTexZ");
+        const Entity* grassCoverJungleProtoX = findColumnPrototype("GrassCoverJungleTexX");
+        const Entity* grassCoverJungleProtoZ = findColumnPrototype("GrassCoverJungleTexZ");
+        const Entity* grassCoverBareProtoX = findColumnPrototype("GrassCoverBareTexX");
+        const Entity* grassCoverBareProtoZ = findColumnPrototype("GrassCoverBareTexZ");
+        const Entity* grassCoverDesertProtoX = findColumnPrototype("GrassCoverDesertTexX");
+        const Entity* grassCoverDesertProtoZ = findColumnPrototype("GrassCoverDesertTexZ");
+        const Entity* waterProto = findColumnPrototype("Water");
+        const int waterPrototypeID = waterProto ? waterProto->prototypeID : -1;
+
+        const Entity* cactusProtoA = findColumnPrototype("Cactus1Tex");
+        const Entity* cactusProtoB = findColumnPrototype("Cactus2Tex");
+        const Entity* cactusProtoAX = findColumnPrototype("Cactus1TexX");
+        const Entity* cactusProtoAZ = findColumnPrototype("Cactus1TexZ");
+        const Entity* cactusProtoBX = findColumnPrototype("Cactus2TexX");
+        const Entity* cactusProtoBZ = findColumnPrototype("Cactus2TexZ");
+        const Entity* cactusProtoAJunctionX = findColumnPrototype("Cactus1TexJunctionX");
+        const Entity* cactusProtoAJunctionZ = findColumnPrototype("Cactus1TexJunctionZ");
+        const Entity* cactusProtoBJunctionX = findColumnPrototype("Cactus2TexJunctionX");
+        const Entity* cactusProtoBJunctionZ = findColumnPrototype("Cactus2TexJunctionZ");
+
+        std::array<int, kJungleLeafVariantCount> jungleLeafPrototypeIDs{};
+        int jungleLeafPrototypeCount = 0;
+        {
+            const std::array<const char*, kJungleLeafVariantCount> kJungleLeafNames = {
+                "LeafJungleV001", "LeafJungleV002", "LeafJungleV003", "LeafJungleV004",
+                "LeafJungleV005", "LeafJungleV006", "LeafJungleV007", "LeafJungleV008",
+                "LeafJungleV009", "LeafJungleV010", "LeafJungleV011", "LeafJungleV012",
+                "LeafJungleV013", "LeafJungleV014", "LeafJungleV015", "LeafJungleV016"
+            };
+            for (const char* name : kJungleLeafNames) {
+                if (const Entity* proto = findColumnPrototype(name)) {
+                    jungleLeafPrototypeIDs[static_cast<size_t>(jungleLeafPrototypeCount)] = proto->prototypeID;
+                    jungleLeafPrototypeCount += 1;
+                }
+            }
+        }
+
+        FoliageSpec foliageSpec;
+        foliageSpec.enabled = getRegistryBool(baseSystem, "FoliageGenerationEnabled", true);
+        foliageSpec.grassEnabled = getRegistryBool(baseSystem, "GrassGenerationEnabled", true);
+        foliageSpec.grassCoverEnabled = getRegistryBool(baseSystem, "GrassCoverGenerationEnabled", true);
+        foliageSpec.flowerEnabled = getRegistryBool(baseSystem, "FlowerGenerationEnabled", true);
+        foliageSpec.temperateOnly = getRegistryBool(baseSystem, "FoliageTemperateOnly", true);
+        foliageSpec.grassSpawnModulo = std::max(1, getRegistryInt(baseSystem, "GrassSpawnModulo", foliageSpec.grassSpawnModulo));
+        foliageSpec.grassCoverPercent = std::max(0, std::min(100, getRegistryInt(baseSystem, "GrassCoverPercent", foliageSpec.grassCoverPercent)));
+        foliageSpec.flowerSpawnModulo = std::max(1, getRegistryInt(baseSystem, "FlowerSpawnModulo", foliageSpec.flowerSpawnModulo));
+        foliageSpec.shortGrassPercent = std::max(0, std::min(100, getRegistryInt(baseSystem, "ShortGrassPercent", foliageSpec.shortGrassPercent)));
+        foliageSpec.grassTuftPercent = std::max(0, std::min(100, getRegistryInt(baseSystem, "GrassTuftPercent", foliageSpec.grassTuftPercent)));
+
+        PineSpec baseSpec;
+        const int pineCanopyBaseHeight = std::max(2, getRegistryInt(baseSystem, "PineCanopyBaseHeight", 10));
+        baseSpec.canopyOffset = std::max(1, baseSpec.trunkHeight - pineCanopyBaseHeight);
+        const int pineMinTrunkHeight = std::max(6, getRegistryInt(baseSystem, "PineTrunkHeightMin", 15));
+        const int pineMaxTrunkHeight = std::max(
+            pineMinTrunkHeight,
+            getRegistryInt(baseSystem, "PineTrunkHeightMax", baseSpec.trunkHeight)
+        );
+        const int pineBeeHiveSpawnModulo = std::max(1, getRegistryInt(baseSystem, "PineBeeHiveSpawnModulo", 18));
+        const int jungleTreeSpawnModulo = std::max(1, getRegistryInt(baseSystem, "JungleTreeSpawnModulo", 1000));
+        const bool meadowTreeGenerationEnabled = getRegistryBool(baseSystem, "MeadowTreeGenerationEnabled", true);
+        const int meadowTreeSpawnModulo = std::max(1, getRegistryInt(baseSystem, "MeadowTreeSpawnModulo", 140));
+        const int jungleTreeTrunkMin = std::max(4, getRegistryInt(baseSystem, "JungleTreeTrunkHeightMin", 6));
+        const int jungleTreeTrunkMax = std::max(jungleTreeTrunkMin, getRegistryInt(baseSystem, "JungleTreeTrunkHeightMax", 9));
+        const int jungleTreeCanopyRadius = std::max(2, std::min(8, getRegistryInt(baseSystem, "JungleTreeCanopyRadius", 4)));
+        const int bareTreeSpawnModulo = std::max(1, getRegistryInt(baseSystem, "BareTreeSpawnModulo", 380));
+        const int bareTreeTrunkMin = std::max(4, getRegistryInt(baseSystem, "BareTreeTrunkHeightMin", 7));
+        const int bareTreeTrunkMax = std::max(bareTreeTrunkMin, getRegistryInt(baseSystem, "BareTreeTrunkHeightMax", 12));
+        const int desertCactusSpawnModulo = std::max(1, getRegistryInt(baseSystem, "DesertCactusSpawnModulo", 128));
+        const bool desertCactusEnabled = getRegistryBool(baseSystem, "DesertCactusGenerationEnabled", true);
+        const bool treeGenerationEnabled = getRegistryBool(baseSystem, "TreeGenerationEnabled", true);
+
+        const uint32_t trunkColor = packColor(glm::vec3(0.29f, 0.21f, 0.13f));
+        const uint32_t leafColor = packColor(glm::vec3(0.07f, 0.46f, 0.34f));
+        bool modified = false;
+        bool unresolvedDependencies = false;
+        std::unordered_set<glm::ivec3, IVec3Hash> touchedSections;
+
+        const bool previousColumnWriteActive = voxelWorld.columnFeatureWritesActive;
+        const VoxelColumnKey previousColumnWriteOwner = voxelWorld.columnFeatureOwner;
+        voxelWorld.beginColumnFeatureWrites(columnKey);
+
+        int scannedColumns = 0;
+        int candidateColumns = 0;
+        int placedTrees = 0;
+        int skippedNonLand = 0;
+        int skippedMissingGround = 0;
+        int blockedByColumn = 0;
+        int blockedBySpacing = 0;
+
+        auto placeColumnGroundFoliage = [&](int worldX, int groundY, int worldZ, int biomeID, uint32_t seed) {
+            if (!foliageSpec.enabled) return;
+            const glm::ivec3 groundCell(worldX, groundY, worldZ);
+            const glm::ivec3 placeCell(worldX, groundY + 1, worldZ);
+            if (getBlockAt(voxelWorld, placeCell) != 0u) return;
+            const uint32_t groundID = getBlockAt(voxelWorld, groundCell);
+            if (!isFoliageGroundPrototypeID(prototypes, groundID, waterPrototypeID)) return;
+
+            bool spawnFlower = foliageSpec.flowerEnabled
+                && flowerProto
+                && ((seed % static_cast<uint32_t>(foliageSpec.flowerSpawnModulo)) == 0u);
+            if (foliageSpec.temperateOnly && biomeID != 0 && biomeID != 1) {
+                spawnFlower = false;
+            }
+            if (spawnFlower) {
+                if (voxelWorld.setBlockIfEmpty(
+                        placeCell,
+                        static_cast<uint32_t>(flowerProto->prototypeID),
+                        flowerColorForCell(worldX, worldZ),
+                        false)) {
+                    modified = true;
+                }
+                return;
+            }
+
+            if (!foliageSpec.grassEnabled) return;
+            if (((seed >> 1u) % static_cast<uint32_t>(foliageSpec.grassSpawnModulo)) != 0u) return;
+            const int clampedGrassTuftPercent = std::max(0, std::min(100, foliageSpec.grassTuftPercent));
+            if (clampedGrassTuftPercent <= 0) return;
+            if (clampedGrassTuftPercent < 100) {
+                const uint32_t grassTuftSeed = hash3D(worldX + 1847, groundY + 97, worldZ - 563);
+                if (static_cast<int>(grassTuftSeed % 100u) >= clampedGrassTuftPercent) return;
+            }
+
+            int coverX = grassCoverProtoX ? grassCoverProtoX->prototypeID : -1;
+            int coverZ = grassCoverProtoZ ? grassCoverProtoZ->prototypeID : -1;
+            int tallGrassID = grassProto ? grassProto->prototypeID : -1;
+            int shortGrassID = shortGrassProto ? shortGrassProto->prototypeID : -1;
+            if (biomeID == 1) {
+                if (grassProtoBiome1) tallGrassID = grassProtoBiome1->prototypeID;
+                if (shortGrassProtoBiome1) shortGrassID = shortGrassProtoBiome1->prototypeID;
+                if (grassCoverMeadowProtoX) coverX = grassCoverMeadowProtoX->prototypeID;
+                if (grassCoverMeadowProtoZ) coverZ = grassCoverMeadowProtoZ->prototypeID;
+            } else if (biomeID == 3) {
+                if (grassProtoBiome3) tallGrassID = grassProtoBiome3->prototypeID;
+                shortGrassID = -1;
+                if (grassCoverJungleProtoX) coverX = grassCoverJungleProtoX->prototypeID;
+                if (grassCoverJungleProtoZ) coverZ = grassCoverJungleProtoZ->prototypeID;
+            } else if (biomeID == 4) {
+                shortGrassID = -1;
+                if (grassProtoBiome3) tallGrassID = grassProtoBiome3->prototypeID;
+                if (grassCoverBareProtoX) coverX = grassCoverBareProtoX->prototypeID;
+                if (grassCoverBareProtoZ) coverZ = grassCoverBareProtoZ->prototypeID;
+            } else if (biomeID == 2) {
+                tallGrassID = -1;
+                shortGrassID = -1;
+                if (grassCoverDesertProtoX) coverX = grassCoverDesertProtoX->prototypeID;
+                if (grassCoverDesertProtoZ) coverZ = grassCoverDesertProtoZ->prototypeID;
+            }
+
+            if (foliageSpec.grassCoverEnabled && biomeID != 2 && (coverX >= 0 || coverZ >= 0)) {
+                const uint32_t coverSeed = hash3D(worldX + 913, groundY + 37, worldZ - 211);
+                if (static_cast<int>(coverSeed % 100u) < foliageSpec.grassCoverPercent) {
+                    int coverID = ((seed >> 13u) & 1u) == 0u ? coverX : coverZ;
+                    if (coverID < 0) coverID = coverX >= 0 ? coverX : coverZ;
+                    if (coverID >= 0) {
+                        if (voxelWorld.setBlockIfEmpty(
+                                placeCell,
+                                static_cast<uint32_t>(coverID),
+                                grassColorForCell(worldX, worldZ),
+                                false)) {
+                            modified = true;
+                        }
+                        return;
+                    }
+                }
+            }
+
+            int grassID = tallGrassID;
+            if (shortGrassID >= 0) {
+                const int shortPercent = std::max(0, std::min(100, foliageSpec.shortGrassPercent));
+                if (grassID < 0 || static_cast<int>((seed >> 11u) % 100u) < shortPercent) {
+                    grassID = shortGrassID;
+                }
+            }
+            if (grassID < 0) return;
+            if (voxelWorld.setBlockIfEmpty(
+                    placeCell,
+                    static_cast<uint32_t>(grassID),
+                    grassColorForCell(worldX, worldZ),
+                    false)) {
+                modified = true;
+            }
+        };
+
+        const bool islandQuadrants =
+            (worldCtx.expanse.islandRadius > 0.0f) && worldCtx.expanse.secondaryBiomeEnabled;
+        for (int worldZ = minZ; worldZ <= maxZ; ++worldZ) {
+            for (int worldX = minX; worldX <= maxX; ++worldX) {
+                scannedColumns += 1;
+                const int biomeID = ExpanseBiomeSystemLogic::ResolveBiome(
+                    worldCtx,
+                    static_cast<float>(worldX),
+                    static_cast<float>(worldZ)
+                );
+                if (biomeID == 5 || isWithinJungleVolcano(worldCtx.expanse, biomeID, worldX, worldZ)) {
+                    continue;
+                }
+
+                float terrainHeight = 0.0f;
+                const bool isLand = ExpanseBiomeSystemLogic::SampleTerrain(
+                    worldCtx,
+                    static_cast<float>(worldX),
+                    static_cast<float>(worldZ),
+                    terrainHeight
+                );
+                if (!isLand) {
+                    skippedNonLand += 1;
+                    continue;
+                }
+
+                const int groundY = static_cast<int>(std::floor(terrainHeight));
+                if (groundY < voxelWorld.columnMinY || groundY + 1 >= voxelWorld.columnMaxYExclusive) {
+                    skippedMissingGround += 1;
+                    continue;
+                }
+                const glm::ivec3 groundCell(worldX, groundY, worldZ);
+                if (getBlockAt(voxelWorld, groundCell) == 0u) {
+                    skippedMissingGround += 1;
+                    continue;
+                }
+
+                const uint32_t seed = hash2D(worldX, worldZ);
+
+                if (!treeGenerationEnabled || !trunkProtoA || !trunkProtoB || !leafProto) {
+                    placeColumnGroundFoliage(worldX, groundY, worldZ, biomeID, seed);
+                    continue;
+                }
+                if (biomeID == 2 || biomeID == 5) {
+                    placeColumnGroundFoliage(worldX, groundY, worldZ, biomeID, seed);
+                    continue;
+                }
+
+                const bool wantsPineTree = (biomeID == 0) && shouldSpawnPine(worldX, worldZ, baseSpec);
+                const bool wantsMeadowTree =
+                    meadowTreeGenerationEnabled
+                    && (biomeID == 1)
+                    && ((hash2D(worldX + 571, worldZ - 313) % static_cast<uint32_t>(meadowTreeSpawnModulo)) == 0u);
+                const bool wantsJungleTree =
+                    islandQuadrants && (biomeID == 0 || biomeID == 3)
+                    && ((hash2D(worldX + 173, worldZ - 911) % static_cast<uint32_t>(jungleTreeSpawnModulo)) == 0u);
+                const bool wantsBareTree =
+                    (biomeID == 4)
+                    && ((hash2D(worldX - 433, worldZ + 1259) % static_cast<uint32_t>(bareTreeSpawnModulo)) == 0u);
+                if (!wantsPineTree && !wantsMeadowTree && !wantsJungleTree && !wantsBareTree) {
+                    placeColumnGroundFoliage(worldX, groundY, worldZ, biomeID, seed);
+                    continue;
+                }
+                candidateColumns += 1;
+
+                if (wantsPineTree || wantsMeadowTree) {
+                    PineSpec treeSpec = pineSpecForCell(
+                        baseSpec,
+                        worldX,
+                        worldZ,
+                        pineMinTrunkHeight,
+                        pineMaxTrunkHeight
+                    );
+                    const int trunkPrototypeID = ((hash2D(worldX, worldZ) >> 8u) & 1u) == 0u
+                        ? trunkProtoA->prototypeID
+                        : trunkProtoB->prototypeID;
+                    const int nubPrototypeID = (trunkPrototypeID == trunkProtoA->prototypeID)
+                        ? trunkProtoB->prototypeID
+                        : trunkProtoA->prototypeID;
+                    const int topPrototypeID = topLogPrototypeFor(prototypes, nubPrototypeID);
+                    if (!trunkColumnCanExist(
+                            voxelWorld,
+                            sectionTier,
+                            rootSectionCoord,
+                            sectionSize,
+                            trunkProtoA->prototypeID,
+                            trunkProtoB->prototypeID,
+                            worldX,
+                            groundY,
+                            worldZ,
+                            treeSpec.trunkHeight)) {
+                        blockedByColumn += 1;
+                        continue;
+                    }
+                    if (hasNearbyConflictingTrunk(
+                            voxelWorld,
+                            sectionTier,
+                            trunkProtoA->prototypeID,
+                            trunkProtoB->prototypeID,
+                            worldX,
+                            groundY + 1,
+                            worldZ,
+                            treeSpec.trunkExclusionRadius)) {
+                        blockedBySpacing += 1;
+                        continue;
+                    }
+                    writeTreeToWorld(
+                        voxelWorld,
+                        prototypes,
+                        sectionTier,
+                        sectionSize,
+                        rootSectionCoord,
+                        trunkPrototypeID,
+                        topPrototypeID,
+                        nubPrototypeID,
+                        leafProto->prototypeID,
+                        leafFanPineProto ? leafFanPineProto->prototypeID : -1,
+                        (pineBeeHiveProto
+                            && wantsPineTree
+                            && ((hash2D(worldX - 6481, worldZ + 2207)
+                                 % static_cast<uint32_t>(pineBeeHiveSpawnModulo)) == 0u))
+                            ? pineBeeHiveProto->prototypeID
+                            : -1,
+                        trunkColor,
+                        leafColor,
+                        worldX,
+                        groundY,
+                        worldZ,
+                        treeSpec,
+                        touchedSections,
+                        modified
+                    );
+                    placedTrees += 1;
+                } else if (wantsBareTree) {
+                    const int bareTrunkID = bareTrunkProto ? bareTrunkProto->prototypeID : trunkProtoA->prototypeID;
+                    const uint32_t bareSeed = hash2D(worldX + 6097, worldZ - 2953);
+                    const int bareHeightSpan = bareTreeTrunkMax - bareTreeTrunkMin + 1;
+                    const int bareTrunkHeight = bareTreeTrunkMin + static_cast<int>(
+                        bareSeed % static_cast<uint32_t>(bareHeightSpan)
+                    );
+                    if (!trunkColumnCanExist(
+                            voxelWorld,
+                            sectionTier,
+                            rootSectionCoord,
+                            sectionSize,
+                            bareTrunkID,
+                            bareTrunkID,
+                            worldX,
+                            groundY,
+                            worldZ,
+                            bareTrunkHeight)) {
+                        blockedByColumn += 1;
+                        continue;
+                    }
+                    if (hasNearbyConflictingTrunk(
+                            voxelWorld,
+                            sectionTier,
+                            bareTrunkID,
+                            bareTrunkID,
+                            worldX,
+                            groundY + 1,
+                            worldZ,
+                            2)) {
+                        blockedBySpacing += 1;
+                        continue;
+                    }
+                    writeBareTreeToWorld(
+                        voxelWorld,
+                        sectionTier,
+                        sectionSize,
+                        rootSectionCoord,
+                        bareTrunkID,
+                        -1,
+                        -1,
+                        wallBranchLongProtoPosX ? wallBranchLongProtoPosX->prototypeID : -1,
+                        wallBranchLongProtoNegX ? wallBranchLongProtoNegX->prototypeID : -1,
+                        wallBranchLongProtoPosZ ? wallBranchLongProtoPosZ->prototypeID : -1,
+                        wallBranchLongProtoNegZ ? wallBranchLongProtoNegZ->prototypeID : -1,
+                        wallBranchLongTipProtoPosX ? wallBranchLongTipProtoPosX->prototypeID : -1,
+                        wallBranchLongTipProtoNegX ? wallBranchLongTipProtoNegX->prototypeID : -1,
+                        wallBranchLongTipProtoPosZ ? wallBranchLongTipProtoPosZ->prototypeID : -1,
+                        wallBranchLongTipProtoNegZ ? wallBranchLongTipProtoNegZ->prototypeID : -1,
+                        packColor(glm::vec3(0.35f, 0.29f, 0.23f)),
+                        packColor(glm::vec3(0.42f, 0.35f, 0.27f)),
+                        worldX,
+                        groundY,
+                        worldZ,
+                        bareTrunkHeight,
+                        bareSeed,
+                        touchedSections,
+                        modified
+                    );
+                    placedTrees += 1;
+                } else {
+                    const int jungleTrunkID = jungleTrunkProto ? jungleTrunkProto->prototypeID : trunkProtoA->prototypeID;
+                    const uint32_t jungleSeed = hash2D(worldX + 4041, worldZ - 7927);
+                    const int jungleHeightSpan = jungleTreeTrunkMax - jungleTreeTrunkMin + 1;
+                    const int jungleTrunkHeight = jungleTreeTrunkMin
+                        + static_cast<int>(jungleSeed % static_cast<uint32_t>(jungleHeightSpan));
+                    if (!trunkColumnCanExist(
+                            voxelWorld,
+                            sectionTier,
+                            rootSectionCoord,
+                            sectionSize,
+                            jungleTrunkID,
+                            jungleTrunkID,
+                            worldX,
+                            groundY,
+                            worldZ,
+                            jungleTrunkHeight)) {
+                        blockedByColumn += 1;
+                        continue;
+                    }
+                    if (hasNearbyConflictingTrunk(
+                            voxelWorld,
+                            sectionTier,
+                            jungleTrunkID,
+                            jungleTrunkID,
+                            worldX,
+                            groundY + 1,
+                            worldZ,
+                            2)) {
+                        blockedBySpacing += 1;
+                        continue;
+                    }
+                    writeJungleTreeToWorld(
+                        voxelWorld,
+                        sectionTier,
+                        sectionSize,
+                        rootSectionCoord,
+                        jungleTrunkID,
+                        leafProto->prototypeID,
+                        leafFanOakProto ? leafFanOakProto->prototypeID : -1,
+                        jungleLeafPrototypeIDs,
+                        jungleLeafPrototypeCount,
+                        packColor(glm::vec3(0.36f, 0.24f, 0.15f)),
+                        leafColor,
+                        worldX,
+                        groundY,
+                        worldZ,
+                        jungleTrunkHeight,
+                        jungleTreeCanopyRadius,
+                        touchedSections,
+                        modified
+                    );
+                    placedTrees += 1;
+                }
+            }
+        }
+
+        if (desertCactusEnabled) {
+            writeDesertCactusToSection(
+                prototypes,
+                worldCtx,
+                voxelWorld,
+                sectionTier,
+                rootSectionCoord,
+                sectionSize,
+                sectionScale,
+                cactusProtoA ? cactusProtoA->prototypeID : -1,
+                cactusProtoB ? cactusProtoB->prototypeID : -1,
+                cactusProtoAX ? cactusProtoAX->prototypeID : -1,
+                cactusProtoAZ ? cactusProtoAZ->prototypeID : -1,
+                cactusProtoBX ? cactusProtoBX->prototypeID : -1,
+                cactusProtoBZ ? cactusProtoBZ->prototypeID : -1,
+                cactusProtoAJunctionX ? cactusProtoAJunctionX->prototypeID : -1,
+                cactusProtoAJunctionZ ? cactusProtoAJunctionZ->prototypeID : -1,
+                cactusProtoBJunctionX ? cactusProtoBJunctionX->prototypeID : -1,
+                cactusProtoBJunctionZ ? cactusProtoBJunctionZ->prototypeID : -1,
+                waterPrototypeID,
+                desertCactusSpawnModulo,
+                unresolvedDependencies,
+                modified
+            );
+        }
+
+        const size_t appliedPending = voxelWorld.applyPendingColumnWrites(columnKey, false);
+        voxelWorld.columnFeatureWritesActive = previousColumnWriteActive;
+        voxelWorld.columnFeatureOwner = previousColumnWriteOwner;
+
+        g_treePerfStats.pendingSections = 0;
+        g_treePerfStats.pendingDependencies = voxelWorld.pendingColumnWrites.size();
+        g_treePerfStats.backfillVisited = 0;
+        g_treePerfStats.selectedSections = 0;
+        g_treePerfStats.processedSections = 0;
+        g_treePerfStats.deferredByTimeBudget = 0;
+        g_treePerfStats.backfillAppended = 0;
+        g_treePerfStats.scannedColumns = scannedColumns;
+        g_treePerfStats.candidateColumns = candidateColumns;
+        g_treePerfStats.placedTrees = placedTrees;
+        g_treePerfStats.skippedOutOfSection = 0;
+        g_treePerfStats.skippedNonLand = skippedNonLand;
+        g_treePerfStats.skippedMissingGround = skippedMissingGround;
+        g_treePerfStats.blockedByDependencies = 0;
+        g_treePerfStats.blockedByColumn = blockedByColumn;
+        g_treePerfStats.blockedBySpacing = blockedBySpacing;
+        g_treePerfStats.backfillRan = false;
+        g_treePerfStats.updateMs = std::chrono::duration<float, std::milli>(
+            std::chrono::steady_clock::now() - columnFoliageStart
+        ).count();
+
+        return modified || appliedPending > 0u;
     }
 
     void UpdateExpanseTrees(BaseSystem& baseSystem, std::vector<Entity>& prototypes, float dt, PlatformWindowHandle win) {
@@ -1206,7 +1665,6 @@ namespace TreeGenerationSystemLogic {
             g_treePendingDependencies.clear();
             g_treePendingSections.clear();
             g_treeSectionProgress.clear();
-            clearCaveDecorContinuationQueue();
             clearImmediateFoliageQueue();
             g_pendingPineLogRemovals.clear();
             g_treeFoliageSignature = 0;
@@ -1240,7 +1698,6 @@ namespace TreeGenerationSystemLogic {
         }
         for (auto it = g_treePendingDependencies.begin(); it != g_treePendingDependencies.end(); ) {
             if (!isFoliageEligibleSection(*it)) {
-                g_treeCaveContinuationQueued.erase(*it);
                 g_treeSurfaceAppliedVersion.erase(*it);
                 g_treeSectionProgress.erase(*it);
                 it = g_treePendingDependencies.erase(it);
@@ -1250,7 +1707,6 @@ namespace TreeGenerationSystemLogic {
         }
         for (auto it = g_treePendingSections.begin(); it != g_treePendingSections.end(); ) {
             if (!isFoliageEligibleSection(*it)) {
-                g_treeCaveContinuationQueued.erase(*it);
                 g_treeSurfaceAppliedVersion.erase(*it);
                 g_treeSectionProgress.erase(*it);
                 it = g_treePendingSections.erase(it);
@@ -1260,7 +1716,6 @@ namespace TreeGenerationSystemLogic {
         }
         for (auto it = g_treeSectionProgress.begin(); it != g_treeSectionProgress.end(); ) {
             if (!isFoliageEligibleSection(it->first)) {
-                g_treeCaveContinuationQueued.erase(it->first);
                 g_treeSurfaceAppliedVersion.erase(it->first);
                 it = g_treeSectionProgress.erase(it);
             } else {
@@ -1486,24 +1941,6 @@ namespace TreeGenerationSystemLogic {
         const Entity* cactusProtoAJunctionZ = HostLogic::findPrototype("Cactus1TexJunctionZ", prototypes);
         const Entity* cactusProtoBJunctionX = HostLogic::findPrototype("Cactus2TexJunctionX", prototypes);
         const Entity* cactusProtoBJunctionZ = HostLogic::findPrototype("Cactus2TexJunctionZ", prototypes);
-        const Entity* stonePebbleProtoX = HostLogic::findPrototype("StonePebbleTexX", prototypes);
-        const Entity* stonePebbleProtoZ = HostLogic::findPrototype("StonePebbleTexZ", prototypes);
-        const Entity* cavePotProtoX = HostLogic::findPrototype("StonePebbleCavePotTexX", prototypes);
-        const Entity* cavePotProtoZ = HostLogic::findPrototype("StonePebbleCavePotTexZ", prototypes);
-        const Entity* wallStoneProtoPosX = HostLogic::findPrototype("WallStoneTexPosX", prototypes);
-        const Entity* wallStoneProtoNegX = HostLogic::findPrototype("WallStoneTexNegX", prototypes);
-        const Entity* wallStoneProtoPosZ = HostLogic::findPrototype("WallStoneTexPosZ", prototypes);
-        const Entity* wallStoneProtoNegZ = HostLogic::findPrototype("WallStoneTexNegZ", prototypes);
-        const Entity* ceilingStoneProtoPosX = HostLogic::findPrototype("CeilingStoneTexPosX", prototypes);
-        const Entity* ceilingStoneProtoNegX = HostLogic::findPrototype("CeilingStoneTexNegX", prototypes);
-        const Entity* ceilingStoneProtoPosZ = HostLogic::findPrototype("CeilingStoneTexPosZ", prototypes);
-        const Entity* ceilingStoneProtoNegZ = HostLogic::findPrototype("CeilingStoneTexNegZ", prototypes);
-        const Entity* ceilingStoneProtoX = HostLogic::findPrototype("CeilingStoneTexX", prototypes);
-        const Entity* ceilingStoneProtoZ = HostLogic::findPrototype("CeilingStoneTexZ", prototypes);
-        const Entity* slopeProtoPosX = HostLogic::findPrototype("DebugSlopeTexPosX", prototypes);
-        const Entity* slopeProtoNegX = HostLogic::findPrototype("DebugSlopeTexNegX", prototypes);
-        const Entity* slopeProtoPosZ = HostLogic::findPrototype("DebugSlopeTexPosZ", prototypes);
-        const Entity* slopeProtoNegZ = HostLogic::findPrototype("DebugSlopeTexNegZ", prototypes);
         const Entity* waterProto = HostLogic::findPrototype("Water", prototypes);
         if (!trunkProtoA || !trunkProtoB || !leafProto) return;
         if (!grassProtoBiome1) grassProtoBiome1 = grassProto;
@@ -1560,10 +1997,6 @@ namespace TreeGenerationSystemLogic {
         foliageSpec.flowerEnabled = getRegistryBool(baseSystem, "FlowerGenerationEnabled", true);
         foliageSpec.stickEnabled = getRegistryBool(baseSystem, "StickGenerationEnabled", true);
         foliageSpec.waterFoliageEnabled = getRegistryBool(baseSystem, "WaterFoliageGenerationEnabled", true);
-        foliageSpec.caveStoneEnabled = getRegistryBool(baseSystem, "CaveStoneGenerationEnabled", true);
-        foliageSpec.caveSlopeEnabled = getRegistryBool(baseSystem, "CaveSlopeGenerationEnabled", true);
-        foliageSpec.caveWallStoneEnabled = getRegistryBool(baseSystem, "CaveWallStoneGenerationEnabled", true);
-        foliageSpec.caveCeilingStoneEnabled = getRegistryBool(baseSystem, "CaveCeilingStoneGenerationEnabled", true);
         foliageSpec.temperateOnly = getRegistryBool(baseSystem, "FoliageTemperateOnly", true);
         foliageSpec.grassSpawnModulo = std::max(1, getRegistryInt(baseSystem, "GrassSpawnModulo", foliageSpec.grassSpawnModulo));
         foliageSpec.grassCoverPercent = std::max(0, std::min(100, getRegistryInt(baseSystem, "GrassCoverPercent", foliageSpec.grassCoverPercent)));
@@ -1582,20 +2015,6 @@ namespace TreeGenerationSystemLogic {
         foliageSpec.kelpSpawnPercent = std::max(0, std::min(100, getRegistryInt(baseSystem, "KelpSpawnPercent", foliageSpec.kelpSpawnPercent)));
         foliageSpec.seaUrchinSpawnPercent = std::max(0, std::min(100, getRegistryInt(baseSystem, "SeaUrchinSpawnPercent", foliageSpec.seaUrchinSpawnPercent)));
         foliageSpec.sandDollarSpawnPercent = std::max(0, std::min(100, getRegistryInt(baseSystem, "SandDollarSpawnPercent", foliageSpec.sandDollarSpawnPercent)));
-        foliageSpec.caveStoneSpawnPercent = std::max(0, std::min(100, getRegistryInt(baseSystem, "CaveStoneSpawnPercent", foliageSpec.caveStoneSpawnPercent)));
-        foliageSpec.caveStoneMinDepthFromSurface = std::max(1, std::min(256, getRegistryInt(baseSystem, "CaveStoneMinDepthFromSurface", foliageSpec.caveStoneMinDepthFromSurface)));
-        foliageSpec.cavePotEnabled = getRegistryBool(baseSystem, "CavePotGenerationEnabled", true);
-        foliageSpec.cavePotSpawnPercent = std::max(0, std::min(100, getRegistryInt(baseSystem, "CavePotSpawnPercent", foliageSpec.cavePotSpawnPercent)));
-        foliageSpec.cavePotMinDepthFromSurface = std::max(1, std::min(256, getRegistryInt(baseSystem, "CavePotMinDepthFromSurface", foliageSpec.cavePotMinDepthFromSurface)));
-        foliageSpec.cavePotPileMaxCount = std::max(1, std::min(3, getRegistryInt(baseSystem, "CavePotPileMaxCount", foliageSpec.cavePotPileMaxCount)));
-        foliageSpec.caveSlopeSpawnPercent = std::max(0, std::min(100, getRegistryInt(baseSystem, "CaveSlopeSpawnPercent", foliageSpec.caveSlopeSpawnPercent)));
-        foliageSpec.caveSlopeMinDepthFromSurface = std::max(1, std::min(256, getRegistryInt(baseSystem, "CaveSlopeMinDepthFromSurface", foliageSpec.caveSlopeMinDepthFromSurface)));
-        foliageSpec.caveSlopeLargePercent = std::max(0, std::min(100, getRegistryInt(baseSystem, "CaveSlopeLargePercent", foliageSpec.caveSlopeLargePercent)));
-        foliageSpec.caveSlopeHugePercent = std::max(0, std::min(100, getRegistryInt(baseSystem, "CaveSlopeHugePercent", foliageSpec.caveSlopeHugePercent)));
-        foliageSpec.caveWallStoneSpawnPercent = std::max(0, std::min(100, getRegistryInt(baseSystem, "CaveWallStoneSpawnPercent", foliageSpec.caveWallStoneSpawnPercent)));
-        foliageSpec.caveWallStoneMinDepthFromSurface = std::max(1, std::min(256, getRegistryInt(baseSystem, "CaveWallStoneMinDepthFromSurface", foliageSpec.caveWallStoneMinDepthFromSurface)));
-        foliageSpec.caveCeilingStoneSpawnPercent = std::max(0, std::min(100, getRegistryInt(baseSystem, "CaveCeilingStoneSpawnPercent", foliageSpec.caveCeilingStoneSpawnPercent)));
-        foliageSpec.caveCeilingStoneMinDepthFromSurface = std::max(1, std::min(256, getRegistryInt(baseSystem, "CaveCeilingStoneMinDepthFromSurface", foliageSpec.caveCeilingStoneMinDepthFromSurface)));
         if (!grassProto
             && !shortGrassProto
             && !grassProtoBiome1
@@ -1636,27 +2055,10 @@ namespace TreeGenerationSystemLogic {
         }
         if (!stickProtoX && !stickProtoZ && !stickWinterProtoX && !stickWinterProtoZ) foliageSpec.stickEnabled = false;
         if (!kelpProto && !seaUrchinProtoX && !seaUrchinProtoZ && !sandDollarProtoX && !sandDollarProtoZ) foliageSpec.waterFoliageEnabled = false;
-        if (!stonePebbleProtoX && !stonePebbleProtoZ) foliageSpec.caveStoneEnabled = false;
-        if (!cavePotProtoX && !cavePotProtoZ) foliageSpec.cavePotEnabled = false;
-        if (!slopeProtoPosX && !slopeProtoNegX && !slopeProtoPosZ && !slopeProtoNegZ) foliageSpec.caveSlopeEnabled = false;
-        if (!wallStoneProtoPosX && !wallStoneProtoNegX && !wallStoneProtoPosZ && !wallStoneProtoNegZ) foliageSpec.caveWallStoneEnabled = false;
-        if (!ceilingStoneProtoPosX
-            && !ceilingStoneProtoNegX
-            && !ceilingStoneProtoPosZ
-            && !ceilingStoneProtoNegZ
-            && !ceilingStoneProtoX
-            && !ceilingStoneProtoZ) {
-            foliageSpec.caveCeilingStoneEnabled = false;
-        }
         if (!foliageSpec.grassEnabled
             && !foliageSpec.grassCoverEnabled
             && !foliageSpec.flowerEnabled
-            && !foliageSpec.waterFoliageEnabled
-            && !foliageSpec.caveStoneEnabled
-            && !foliageSpec.cavePotEnabled
-            && !foliageSpec.caveSlopeEnabled
-            && !foliageSpec.caveWallStoneEnabled
-            && !foliageSpec.caveCeilingStoneEnabled) {
+            && !foliageSpec.waterFoliageEnabled) {
             foliageSpec.enabled = false;
         }
         const int waterPrototypeID = waterProto ? waterProto->prototypeID : -1;
@@ -1668,28 +2070,6 @@ namespace TreeGenerationSystemLogic {
             foliageSignature *= 1099511628211ull;
         };
         mixSig(0xCAFEA16u); // include winter bare biome foliage/tree prototype revisions
-        mixSig(static_cast<uint64_t>(foliageSpec.cavePotEnabled ? 1u : 0u));
-        mixSig(static_cast<uint64_t>(foliageSpec.cavePotSpawnPercent));
-        mixSig(static_cast<uint64_t>(foliageSpec.cavePotMinDepthFromSurface));
-        mixSig(static_cast<uint64_t>(foliageSpec.cavePotPileMaxCount));
-        mixSig(static_cast<uint64_t>(cavePotProtoX ? std::max(0, cavePotProtoX->prototypeID) : 0));
-        mixSig(static_cast<uint64_t>(cavePotProtoZ ? std::max(0, cavePotProtoZ->prototypeID) : 0));
-        mixSig(static_cast<uint64_t>(foliageSpec.caveWallStoneEnabled ? 1u : 0u));
-        mixSig(static_cast<uint64_t>(foliageSpec.caveWallStoneSpawnPercent));
-        mixSig(static_cast<uint64_t>(foliageSpec.caveWallStoneMinDepthFromSurface));
-        mixSig(static_cast<uint64_t>(wallStoneProtoPosX ? std::max(0, wallStoneProtoPosX->prototypeID) : 0));
-        mixSig(static_cast<uint64_t>(wallStoneProtoNegX ? std::max(0, wallStoneProtoNegX->prototypeID) : 0));
-        mixSig(static_cast<uint64_t>(wallStoneProtoPosZ ? std::max(0, wallStoneProtoPosZ->prototypeID) : 0));
-        mixSig(static_cast<uint64_t>(wallStoneProtoNegZ ? std::max(0, wallStoneProtoNegZ->prototypeID) : 0));
-        mixSig(static_cast<uint64_t>(foliageSpec.caveCeilingStoneEnabled ? 1u : 0u));
-        mixSig(static_cast<uint64_t>(foliageSpec.caveCeilingStoneSpawnPercent));
-        mixSig(static_cast<uint64_t>(foliageSpec.caveCeilingStoneMinDepthFromSurface));
-        mixSig(static_cast<uint64_t>(ceilingStoneProtoPosX ? std::max(0, ceilingStoneProtoPosX->prototypeID) : 0));
-        mixSig(static_cast<uint64_t>(ceilingStoneProtoNegX ? std::max(0, ceilingStoneProtoNegX->prototypeID) : 0));
-        mixSig(static_cast<uint64_t>(ceilingStoneProtoPosZ ? std::max(0, ceilingStoneProtoPosZ->prototypeID) : 0));
-        mixSig(static_cast<uint64_t>(ceilingStoneProtoNegZ ? std::max(0, ceilingStoneProtoNegZ->prototypeID) : 0));
-        mixSig(static_cast<uint64_t>(ceilingStoneProtoX ? std::max(0, ceilingStoneProtoX->prototypeID) : 0));
-        mixSig(static_cast<uint64_t>(ceilingStoneProtoZ ? std::max(0, ceilingStoneProtoZ->prototypeID) : 0));
         mixSig(static_cast<uint64_t>(foliageSpec.waterFoliageEnabled ? 1u : 0u));
         mixSig(static_cast<uint64_t>(foliageSpec.kelpSpawnPercent));
         mixSig(static_cast<uint64_t>(foliageSpec.seaUrchinSpawnPercent));
@@ -1764,7 +2144,6 @@ namespace TreeGenerationSystemLogic {
             g_treePendingDependencies.clear();
             g_treePendingSections.clear();
             g_treeSectionProgress.clear();
-            clearCaveDecorContinuationQueue();
             clearImmediateFoliageQueue();
         }
 
@@ -1802,7 +2181,6 @@ namespace TreeGenerationSystemLogic {
                     g_treePendingDependencies.erase(key);
                     g_treeSurfaceAppliedVersion.erase(key);
                     g_treeBackfillVisited.erase(key);
-                    g_treeCaveContinuationQueued.erase(key);
                     g_treeSectionProgress.erase(key);
                 }
             }
@@ -1843,7 +2221,6 @@ namespace TreeGenerationSystemLogic {
                     g_treePendingDependencies.erase(key);
                     g_treeSurfaceAppliedVersion.erase(key);
                     g_treeBackfillVisited.erase(key);
-                    g_treeCaveContinuationQueued.erase(key);
                     g_treeSectionProgress.erase(key);
                     continue;
                 }
@@ -1878,9 +2255,6 @@ namespace TreeGenerationSystemLogic {
         int cameraSurfaceWorldY = 0;
         bool terrainBacklogged = false;
         bool backfillLoaded = false;
-        const int caveDecorMaxTier = 0;
-        int caveDecorSectionBudget = std::numeric_limits<int>::max();
-        bool caveDecorBudgetConfiguredOff = false;
         if (!forceCompleteActive) {
             // Process all pending sections each frame (selection budget is applied later). This
             // avoids starvation where newly ready sections can wait many frames before even being
@@ -1891,7 +2265,6 @@ namespace TreeGenerationSystemLogic {
                     g_treePendingDependencies.erase(key);
                     g_treeSurfaceAppliedVersion.erase(key);
                     g_treeBackfillVisited.erase(key);
-                    g_treeCaveContinuationQueued.erase(key);
                     g_treeSectionProgress.erase(key);
                     it = g_treePendingSections.erase(it);
                     continue;
@@ -1899,11 +2272,6 @@ namespace TreeGenerationSystemLogic {
                 if (!TerrainSystemLogic::IsSectionTerrainReady(key)) {
                     ++it;
                     continue;
-                }
-                auto progressIt = g_treeSectionProgress.find(key);
-                if (progressIt != g_treeSectionProgress.end()
-                    && isCaveDecorContinuationPhase(progressIt->second.phase)) {
-                    enqueueCaveDecorContinuation(key);
                 }
                 if (selected.insert(key).second) {
                     dirtySections.push_back(key);
@@ -2011,21 +2379,6 @@ namespace TreeGenerationSystemLogic {
             terrainBacklogged = throttleByTerrainBacklog
                 && ((terrainPendingThreshold > 0 && static_cast<int>(terrainPending) >= terrainPendingThreshold)
                     || (terrainJobsThreshold > 0 && static_cast<int>(terrainJobs) >= terrainJobsThreshold));
-            const bool skipCaveDecorWhenBacklogged = terrainBacklogged
-                && getRegistryBool(baseSystem, "TreeFoliageSkipCaveDecorWhenBacklogged", true);
-            const int caveDecorSectionsPerFrame = std::max(
-                0,
-                getRegistryInt(baseSystem, "TreeFoliageCaveDecorSectionsPerFrame", 8)
-            );
-            const int caveDecorSectionsPerFrameBacklogged = std::max(
-                0,
-                getRegistryInt(baseSystem, "TreeFoliageCaveDecorSectionsPerFrameBacklogged", 1)
-            );
-            caveDecorBudgetConfiguredOff =
-                caveDecorSectionsPerFrame == 0 && caveDecorSectionsPerFrameBacklogged == 0;
-            caveDecorSectionBudget = skipCaveDecorWhenBacklogged
-                ? caveDecorSectionsPerFrameBacklogged
-                : caveDecorSectionsPerFrame;
             const int throttledBackfillBudget = std::max(1, getRegistryInt(baseSystem, "TreeFoliageBackfillSectionsPerFrameBacklogged", 1));
             if (terrainBacklogged) {
                 backfillBudget = std::min(backfillBudget, throttledBackfillBudget);
@@ -2123,20 +2476,6 @@ namespace TreeGenerationSystemLogic {
                 const int throttledBudget = std::max(1, getRegistryInt(baseSystem, "TreeFoliageSectionsPerFrameBacklogged", 1));
                 sectionBudget = std::min(sectionBudget, throttledBudget);
             }
-            int caveContinuationBudget = std::max(
-                0,
-                getRegistryInt(baseSystem, "TreeFoliageCaveContinuationSectionsPerFrame", 1)
-            );
-            if (terrainBacklogged) {
-                caveContinuationBudget = std::max(
-                    0,
-                    getRegistryInt(
-                        baseSystem,
-                        "TreeFoliageCaveContinuationSectionsPerFrameBacklogged",
-                        caveContinuationBudget
-                    )
-                );
-            }
             const bool prioritizeContinuations = getRegistryBool(
                 baseSystem,
                 "TreeFoliagePrioritizeContinuations",
@@ -2166,50 +2505,11 @@ namespace TreeGenerationSystemLogic {
                 auto progressIt = g_treeSectionProgress.find(k);
                 if (progressIt != g_treeSectionProgress.end()) {
                     const int phase = progressIt->second.phase;
-                    if (isCaveDecorContinuationPhase(phase)) return 3;
                     if (phase > 0) return 2;
                 }
                 return g_treePendingDependencies.count(k) > 0 ? 1 : 0;
             };
 
-            std::vector<VoxelSectionKey> caveContinuationSections;
-            caveContinuationSections.reserve(static_cast<size_t>(std::max(0, caveContinuationBudget)));
-            if (caveContinuationBudget > 0 && !g_treeCaveContinuationQueue.empty()) {
-                const size_t scans = g_treeCaveContinuationQueue.size();
-                for (size_t scan = 0; scan < scans
-                    && static_cast<int>(caveContinuationSections.size()) < caveContinuationBudget; ++scan) {
-                    const VoxelSectionKey key = g_treeCaveContinuationQueue.front();
-                    g_treeCaveContinuationQueue.pop_front();
-                    g_treeCaveContinuationQueued.erase(key);
-                    if (selected.count(key) == 0) continue;
-                    if (!TerrainSystemLogic::IsSectionTerrainReady(key)) {
-                        if (g_treePendingSections.count(key) > 0 || g_treePendingDependencies.count(key) > 0) {
-                            enqueueCaveDecorContinuation(key);
-                        }
-                        continue;
-                    }
-                    auto progressIt = g_treeSectionProgress.find(key);
-                    if (progressIt == g_treeSectionProgress.end()
-                        || !isCaveDecorContinuationPhase(progressIt->second.phase)) {
-                        continue;
-                    }
-                    caveContinuationSections.push_back(key);
-                }
-            }
-
-            if (!caveContinuationSections.empty()) {
-                std::unordered_set<VoxelSectionKey, VoxelSectionKeyHash> forcedSet;
-                forcedSet.reserve(caveContinuationSections.size());
-                for (const auto& key : caveContinuationSections) forcedSet.insert(key);
-                dirtySections.erase(
-                    std::remove_if(
-                        dirtySections.begin(),
-                        dirtySections.end(),
-                        [&](const VoxelSectionKey& k) { return forcedSet.count(k) > 0; }
-                    ),
-                    dirtySections.end()
-                );
-            }
             if (!immediateSections.empty()) {
                 std::unordered_set<VoxelSectionKey, VoxelSectionKeyHash> immediateSet;
                 immediateSet.reserve(immediateSections.size());
@@ -2224,7 +2524,7 @@ namespace TreeGenerationSystemLogic {
                 );
             }
 
-            const int regularBudget = std::max(0, sectionBudget - static_cast<int>(caveContinuationSections.size()));
+            const int regularBudget = std::max(0, sectionBudget);
             if (regularBudget == 0) {
                 dirtySections.clear();
             } else if (static_cast<int>(dirtySections.size()) > regularBudget && baseSystem.player) {
@@ -2257,22 +2557,10 @@ namespace TreeGenerationSystemLogic {
             if (!immediateSections.empty()) {
                 immediateSections.insert(
                     immediateSections.end(),
-                    caveContinuationSections.begin(),
-                    caveContinuationSections.end()
-                );
-                immediateSections.insert(
-                    immediateSections.end(),
                     dirtySections.begin(),
                     dirtySections.end()
                 );
                 dirtySections.swap(immediateSections);
-            } else if (!caveContinuationSections.empty()) {
-                caveContinuationSections.insert(
-                    caveContinuationSections.end(),
-                    dirtySections.begin(),
-                    dirtySections.end()
-                );
-                dirtySections.swap(caveContinuationSections);
             }
         }
 
@@ -2294,7 +2582,6 @@ namespace TreeGenerationSystemLogic {
         }
         int processedSections = 0;
         int deferredByTimeBudget = 0;
-        int caveDecorSectionsProcessed = 0;
         int scannedColumns = 0;
         int candidateColumns = 0;
         int placedTrees = 0;
@@ -2315,11 +2602,6 @@ namespace TreeGenerationSystemLogic {
                     for (size_t deferredIndex = keyIndex; deferredIndex < dirtySections.size(); ++deferredIndex) {
                         const VoxelSectionKey deferredKey = dirtySections[deferredIndex];
                         g_treePendingSections.insert(deferredKey);
-                        auto deferredProgressIt = g_treeSectionProgress.find(deferredKey);
-                        if (deferredProgressIt != g_treeSectionProgress.end()
-                            && isCaveDecorContinuationPhase(deferredProgressIt->second.phase)) {
-                            enqueueCaveDecorContinuation(deferredKey);
-                        }
                         deferredByTimeBudget += 1;
                     }
                     break;
@@ -2331,7 +2613,6 @@ namespace TreeGenerationSystemLogic {
                 g_treePendingDependencies.erase(key);
                 g_treeSurfaceAppliedVersion.erase(key);
                 g_treeBackfillVisited.erase(key);
-                g_treeCaveContinuationQueued.erase(key);
                 g_treeSectionProgress.erase(key);
                 continue;
             }
@@ -2370,7 +2651,6 @@ namespace TreeGenerationSystemLogic {
                 if (queuedFromDirty) {
                     g_treePendingSections.erase(key);
                 }
-                g_treeCaveContinuationQueued.erase(key);
                 g_treeSectionProgress.erase(key);
                 continue;
             }
@@ -2390,7 +2670,6 @@ namespace TreeGenerationSystemLogic {
                 if (queuedFromDirty) {
                     g_treePendingSections.erase(key);
                 }
-                g_treeCaveContinuationQueued.erase(key);
                 g_treeSectionProgress.erase(key);
                 continue;
             }
@@ -2480,9 +2759,6 @@ namespace TreeGenerationSystemLogic {
             auto deferSection = [&]() {
                 progress.unresolvedDependencies = unresolvedDependencies;
                 g_treePendingSections.insert(key);
-                if (isCaveDecorContinuationPhase(progress.phase)) {
-                    enqueueCaveDecorContinuation(key);
-                }
                 deferredByTimeBudget += 1;
             };
             auto markSurfaceReadyIfComplete = [&]() {
@@ -2581,15 +2857,6 @@ namespace TreeGenerationSystemLogic {
                 }
                 return complete;
             };
-
-            const bool caveDecorFeatureEnabled = foliageSpec.caveSlopeEnabled
-                || foliageSpec.caveStoneEnabled
-                || foliageSpec.cavePotEnabled
-                || foliageSpec.caveWallStoneEnabled
-                || foliageSpec.caveCeilingStoneEnabled;
-            const bool caveDecorSectionEligible =
-                (sectionTier <= caveDecorMaxTier) && caveDecorFeatureEnabled;
-            bool caveDecorBudgetCountedForSection = false;
 
             bool finishedSection = false;
             while (!finishedSection) {
@@ -3049,168 +3316,6 @@ namespace TreeGenerationSystemLogic {
 
                 if (progress.phase >= 5) {
                     markSurfaceReadyIfComplete();
-                }
-                if (forceCompleteSection && caveDecorSectionEligible && progress.phase <= 5) {
-                    progress.phase = std::max(progress.phase, 5);
-                    deferSection();
-                    finishedSection = true;
-                    continue;
-                }
-                const bool allowCaveSlopeForSection = caveDecorSectionEligible && foliageSpec.caveSlopeEnabled;
-                bool allowCaveDecorForSection = caveDecorSectionEligible;
-                if (!forceCompleteSection && allowCaveDecorForSection && caveDecorSectionBudget >= 0) {
-                    if (caveDecorSectionBudget == 0 || caveDecorSectionsProcessed >= caveDecorSectionBudget) {
-                        if (progress.phase <= 5 && allowCaveSlopeForSection) {
-                            allowCaveDecorForSection = false;
-                        } else if (caveDecorSectionBudget == 0 && caveDecorBudgetConfiguredOff) {
-                            allowCaveDecorForSection = false;
-                        } else if (progress.phase <= 9) {
-                            // Preserve completed earlier phases and resume cave-decor later.
-                            progress.phase = std::max(progress.phase, 5);
-                            deferSection();
-                            finishedSection = true;
-                            continue;
-                        }
-                        allowCaveDecorForSection = false;
-                    } else if (!caveDecorBudgetCountedForSection && progress.phase <= 9) {
-                        caveDecorSectionsProcessed += 1;
-                        caveDecorBudgetCountedForSection = true;
-                    }
-                }
-                if (progress.phase <= 5) {
-                    if (allowCaveSlopeForSection) {
-                        writeCaveSlopeToSection(
-                            prototypes,
-                            worldCtx,
-                            voxelWorld,
-                            sectionTier,
-                            sectionCoord,
-                            sectionSize,
-                            sectionScale,
-                            slopeProtoPosX ? slopeProtoPosX->prototypeID : -1,
-                            slopeProtoNegX ? slopeProtoNegX->prototypeID : -1,
-                            slopeProtoPosZ ? slopeProtoPosZ->prototypeID : -1,
-                            slopeProtoNegZ ? slopeProtoNegZ->prototypeID : -1,
-                            foliageSpec,
-                            modified
-                        );
-                        commitTouchedSections();
-                        if (sectionTimeExceeded()) {
-                            progress.phase = 6;
-                            deferSection();
-                            finishedSection = true;
-                            continue;
-                        }
-                    }
-                    progress.phase = 6;
-                }
-                if (progress.phase <= 6) {
-                    if (allowCaveDecorForSection) {
-                        writeCaveStoneToSection(
-                            prototypes,
-                            worldCtx,
-                            voxelWorld,
-                            sectionTier,
-                            sectionCoord,
-                            sectionSize,
-                            sectionScale,
-                            stonePebbleProtoX ? stonePebbleProtoX->prototypeID : -1,
-                            stonePebbleProtoZ ? stonePebbleProtoZ->prototypeID : -1,
-                            waterPrototypeID,
-                            foliageSpec,
-                            modified
-                        );
-                        commitTouchedSections();
-                        if (sectionTimeExceeded()) {
-                            progress.phase = 7;
-                            deferSection();
-                            finishedSection = true;
-                            continue;
-                        }
-                    }
-                    progress.phase = 7;
-                }
-                if (progress.phase <= 7) {
-                    if (allowCaveDecorForSection) {
-                        writeCavePotsToSection(
-                            prototypes,
-                            worldCtx,
-                            voxelWorld,
-                            sectionTier,
-                            sectionCoord,
-                            sectionSize,
-                            sectionScale,
-                            cavePotProtoX ? cavePotProtoX->prototypeID : -1,
-                            cavePotProtoZ ? cavePotProtoZ->prototypeID : -1,
-                            foliageSpec,
-                            modified
-                        );
-                        commitTouchedSections();
-                        if (sectionTimeExceeded()) {
-                            progress.phase = 8;
-                            deferSection();
-                            finishedSection = true;
-                            continue;
-                        }
-                    }
-                    progress.phase = 8;
-                }
-                if (progress.phase <= 8) {
-                    if (allowCaveDecorForSection) {
-                        writeCaveWallStoneToSection(
-                            prototypes,
-                            worldCtx,
-                            voxelWorld,
-                            sectionTier,
-                            sectionCoord,
-                            sectionSize,
-                            sectionScale,
-                            wallStoneProtoPosX ? wallStoneProtoPosX->prototypeID : -1,
-                            wallStoneProtoNegX ? wallStoneProtoNegX->prototypeID : -1,
-                            wallStoneProtoPosZ ? wallStoneProtoPosZ->prototypeID : -1,
-                            wallStoneProtoNegZ ? wallStoneProtoNegZ->prototypeID : -1,
-                            foliageSpec,
-                            modified
-                        );
-                        commitTouchedSections();
-                        if (sectionTimeExceeded()) {
-                            progress.phase = 9;
-                            deferSection();
-                            finishedSection = true;
-                            continue;
-                        }
-                    }
-                    progress.phase = 9;
-                }
-                if (progress.phase <= 9) {
-                    if (allowCaveDecorForSection) {
-                        writeCaveCeilingStoneToSection(
-                            prototypes,
-                            worldCtx,
-                            voxelWorld,
-                            sectionTier,
-                            sectionCoord,
-                            sectionSize,
-                            sectionScale,
-                            ceilingStoneProtoPosX ? ceilingStoneProtoPosX->prototypeID
-                                                  : (ceilingStoneProtoX ? ceilingStoneProtoX->prototypeID : -1),
-                            ceilingStoneProtoNegX ? ceilingStoneProtoNegX->prototypeID
-                                                  : (ceilingStoneProtoX ? ceilingStoneProtoX->prototypeID : -1),
-                            ceilingStoneProtoPosZ ? ceilingStoneProtoPosZ->prototypeID
-                                                  : (ceilingStoneProtoZ ? ceilingStoneProtoZ->prototypeID : -1),
-                            ceilingStoneProtoNegZ ? ceilingStoneProtoNegZ->prototypeID
-                                                  : (ceilingStoneProtoZ ? ceilingStoneProtoZ->prototypeID : -1),
-                            foliageSpec,
-                            modified
-                        );
-                        commitTouchedSections();
-                        if (sectionTimeExceeded()) {
-                            progress.phase = 10;
-                            deferSection();
-                            finishedSection = true;
-                            continue;
-                        }
-                    }
                     progress.phase = 10;
                 }
 
@@ -3223,14 +3328,12 @@ namespace TreeGenerationSystemLogic {
                 if (canFinalizeSection) {
                     g_treePendingDependencies.erase(key);
                     g_treePendingSections.erase(key);
-                    g_treeCaveContinuationQueued.erase(key);
                     if (progress.startedAsBackfill) {
                         g_treeBackfillVisited.insert(key);
                     }
                 } else {
                     g_treePendingDependencies.insert(key);
                     g_treePendingSections.insert(key);
-                    g_treeCaveContinuationQueued.erase(key);
                 }
                 g_treeSectionProgress.erase(key);
                 finishedSection = true;
@@ -3260,14 +3363,5 @@ namespace TreeGenerationSystemLogic {
     }
 
     void UpdateTreeCanopyGeneration(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle) {
-    }
-
-    void UpdateSurfaceFoliage(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle) {
-    }
-
-    void UpdateWaterFoliage(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle) {
-    }
-
-    void UpdateCaveDecor(BaseSystem&, std::vector<Entity>&, float, PlatformWindowHandle) {
     }
 }

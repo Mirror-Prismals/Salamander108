@@ -251,7 +251,7 @@ namespace {
             maxY += static_cast<int>(std::ceil(upliftBudget));
         }
         maxY += std::max(0, farTerrainGetRegistryInt(baseSystem, "ExpanseVerticalHeadroom", 48));
-        maxY = std::max(maxY, farTerrainGetRegistryInt(baseSystem, "ExpanseAbsoluteMaxY", 320));
+        maxY = std::max(maxY, farTerrainGetRegistryInt(baseSystem, "ExpanseAbsoluteMaxY", 319));
         return maxY;
     }
 

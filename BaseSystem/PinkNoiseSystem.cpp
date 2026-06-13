@@ -514,7 +514,7 @@ namespace PinkNoiseSystemLogic {
         audio.rayEchoDelaySeconds = blockFound ? blockState.echoDelaySeconds : 0.0f;
         audio.rayEchoGain = blockFound ? blockState.echoGain : 0.0f;
 
-        // Player-head RT path fed from main.ck ChucK output.
+        // Player-head RT path fed from head.ck and environmental ChucK outputs.
         bool headShredsActive = audio.chuckHeadHasActiveShreds.load(std::memory_order_relaxed);
         bool headAmbientShredsActive =
             audio.chuckHeadRainHasActiveShreds.load(std::memory_order_relaxed)

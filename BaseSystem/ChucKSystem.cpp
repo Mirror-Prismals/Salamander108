@@ -87,6 +87,7 @@ namespace ChucKSystemLogic {
     }
 
     static int count_script_shreds(AudioContext& audio, const std::string& scriptPath) {
+        if (scriptPath.empty()) return 0;
         if (!audio.chuck) return 0;
         auto* vm = audio.chuck->vm();
         if (!vm) return 0;
@@ -489,7 +490,9 @@ namespace ChucKSystemLogic {
                 }
                 audio.chuckMainShredId = 0;
             }
-            compile_script(audio, audio.chuckMainScript, audio.chuckMainShredId);
+            if (!audio.chuckMainScript.empty()) {
+                compile_script(audio, audio.chuckMainScript, audio.chuckMainShredId);
+            }
             audio.chuckMainCompileRequested = false;
         }
 

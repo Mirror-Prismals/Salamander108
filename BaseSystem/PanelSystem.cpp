@@ -365,6 +365,35 @@ namespace PanelSystemLogic {
             panel.timelineOffsetY = 0.0f;
             panel.transportOffsetY = 0.0f;
         }
+
+        void resetPanelState(PanelContext& panel, float screenWidth, float screenHeight) {
+            panel.topOpen = panel.bottomOpen = panel.leftOpen = panel.rightOpen = false;
+            panel.topState = panel.bottomState = panel.leftState = panel.rightState = 0.0f;
+            panel.topTarget = panel.bottomTarget = panel.leftTarget = panel.rightTarget = 0.0f;
+            panel.upHoldActive = panel.downHoldActive = panel.leftHoldActive = panel.rightHoldActive = false;
+            panel.upHoldTimer = panel.downHoldTimer = panel.leftHoldTimer = panel.rightHoldTimer = 0.0f;
+            panel.upCommitted = panel.downCommitted = panel.leftCommitted = panel.rightCommitted = false;
+            panel.leftRect = computeLeftRect(0.0f, screenWidth, screenHeight);
+            panel.rightRect = computeRightRect(0.0f, screenWidth, screenHeight);
+            float fixedLeft = 0.0f;
+            float fixedRight = screenWidth;
+            computeFixedPanelBounds(screenWidth, fixedLeft, fixedRight);
+            panel.topRect = computeTopRect(0.0f, screenWidth, screenHeight, fixedLeft, fixedRight);
+            panel.bottomRect = computeBottomRect(0.0f, screenWidth, screenHeight, fixedLeft, fixedRight);
+            panel.leftRenderRect = panel.leftRect;
+            panel.rightRenderRect = panel.rightRect;
+            panel.topRenderRect = panel.topRect;
+            panel.bottomRenderRect = panel.bottomRect;
+            panel.mainRect = {0.0f, 0.0f, screenWidth, screenHeight};
+        }
+
+        bool hasDawPanelWorld(const PanelContext& panel) {
+            return panel.panelWorldIndex >= 0
+                && panel.panelTopIndex >= 0
+                && panel.panelBottomIndex >= 0
+                && panel.panelLeftIndex >= 0
+                && panel.panelRightIndex >= 0;
+        }
     }
 
     void UpdatePanels(BaseSystem& baseSystem, std::vector<Entity>& prototypes, float dt, PlatformWindowHandle win) {
@@ -384,10 +413,7 @@ namespace PanelSystemLogic {
             }
             panel.uiWasActive = false;
             panel.cacheBuilt = false;
-            panel.upHoldActive = panel.downHoldActive = panel.leftHoldActive = panel.rightHoldActive = false;
-            panel.upHoldTimer = panel.downHoldTimer = panel.leftHoldTimer = panel.rightHoldTimer = 0.0f;
-            panel.upCommitted = panel.downCommitted = panel.leftCommitted = panel.rightCommitted = false;
-            panel.mainRect = {0.0f, 0.0f, screenWidth, screenHeight};
+            resetPanelState(panel, screenWidth, screenHeight);
             if (baseSystem.ui) {
                 baseSystem.ui->mainScrollDelta = 0.0;
                 baseSystem.ui->panelScrollDelta = 0.0;
@@ -409,6 +435,19 @@ namespace PanelSystemLogic {
                 || panel.cachedWorldCount != baseSystem.level->worlds.size()) {
                 buildPanelCache(baseSystem, panel);
             }
+        }
+
+        if (!hasDawPanelWorld(panel)) {
+            if (baseSystem.level && panel.cacheBuilt) {
+                restorePanelLinkedPositionsToBase(*baseSystem.level, panel);
+            }
+            resetPanelState(panel, screenWidth, screenHeight);
+            if (baseSystem.ui) {
+                baseSystem.ui->mainScrollDelta = baseSystem.player ? baseSystem.player->scrollYOffset : 0.0;
+                baseSystem.ui->panelScrollDelta = 0.0;
+                baseSystem.ui->bottomPanelScrollDelta = 0.0;
+            }
+            return;
         }
 
         {
@@ -588,6 +627,7 @@ namespace PanelSystemLogic {
 
             PanelContext& panel = *baseSystem.panel;
             if (!panel.cacheBuilt) return;
+            if (!hasDawPanelWorld(panel)) return;
             RendererContext& renderer = *baseSystem.renderer;
             WorldContext& world = *baseSystem.world;
             LevelContext& level = *baseSystem.level;

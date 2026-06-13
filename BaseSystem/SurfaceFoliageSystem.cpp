@@ -152,10 +152,21 @@
 
             const int minX = sectionCoord.x * sectionSize;
             const int minZ = sectionCoord.z * sectionSize;
-            const int minY = sectionCoord.y * sectionSize;
+            const int minY = voxelWorld.columnFeatureWritesActive
+                ? voxelWorld.columnMinY
+                : sectionCoord.y * sectionSize;
             const int maxX = minX + sectionSize - 1;
-            const int maxY = minY + sectionSize - 1;
+            const int maxY = voxelWorld.columnFeatureWritesActive
+                ? voxelWorld.columnMaxYExclusive - 1
+                : minY + sectionSize - 1;
             const int maxZ = minZ + sectionSize - 1;
+            auto cellBelongsToGenerationTarget = [&](const glm::ivec3& cell) {
+                if (voxelWorld.columnFeatureWritesActive) {
+                    return cell.y >= voxelWorld.columnMinY
+                        && cell.y < voxelWorld.columnMaxYExclusive;
+                }
+                return cellBelongsToSection(cell, sectionCoord, sectionSize);
+            };
             const int pebbleNearWaterRadiusTier = std::max(
                 1,
                 (std::max(1, spec.pebblePatchNearWaterRadius) + sectionScale - 1) / sectionScale
@@ -229,7 +240,7 @@
                                 continue;
                             }
                             const glm::ivec3 candidateCell(tierX, tierY + 1, tierZ);
-                            if (!cellBelongsToSection(candidateCell, sectionCoord, sectionSize)) {
+                            if (!cellBelongsToGenerationTarget(candidateCell)) {
                                 continue;
                             }
                             if (getBlockAt(voxelWorld, candidateCell) != 0u) {
@@ -414,7 +425,7 @@
                     const int groundWorldY = static_cast<int>(std::floor(terrainHeight));
                     const int groundTierY = floorDivInt(groundWorldY, sectionScale);
                     const glm::ivec3 placeCell(tierX, groundTierY + 1, tierZ);
-                    if (!cellBelongsToSection(placeCell, sectionCoord, sectionSize)) continue;
+                    if (!cellBelongsToGenerationTarget(placeCell)) continue;
 
                     const glm::ivec3 groundCell(tierX, groundTierY, tierZ);
                     const uint32_t groundID = getBlockAt(voxelWorld, groundCell);
@@ -459,8 +470,8 @@
                     if (spawnMiniPineTriple) {
                         const glm::ivec3 middleCell = placeCell + glm::ivec3(0, 1, 0);
                         const glm::ivec3 topCell = placeCell + glm::ivec3(0, 2, 0);
-                        if (!cellBelongsToSection(middleCell, sectionCoord, sectionSize)) continue;
-                        if (!cellBelongsToSection(topCell, sectionCoord, sectionSize)) continue;
+                        if (!cellBelongsToGenerationTarget(middleCell)) continue;
+                        if (!cellBelongsToGenerationTarget(topCell)) continue;
                         if (getBlockAt(voxelWorld, middleCell) != 0u) continue;
                         if (getBlockAt(voxelWorld, topCell) != 0u) continue;
                         voxelWorld.setBlock(placeCell,
@@ -484,7 +495,7 @@
 
                     if (spawnMiniPine) {
                         glm::ivec3 topCell = placeCell + glm::ivec3(0, 1, 0);
-                        if (!cellBelongsToSection(topCell, sectionCoord, sectionSize)) continue;
+                        if (!cellBelongsToGenerationTarget(topCell)) continue;
                         if (getBlockAt(voxelWorld, topCell) != 0u) continue;
                         voxelWorld.setBlock(placeCell,
                             static_cast<uint32_t>(miniPineBottomPrototypeID),
@@ -516,7 +527,7 @@
                         }
                         if (bottomID >= 0 && topID >= 0) {
                             glm::ivec3 topCell = placeCell + glm::ivec3(0, 1, 0);
-                            if (!cellBelongsToSection(topCell, sectionCoord, sectionSize)) continue;
+                            if (!cellBelongsToGenerationTarget(topCell)) continue;
                             if (getBlockAt(voxelWorld, topCell) != 0u) continue;
                             voxelWorld.setBlock(placeCell,
                                 static_cast<uint32_t>(bottomID),
@@ -940,6 +951,13 @@
             const int minZ = sectionCoord.z * sectionSize;
             const int maxX = minX + sectionSize - 1;
             const int maxZ = minZ + sectionSize - 1;
+            auto cellBelongsToGenerationTarget = [&](const glm::ivec3& cell) {
+                if (voxelWorld.columnFeatureWritesActive) {
+                    return cell.y >= voxelWorld.columnMinY
+                        && cell.y < voxelWorld.columnMaxYExclusive;
+                }
+                return cellBelongsToSection(cell, sectionCoord, sectionSize);
+            };
 
             for (int tierZ = minZ; tierZ <= maxZ; ++tierZ) {
                 for (int tierX = minX; tierX <= maxX; ++tierX) {
@@ -967,7 +985,7 @@
                     const int groundWorldY = static_cast<int>(std::floor(terrainHeight));
                     const int groundTierY = floorDivInt(groundWorldY, sectionScale);
                     const glm::ivec3 placeCell(tierX, groundTierY + 1, tierZ);
-                    if (!cellBelongsToSection(placeCell, sectionCoord, sectionSize)) continue;
+                    if (!cellBelongsToGenerationTarget(placeCell)) continue;
                     if (getBlockAt(voxelWorld, placeCell) != 0u) continue;
 
                     const glm::ivec3 groundCell(tierX, groundTierY, tierZ);
@@ -999,7 +1017,7 @@
                     bool canPlaceTrunk = true;
                     for (int i = 1; i <= kCactusTrunkHeight; ++i) {
                         const glm::ivec3 trunkCell(tierX, groundTierY + i, tierZ);
-                        if (!cellBelongsToSection(trunkCell, sectionCoord, sectionSize)
+                        if (!cellBelongsToGenerationTarget(trunkCell)
                             || getBlockAt(voxelWorld, trunkCell) != 0u) {
                             canPlaceTrunk = false;
                             break;
@@ -1022,8 +1040,14 @@
                         const glm::ivec2 dir = kArmDirs[static_cast<size_t>(directionIndex & 3)];
                         const glm::ivec3 trunkCell(tierX, groundTierY + trunkOffsetY, tierZ);
                         const glm::ivec3 armCell(tierX + dir.x, groundTierY + trunkOffsetY, tierZ + dir.y);
-                        if (!cellBelongsToSection(armCell, sectionCoord, sectionSize)) return;
-                        if (getBlockAt(voxelWorld, armCell) != 0u) return;
+                        if (!cellBelongsToGenerationTarget(armCell)) return;
+                        if (!voxelWorld.setBlockIfEmpty(
+                                armCell,
+                                static_cast<uint32_t>((dir.x != 0) ? cactusArmXID : cactusArmZID),
+                                cactusColor,
+                                false)) {
+                            return;
+                        }
 
                         const int junctionPrototypeID = (dir.x != 0) ? cactusJunctionXID : cactusJunctionZID;
                         voxelWorld.setBlock(trunkCell,
@@ -1033,23 +1057,17 @@
                         );
                         modified = true;
 
-                        const int armPrototypeID = (dir.x != 0) ? cactusArmXID : cactusArmZID;
-                        voxelWorld.setBlock(armCell,
-                            static_cast<uint32_t>(armPrototypeID),
-                            cactusColor,
-                            false
-                        );
                         modified = true;
 
                         const glm::ivec3 tipCell(armCell.x, armCell.y + 1, armCell.z);
-                        if (!cellBelongsToSection(tipCell, sectionCoord, sectionSize)) return;
-                        if (getBlockAt(voxelWorld, tipCell) != 0u) return;
-                        voxelWorld.setBlock(tipCell,
-                            static_cast<uint32_t>(cactusTrunkID),
-                            cactusColor,
-                            false
-                        );
-                        modified = true;
+                        if (!cellBelongsToGenerationTarget(tipCell)) return;
+                        if (voxelWorld.setBlockIfEmpty(
+                                tipCell,
+                                static_cast<uint32_t>(cactusTrunkID),
+                                cactusColor,
+                                false)) {
+                            modified = true;
+                        }
                     };
 
                     const int firstArmDir = static_cast<int>((seed >> 12u) & 3u);

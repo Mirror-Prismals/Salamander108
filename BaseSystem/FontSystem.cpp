@@ -425,6 +425,79 @@ namespace FontSystemLogic {
         renderFontsPass(baseSystem, prototypes, win, FontRenderPass::All);
     }
 
+    void RenderImmediateText(BaseSystem& baseSystem, const std::vector<FontDrawCommand>& commands, PlatformWindowHandle win) {
+        if (commands.empty()) return;
+        if (!baseSystem.renderer || !baseSystem.world || !baseSystem.renderBackend || !win) return;
+        RendererContext& renderer = *baseSystem.renderer;
+        WorldContext& world = *baseSystem.world;
+        IRenderBackend& renderBackend = *baseSystem.renderBackend;
+
+        ensureResources(renderer, world, renderBackend);
+        if (!renderer.fontShader) return;
+
+        int windowWidth = 0, windowHeight = 0;
+        PlatformInput::GetWindowSize(win, windowWidth, windowHeight);
+        double screenWidth = windowWidth > 0 ? static_cast<double>(windowWidth) : 1920.0;
+        double screenHeight = windowHeight > 0 ? static_cast<double>(windowHeight) : 1080.0;
+
+        std::vector<FontBatch> batches;
+        std::unordered_map<std::string, size_t> batchIndex;
+        for (const FontDrawCommand& command : commands) {
+            if (command.text.empty()) continue;
+            std::string fontName = command.font.empty() ? kDefaultFontName : command.font;
+            float fontSize = command.size > 0.0f ? command.size : kDefaultFontSize;
+            auto atlasOpt = loadAtlas(fontName, fontSize, baseSystem.renderBackend);
+            if (!atlasOpt.has_value()) continue;
+            FontAtlas* atlas = *atlasOpt;
+
+            int pixelSize = static_cast<int>(std::round(fontSize));
+            std::string key = fontName + "|" + std::to_string(pixelSize);
+            size_t index = 0;
+            auto idxIt = batchIndex.find(key);
+            if (idxIt == batchIndex.end()) {
+                index = batches.size();
+                batchIndex[key] = index;
+                batches.push_back(FontBatch{atlas, {}});
+            } else {
+                index = idxIt->second;
+            }
+
+            appendTextVertices(batches[index].vertices,
+                               *atlas,
+                               command.text,
+                               command.color,
+                               command.position,
+                               screenWidth,
+                               screenHeight);
+        }
+
+        if (batches.empty()) return;
+
+        renderBackend.setDepthTestEnabled(false);
+        renderBackend.setBlendEnabled(true);
+        renderBackend.setBlendModeAlpha();
+        renderer.fontShader->use();
+        renderer.fontShader->setInt("fontTex", 0);
+        renderBackend.bindVertexArray(renderer.fontVAO);
+
+        for (auto& batch : batches) {
+            if (!batch.atlas || batch.vertices.empty()) continue;
+            renderBackend.bindTexture2D(batch.atlas->texture, 0);
+            renderBackend.uploadArrayBufferData(
+                renderer.fontVBO,
+                batch.vertices.data(),
+                batch.vertices.size() * sizeof(FontVertex),
+                true
+            );
+            renderBackend.drawArraysTriangles(0, static_cast<int>(batch.vertices.size()));
+        }
+
+        renderBackend.unbindVertexArray();
+        renderBackend.bindTexture2D(0, 0);
+        renderBackend.setBlendEnabled(false);
+        renderBackend.setDepthTestEnabled(true);
+    }
+
     void RenderFontsTimeline(BaseSystem& baseSystem, std::vector<Entity>& prototypes, float dt, PlatformWindowHandle win) {
         (void)dt;
         renderFontsPass(baseSystem, prototypes, win, FontRenderPass::Timeline);
